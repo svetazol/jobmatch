@@ -1,4 +1,8 @@
-"""Loading input files and stripping private CV data before it leaves the machine."""
+"""Loading input files and stripping private CV data before it leaves the machine.
+
+Moved from ``cv_match/``. The one change: a failure raises ``ValueError``, not
+``SystemExit`` — a library must not decide the process's exit code.
+"""
 import re
 from pathlib import Path
 
@@ -14,7 +18,7 @@ META_TAG = re.compile(r"`?\[(CV-RULE|TODO[^\]]*|GUESSED|UNCONFIRMED)\]`?")
 def load_text(path: Path) -> str:
     text = path.read_text(encoding="utf-8").strip()
     if not text or text.startswith("<!--"):
-        raise SystemExit(f"{path} looks empty — fill it in before running.")
+        raise ValueError(f"{path} looks empty — fill it in before running.")
     return text
 
 

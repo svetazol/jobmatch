@@ -13,13 +13,16 @@ from .sources import source_for_url
 log = logging.getLogger(__name__)
 
 
-def cmd_run(config_path: str) -> int:
+def cmd_run(config_path: str, limit: int | None) -> int:
     settings = load_settings(config_path)
-    report = pipeline.run(settings)
+    report = pipeline.run(settings, limit=limit)
     with SessionLocal() as session:
-        stored, fetched = repository.count_vacancies(session)
+        stored, fetched, matched = repository.count_vacancies(session)
     print(f"\n{report.summary()}")
-    print(f"database now holds {stored} vacancies, {fetched} of them fetched")
+    print(
+        f"database now holds {stored} vacancies, {fetched} fetched, "
+        f"{matched} with a current match"
+    )
     for url, exc in report.failures:
         print(f"  ! {url}: {type(exc).__name__}: {exc}")
     return 0
@@ -49,15 +52,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="jobmatch")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    run = sub.add_parser("run", help="discover from the configured filter, then fetch")
+    run = sub.add_parser("run", help="discover, fetch and match the configured filter")
     run.add_argument("--config", default=str(DEFAULT_PATH))
+    run.add_argument(
+        "--limit",
+        type=int,
+        help="pay for at most this many matches — try a change cheaply first",
+    )
 
     fetch = sub.add_parser("fetch", help="scrape one vacancy page into the database")
     fetch.add_argument("url")
 
     args = parser.parse_args(argv)
     if args.command == "run":
-        return cmd_run(args.config)
+        return cmd_run(args.config, args.limit)
     if args.command == "fetch":
         return cmd_fetch(args.url)
     parser.error(f"unknown command {args.command}")  # unreachable

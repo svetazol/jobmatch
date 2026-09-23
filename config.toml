@@ -11,6 +11,13 @@
 fetch_delay = 1.0        # seconds between vacancy page hits; pages are ~700KB
 max_fetch_attempts = 3   # a page that keeps failing stops being retried
 
+# Pinned to an exact version, never jev-latest: the model is part of the
+# idempotency fingerprint, and with a floating alias a silent server-side roll
+# would be invisible — you cannot know the resolved model before paying.
+# Bumping this here re-matches everything, cleanly.
+model = "jev-1.13"
+cv_path = "data/cv.md"
+
 [[sources]]
 name = "hh.ru"
 

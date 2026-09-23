@@ -355,7 +355,7 @@ and a call that cost money but returned an unparseable body is invisible.
 | `error_message` | `text` | yes | The detail, for reading. |
 | `input_tokens` | `integer` | yes | From `usage`. |
 | `output_tokens` | `integer` | yes | From `usage`. |
-| `cost_usd` | `numeric(12,6)` | yes | From `usage.cost`. `numeric`, never float — money doesn't round in binary. |
+| `cost_usd` | `numeric(14,9)` | yes | From `usage.cost` — read off the raw JSON body, since the SDK's `Usage` model drops it. `numeric`, never float — money doesn't round in binary. 9 decimal places because a real call costs `$0.000413616`, which `(12,6)` would round to `$0.000414`. |
 | `duration_ms` | `integer` | yes | Wall clock. Catches "the API got slow" before it becomes "the API timed out". |
 | `started_at` | `timestamptz` | no | Call start. |
 | `finished_at` | `timestamptz` | yes | Call end; null if the process died mid-call. |
@@ -490,8 +490,10 @@ def inputs_fingerprint(cv_sanitized: str, job_text: str, questions: dict, model:
     return hashlib.sha256(blob.encode()).hexdigest()
 ```
 
-Hit on `(vacancy_id, inputs_fingerprint)` → skip, zero cost. Miss → call,
-supersede the current row, insert. The unique constraint keeps this correct
+Hit on `(vacancy_id, inputs_fingerprint)` → zero cost, and if that row was
+superseded it is made current again (`repository.make_current`) — a hit must
+not leave a row computed from *different* inputs flagged as current. Miss →
+call, supersede the current row, insert. The unique constraint keeps this correct
 across a crash mid-run or two concurrent processes: the loser gets an
 `IntegrityError` and swallows it.
 
@@ -533,8 +535,10 @@ Not pure columns, because the question set will change: every added question
 becomes 2–3 columns and a migration, every removal leaves dead ones, and
 `probabilities`/`legend` are variable-width by nature.
 
-**Sorting is correct for free.** Jev's `Score` already returns a number 0–1 —
-position on the ordered scale — so `ORDER BY overall_fit_score DESC` is an
+**Sorting is correct for free.** Jev's `Score` returns a position on the
+ordered scale — verified 2026-09-23: the *raw* value is on the legend's own
+index scale (`2.4` of `0..4`), not 0–1, so `matching/jev.py` normalises it to
+0–1 before storing and keeps the raw value in `answers`. The stored score — so `ORDER BY overall_fit_score DESC` is an
 indexed float sort. The classic enum trap (`excellent < good < poor < strong <
 weak` alphabetically) never arises because the label is never the sort key.
 Worth a comment in the model and a test asserting the list endpoint orders by
@@ -602,14 +606,25 @@ of upserts. "Safe and cheap" is discharged by two unique constraints.
 
 ```python
 # jobmatch/pipeline.py
-def run(settings: Settings) -> RunReport:
+def run(settings: Settings, limit: int | None = None) -> RunReport:
+    """Two phases. Discovery and fetch walk today's feed; matching walks the
+    *table*, because the feed is a rolling window and the corpus outgrows it —
+    a vacancy stored last week still needs an answer when the CV changes."""
     report = RunReport()
-    with matching.open_client(settings) as client:
-        cv = matching.load_cv(settings.cv_path)       # loaded + sanitized once per run
-        for entry in settings.sources:
-            source = SOURCES[entry.name]
-            for listing in _safe_discover(source, entry.params, report):
-                _process_one(source, listing, client, cv, settings, report)
+    for entry in settings.sources:
+        source = SOURCES[entry.name]
+        for listing in _safe_discover(source, entry, report):
+            _process_one(source, listing, settings, report)   # upsert + fetch
+
+    with SessionLocal() as session:                           # the paid phase
+        candidates = repository.matchable_vacancy_ids(
+            session, [e.name for e in settings.sources])
+    cv = matching.load_cv(settings.cv_path)      # loaded + sanitized once per run
+    with matching.open_client() as client:       # one HTTP session per run
+        for vacancy_id in candidates:
+            if limit is not None and report.matched >= limit:
+                break                            # --limit caps the spend, not the crawl
+            _match(vacancy_id, cv, client, settings, report)
     return report
 
 
@@ -879,7 +894,7 @@ class LlmCall(Base):
     # cost & timing
     input_tokens: Mapped[int | None] = mapped_column(Integer)
     output_tokens: Mapped[int | None] = mapped_column(Integer)
-    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))   # never Float
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(14, 9))   # never Float
     duration_ms: Mapped[int | None] = mapped_column(Integer)
 
     started_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())

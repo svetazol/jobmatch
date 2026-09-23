@@ -3,6 +3,9 @@
 Each question is its own named constant so it can be read, added, removed, or
 reused on its own; QUESTIONS is just the aggregate the API call sends.
 """
+import hashlib
+import json
+
 from typesafe_sdk import Choice, Noul, NoulCriteria, Score
 
 IS_QUALIFIED = Noul(
@@ -39,3 +42,14 @@ QUESTIONS = {
     "overall_fit": OVERALL_FIT,
     "top_gap": TOP_GAP,
 }
+
+
+def canonical(questions: dict) -> str:
+    """The exact serialisation that goes into a fingerprint. Sorted, compact."""
+    payload = {k: q.model_dump(mode="json") for k, q in sorted(questions.items())}
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+# Changes whenever a question is added, removed or reworded — so there is no
+# hand-maintained PROMPT_VERSION to forget to bump.
+QUESTIONS_HASH = hashlib.sha256(canonical(QUESTIONS).encode()).hexdigest()

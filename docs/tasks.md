@@ -173,32 +173,87 @@ belonging to an unrelated recruitment agency. Don't add it to `HOSTS`.
 
 ---
 
-## Task 3 — matching
+## Task 3 — matching — **done**
 
 **Goal:** each stored vacancy gets a match result, and re-running costs nothing.
 
-1. Move `cv_match/` → `jobmatch/matching/` (see architecture §8): `questions.py`
-   unchanged, `sanitize.py` with `SystemExit` → `ValueError`, `matcher.py` →
-   `jev.py`. Delete `cv_match/`.
-2. Add the `MatchResult` and `LlmCall` models + migration.
-3. `inputs_fingerprint()` over the canonicalised request; pin the model in config.
-4. `match_vacancy()` writes its `LlmCall` row in its **own session** so the
-   record survives the per-vacancy rollback, and returns it on the outcome.
-5. `save_match()` supersedes the current row, then inserts.
-6. Wire into the pipeline behind the `has_match()` check.
+1. ~~`cv_match/` → `jobmatch/matching/`~~ — `questions.py` plus a
+   `QUESTIONS_HASH`, `sanitize.py` with `SystemExit` → `ValueError`,
+   `matcher.py` → `jev.py`. `cv_match/` deleted.
+2. ~~`MatchResult` and `LlmCall` models + migration~~ (`3406da5356e8`).
+3. ~~`inputs_fingerprint()`~~ over the canonicalised request; model pinned in
+   `config.toml` as `jev-1.13`.
+4. ~~`match_vacancy()`~~ writes its `LlmCall` row in its **own** session, so
+   the record survives the caller's rollback, and returns its id on the outcome.
+5. ~~`save_match()`~~ supersedes the current row, then inserts.
+6. ~~Wired into the pipeline~~ behind the fingerprint check.
 
 **Done when**
 
-- [ ] Every fetched vacancy has a current match result
-- [ ] A second run makes zero Jev calls and costs $0
-- [ ] Editing one word in `data/cv.md` re-matches everything
-- [ ] `SELECT sum(cost_usd) FROM llm_calls` tells you what it cost
-- [ ] A failed Jev call leaves an `llm_calls` row with `status='error'` and the
-      run continues
+- [x] Every fetched vacancy has a current match result — 31 of 31
+- [x] A second run makes zero Jev calls and costs $0 — `matched 0 ($0.000000),
+      already matched 31`
+- [x] Editing one word in `data/cv.md` re-matches everything — verified by
+      appending a line: the next run reported `already matched 0`
+- [x] `SELECT sum(cost_usd) FROM llm_calls` tells you what it cost
+- [x] A failed Jev call leaves an `llm_calls` row with `status='error'` and the
+      run continues — `tests/test_matching.py`, `tests/test_pipeline.py`
 
-**Watch here:** this is the first task that spends money. Run it against 2–3
-vacancies before the full 20, and check the actual per-call cost — it's the one
-number the design couldn't guess.
+**What the live API actually returns** — three findings the design guessed wrong:
+
+- **`score` is not 0–1.** Jev returns the expected position on the legend's own
+  index scale: `2.4` on a 0..4 rubric. Architecture §5 assumed 0–1 and §10 put
+  a `CHECK (overall_fit_score BETWEEN 0 AND 1)` on the column — **that
+  constraint would have rejected every row.** `overall_fit_score` is now stored
+  normalised (`score / (levels - 1)`), which keeps the sort key and any
+  `min_fit` threshold meaningful across question sets with different numbers of
+  levels; the raw value stays in `answers`. The check constraint stands.
+- **`cost_usd` needed more precision.** A call costs `$0.000413616`.
+  `Numeric(12,6)` — architecture §3.3 — rounds that to `$0.000414`, and a
+  cheaper call to zero. Widened to `Numeric(14,9)`.
+- **The SDK drops `cost`, `id` and `provider`.** `SystemOneResponse` models
+  only `model`, `usage.input_tokens/output_tokens` and `answers`; the rest is
+  in the JSON body, reachable through the public `raw_http_response`. Without
+  that, `llm_calls` would have no cost column worth summing.
+
+**Changed from the original plan**
+
+- **Matching walks the table, not the discovery loop.** The architecture's
+  `run()` matches inside the per-listing loop. That silently fails the first
+  criterion: the feed is a rolling 20-item window, so a vacancy stored last
+  week is never revisited, and "editing the CV re-matches everything" would
+  mean "re-matches the last twenty". `run()` is now two phases — discover and
+  fetch from the feed, then match from `matchable_vacancy_ids()`, scoped to
+  the sources config currently enables.
+- **`make_current()` replaced `has_match()`.** A bare existence check skips a
+  fingerprint it already has, which is right, but it leaves the *wrong* row
+  flagged current: revert the CV, and the answer for the reverted CV is found
+  and skipped while the newer row keeps `superseded_at IS NULL`. Architecture
+  §4 promises the old row is "un-superseded"; nothing in the plan actually did
+  it. `make_current()` returns the same boolean and revives the row when it is
+  stale. Verified: reverting the CV restored match #4 as current, left #32
+  superseded, and `count(llm_calls)` did not move.
+- **`--limit N` on `run`** caps the matching phase — the phase that costs
+  money. Discovery and fetch always finish; they're bounded by the window.
+- **The label is the most probable level, not the rounded score.** With `2.4`
+  and probabilities `{good: 0.47, strong: 0.43}`, rounding agrees by luck;
+  with `2.6` it would not. The score remains the sort key either way.
+- **`job_text()` omits fields the posting lacks.** 5 of the first 25 vacancies
+  had no skills and only 6 had a salary; an empty `Salary:` line is noise the
+  model would have to interpret.
+
+**What it costs.** 32 calls, **$0.0133** total — about **$0.00042 per vacancy**,
+~3.2s each. Input is ~10k tokens per call and the sanitized CV (34.6k chars) is
+almost all of it, so cost scales with CV length, not with the vacancy. A full
+20-vacancy run is under a cent. The design's caution about spend was
+unwarranted at this scale, but `llm_calls` is what proves it rather than
+assuming it.
+
+**On the answers themselves:** 31 vacancies scored 0.00–0.58, no `strong` or
+`excellent`, and `technical_skills` is the top gap almost everywhere. Worth a
+look at whether that's the CV, the filter (`text=python` against a CV that may
+not be a Python engineer's), or a rubric that needs sharper criteria — a
+question for the data, not the code.
 
 ---
 

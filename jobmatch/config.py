@@ -21,6 +21,8 @@ class Settings:
     sources: tuple[SourceConfig, ...]
     fetch_delay: float = 1.0
     max_fetch_attempts: int = 3
+    model: str = "jev-1.13"          # pinned; part of the match fingerprint
+    cv_path: Path = Path("data/cv.md")
 
 
 def load_settings(path: Path | str = DEFAULT_PATH) -> Settings:
@@ -41,4 +43,6 @@ def load_settings(path: Path | str = DEFAULT_PATH) -> Settings:
         sources=sources,
         fetch_delay=float(raw.get("fetch_delay", 1.0)),
         max_fetch_attempts=int(raw.get("max_fetch_attempts", 3)),
+        model=str(raw.get("model", "jev-1.13")),
+        cv_path=Path(raw.get("cv_path", "data/cv.md")),
     )

@@ -7,11 +7,14 @@ it *is* the fetch queue.
 """
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from collections.abc import Sequence
+
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from .models import Vacancy
+from .matching import MatchOutcome
+from .models import MatchResult, Vacancy
 from .sources import Listing, VacancyData
 
 
@@ -93,8 +96,97 @@ def mark_delisted(session: Session, vacancy_id: int) -> None:
     vacancy.fetch_error = None
 
 
-def count_vacancies(session: Session) -> tuple[int, int]:
-    """(stored, fetched) — what `run` prints at the end."""
+def matchable_vacancy_ids(session: Session, sources: Sequence[str]) -> list[int]:
+    """Every vacancy worth asking about — *not* only the ones in today's feed.
+
+    The feed is a rolling 20-item window, so the corpus outgrows it by design.
+    Matching from the table instead of from the discovery loop is what makes
+    "editing the CV re-matches everything" true of the whole corpus rather
+    than of the last twenty. Costs nothing when nothing changed: the
+    fingerprint lookup downstream is a single indexed read per vacancy.
+
+    Scoped to the sources config currently enables, so disabling a source
+    stops the spending on it rather than quietly continuing.
+    """
+    return list(
+        session.scalars(
+            select(Vacancy.id)
+            .where(
+                Vacancy.source.in_(sources),
+                Vacancy.fetched_at.is_not(None),
+                Vacancy.description.is_not(None),
+            )
+            .order_by(Vacancy.published_at.desc().nullslast(), Vacancy.id)
+        )
+    )
+
+
+def make_current(session: Session, vacancy_id: int, fingerprint: str) -> bool:
+    """Is this exact request already answered? If so, make that answer current.
+
+    The whole of "never pay twice", and a little more: an answer is looked up
+    by fingerprint regardless of whether it is the current one, so reverting a
+    CV to an earlier version *revives* the matching row instead of buying it
+    again. Without the revival the old answer would be found and skipped while
+    a row computed from a different CV stayed flagged as current.
+    """
+    existing = session.scalar(
+        select(MatchResult).where(
+            MatchResult.vacancy_id == vacancy_id,
+            MatchResult.inputs_fingerprint == fingerprint,
+        )
+    )
+    if existing is None:
+        return False
+    if existing.superseded_at is None:
+        return True                      # already current: no writes at all
+
+    _supersede_current(session, vacancy_id)
+    existing.superseded_at = None
+    return True
+
+
+def _supersede_current(session: Session, vacancy_id: int) -> None:
+    session.execute(
+        update(MatchResult)
+        .where(MatchResult.vacancy_id == vacancy_id, MatchResult.superseded_at.is_(None))
+        .values(superseded_at=func.now())
+    )
+    session.flush()
+
+
+def save_match(session: Session, vacancy_id: int, outcome: MatchOutcome) -> MatchResult:
+    """Supersede whatever was current, then insert. Append-only otherwise.
+
+    Only ever called after a paid call — an answer that already exists is
+    handled by ``make_current``. A partial unique index makes "one current row
+    per vacancy" the database's problem, so two concurrent runs cannot both
+    leave a current row; the loser gets an IntegrityError.
+    """
+    _supersede_current(session, vacancy_id)
+    result = MatchResult(
+        vacancy_id=vacancy_id,
+        llm_call_id=outcome.call_id,
+        inputs_fingerprint=outcome.inputs_fingerprint,
+        vacancy_content_hash=outcome.vacancy_content_hash,
+        cv_hash=outcome.cv_hash,
+        questions_hash=outcome.questions_hash,
+        is_qualified_noul=outcome.is_qualified_noul,
+        overall_fit_score=outcome.overall_fit_score,
+        overall_fit_label=outcome.overall_fit_label,
+        overall_fit_confidence=outcome.overall_fit_confidence,
+        top_gap=outcome.top_gap,
+        top_gap_confidence=outcome.top_gap_confidence,
+        answers=outcome.answers,
+    )
+    session.add(result)
+    # the cheap pre-check for "the employer edited the posting"
+    session.get_one(Vacancy, vacancy_id).content_hash = outcome.vacancy_content_hash
+    return result
+
+
+def count_vacancies(session: Session) -> tuple[int, int, int]:
+    """(stored, fetched, matched) — what `run` prints at the end."""
     stored = session.scalar(select(func.count()).select_from(Vacancy)) or 0
     fetched = (
         session.scalar(
@@ -102,4 +194,12 @@ def count_vacancies(session: Session) -> tuple[int, int]:
         )
         or 0
     )
-    return stored, fetched
+    matched = (
+        session.scalar(
+            select(func.count())
+            .select_from(MatchResult)
+            .where(MatchResult.superseded_at.is_(None))
+        )
+        or 0
+    )
+    return stored, fetched, matched

@@ -1,21 +1,22 @@
-"""discover -> persist -> fetch -> persist. The one module allowed to know
-about sources and the database at the same time.
+"""discover -> persist -> fetch -> persist -> match -> persist. The one module
+allowed to know about sources, the matcher and the database at once.
 
-Failure isolation is structural: each vacancy is its own transaction, and one
-bad page costs a warning, not the run. Nothing here remembers where it got to,
-because every guard is state-based — the next run resumes by looking at the
-rows, not at a cursor.
+Failure isolation is structural: each stage of each vacancy is its own
+transaction, and one bad page or one failed API call costs a warning, not the
+run. Nothing here remembers where it got to, because every guard is
+state-based — the next run resumes by looking at the rows, not at a cursor.
 """
 from __future__ import annotations
 
 import logging
 import time
 from dataclasses import dataclass, field
+from decimal import Decimal
 
-from . import repository
-from .config import Settings
+from . import matching, repository
+from .config import Settings, SourceConfig
 from .db import SessionLocal
-from .models import Vacancy
+from .models import LlmCall, Vacancy
 from .sources import SOURCES, Listing, Source, VacancyGone
 
 log = logging.getLogger(__name__)
@@ -27,17 +28,30 @@ class RunReport:
     fetched: int = 0
     skipped: int = 0          # already fetched, delisted, or out of attempts
     delisted: int = 0
+    matched: int = 0          # calls actually paid for
+    already_matched: int = 0  # the free case; the point of the fingerprint
+    cost: Decimal = Decimal(0)
     failures: list[tuple[str, Exception]] = field(default_factory=list)
 
     def summary(self) -> str:
         return (
             f"discovered {self.discovered}, fetched {self.fetched}, "
             f"skipped {self.skipped}, delisted {self.delisted}, "
-            f"failed {len(self.failures)}"
+            f"matched {self.matched} (${self.cost:.6f}), "
+            f"already matched {self.already_matched}, failed {len(self.failures)}"
         )
 
 
-def run(settings: Settings) -> RunReport:
+def run(settings: Settings, limit: int | None = None) -> RunReport:
+    """Two phases, deliberately separate.
+
+    Discovery and fetching walk today's feed. Matching walks the *table*,
+    because the feed is a rolling window and the corpus outgrows it — a
+    vacancy stored last week still needs an answer when the CV changes.
+
+    ``limit`` caps the matching phase, which is the phase that costs money:
+    the sane way to try a change against 2–3 vacancies before twenty.
+    """
     report = RunReport()
     for entry in settings.sources:
         source = SOURCES.get(entry.name)
@@ -47,10 +61,29 @@ def run(settings: Settings) -> RunReport:
         for listing in _safe_discover(source, entry, report):
             report.discovered += 1
             _process_one(source, listing, settings, report)
+
+    _match_all(settings, report, limit)
     return report
 
 
-def _safe_discover(source: Source, entry, report: RunReport) -> list[Listing]:
+def _match_all(settings: Settings, report: RunReport, limit: int | None) -> None:
+    with SessionLocal() as session:
+        candidates = repository.matchable_vacancy_ids(
+            session, [entry.name for entry in settings.sources]
+        )
+    if not candidates:
+        return
+
+    cv = matching.load_cv(settings.cv_path)   # read and sanitized once per run
+    with matching.open_client() as client:    # one HTTP session per run
+        for vacancy_id in candidates:
+            if limit is not None and report.matched >= limit:
+                log.info("stopping at --limit %d matches", limit)
+                return
+            _match(vacancy_id, cv, client, settings, report)
+
+
+def _safe_discover(source: Source, entry: SourceConfig, report: RunReport) -> list[Listing]:
     """A source being down costs one warning, not the other sources' work."""
     try:
         return list(source.discover(entry.params))
@@ -60,17 +93,36 @@ def _safe_discover(source: Source, entry, report: RunReport) -> list[Listing]:
         return []
 
 
-def _process_one(source: Source, listing: Listing, settings: Settings, report: RunReport) -> None:
-    """Two transactions: the listing is committed before the network call, so
-    a fetch that blows up still leaves a row to record the failure against."""
+def _process_one(
+    source: Source, listing: Listing, settings: Settings, report: RunReport
+) -> None:
+    vacancy_id = _persist_listing(source, listing, report)
+    if vacancy_id is not None:
+        _fetch(source, listing, vacancy_id, settings, report)
+
+
+def _persist_listing(source: Source, listing: Listing, report: RunReport) -> int | None:
+    """Committed before any network call, so a failure downstream still has a
+    row to be recorded against. Returns None when there is nothing more to do."""
     with SessionLocal.begin() as session:
         vacancy = repository.upsert_listing(session, source.name, listing)
-        vacancy_id = vacancy.id
-        needs_fetch = _needs_fetch(vacancy, settings)
+        if vacancy.delisted_at is not None:
+            report.skipped += 1
+            return None
+        return vacancy.id
 
-    if not needs_fetch:
-        report.skipped += 1
-        return
+
+def _fetch(
+    source: Source, listing: Listing, vacancy_id: int, settings: Settings, report: RunReport
+) -> None:
+    with SessionLocal() as session:
+        vacancy = session.get_one(Vacancy, vacancy_id)
+        if (
+            vacancy.fetched_at is not None
+            or vacancy.fetch_attempts >= settings.max_fetch_attempts
+        ):
+            report.skipped += 1
+            return
 
     try:
         data = source.fetch(listing.url)
@@ -90,14 +142,51 @@ def _process_one(source: Source, listing: Listing, settings: Settings, report: R
         report.fetched += 1
         log.info("fetched %s — %s", listing.url, data.title)
     finally:
-        # only after a page hit; a skipped vacancy costs nothing and waits for
-        # nothing. Pages are ~700KB, which is the real argument for the delay.
+        # only after a page hit; pages are ~700KB, which is the real argument
+        # for the delay
         time.sleep(settings.fetch_delay)
 
 
-def _needs_fetch(vacancy: Vacancy, settings: Settings) -> bool:
-    if vacancy.fetched_at is not None:
-        return False              # the whole point: a re-run re-fetches nothing
-    if vacancy.delisted_at is not None:
-        return False
-    return vacancy.fetch_attempts < settings.max_fetch_attempts
+def _match(vacancy_id: int, cv: str, client, settings: Settings, report: RunReport) -> None:
+    # one transaction: make_current may revive a superseded row, which is a
+    # write, and the commonest case (already current) writes nothing at all
+    with SessionLocal.begin() as session:
+        vacancy = session.get_one(Vacancy, vacancy_id)
+        if not vacancy.description:
+            return
+        job = matching.job_text(vacancy)
+        fingerprint = matching.inputs_fingerprint(cv, job, matching.QUESTIONS, settings.model)
+        if repository.make_current(session, vacancy_id, fingerprint):
+            report.already_matched += 1   # free, whether found current or revived
+            return
+
+    try:
+        outcome = matching.match_vacancy(
+            client,
+            cv,
+            vacancy,
+            settings.model,
+            fingerprint=fingerprint,
+            cv_hash=matching.sha256(cv),
+            content_hash=matching.content_hash(job),
+            job=job,
+        )
+    except Exception as exc:
+        # the llm_calls row is already committed, in its own session, so the
+        # spend and the reason are on record even though this raised
+        report.failures.append((vacancy.url, exc))
+        log.warning("match failed for %s: %s", vacancy.url, exc)
+        return
+
+    with SessionLocal.begin() as session:
+        repository.save_match(session, vacancy_id, outcome)
+        cost = session.get_one(LlmCall, outcome.call_id).cost_usd
+    report.matched += 1
+    report.cost += cost or Decimal(0)
+    log.info(
+        "matched %s — %s %.2f (%s)",
+        vacancy.url,
+        outcome.overall_fit_label,
+        outcome.overall_fit_score,
+        outcome.top_gap,
+    )
