@@ -2,4 +2,7 @@
 name = "cv"
 version = "0.1.0"
 requires-python = ">=3.14"
-dependencies = ["requests", "python-dotenv"]
+dependencies = [
+    "python-dotenv",
+    "typesafe-sdk>=0.7.1",
+]
