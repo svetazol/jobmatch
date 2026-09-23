@@ -3,3 +3,4 @@
 /data/
 __pycache__/
 .mcp.json
+.DS_Store
