@@ -81,7 +81,7 @@ cv/
 │  ├─ pipeline.py         # run(): discover -> fetch -> persist -> match -> persist
 │  ├─ cli.py              # argparse: run / discover / fetch / match / stats
 │  ├─ sources/
-│  │  ├─ __init__.py      # Listing, VacancyData, Source, SOURCES dict
+│  │  ├─ __init__.py      # Listing, VacancyData, Source, SOURCES, source_for_url
 │  │  └─ hh.py            # hh.ru: RSS discovery + page parsing (data-qa + JSON-LD)
 │  ├─ matching/
 │  │  ├─ __init__.py      # open_client, load_cv, inputs_fingerprint, match_vacancy
@@ -135,14 +135,16 @@ class VacancyData:
     company: str | None = None
     salary: str | None = None
     experience: str | None = None
+    published_at: datetime | None = None
     skills: list[str] = field(default_factory=list)
-    extra: dict[str, Any] = field(default_factory=dict)   # -> vacancies.raw JSONB
+    raw: dict[str, Any] = field(default_factory=dict)     # -> vacancies.raw JSONB
 
 @dataclass(frozen=True, slots=True)
 class Source:
     name: str
+    hosts: tuple[str, ...]    # which URLs this source owns; see source_for_url()
     discover: Callable[[Mapping[str, Any]], Iterable[Listing]]
-    fetch: Callable[[Listing], VacancyData]
+    fetch: Callable[[str], VacancyData]   # a URL, not a Listing: `fetch <url>` has no feed
 
 from . import hh
 SOURCES: dict[str, Source] = {s.name: s for s in (hh.SOURCE,)}
@@ -160,7 +162,8 @@ def discover(params):
         url = _canonical(item.link.text)          # strip tracking query args
         yield Listing(external_id=_vacancy_id(url), url=url, title=item.title.text)
 
-def fetch(listing) -> VacancyData: ...            # the initial_task.md prototype, minus file writing
+def parse(html, url) -> VacancyData: ...          # the initial_task.md prototype, minus file writing
+def fetch(url) -> VacancyData: ...                # requests.get + parse; split so tests skip the network
 
 SOURCE = Source(name="hh.ru", discover=discover, fetch=fetch)
 ```
