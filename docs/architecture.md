@@ -74,12 +74,12 @@ cv/
 ├─ data/cv.md             # private master CV (gitignored)
 ├─ docs/
 ├─ jobmatch/
-│  ├─ config.py           # config.toml + .env -> frozen Settings dataclass
+│  ├─ config.py           # config.toml -> frozen Settings; .env stays in db.py
 │  ├─ db.py               # engine + sessionmaker; the only reader of DATABASE_URL
 │  ├─ models.py           # SQLAlchemy 2.0 declarative — THE schema source of truth
 │  ├─ repository.py       # ~6 query/upsert functions; the only module writing SQL
 │  ├─ pipeline.py         # run(): discover -> fetch -> persist -> match -> persist
-│  ├─ cli.py              # argparse: run / discover / fetch / match / stats
+│  ├─ cli.py              # argparse: run / fetch (match, stats join later)
 │  ├─ sources/
 │  │  ├─ __init__.py      # Listing, VacancyData, Source, SOURCES, source_for_url
 │  │  └─ hh.py            # hh.ru: RSS discovery + page parsing (data-qa + JSON-LD)

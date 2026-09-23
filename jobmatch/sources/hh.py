@@ -10,14 +10,20 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+from collections.abc import Iterator, Mapping
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
 from bs4 import BeautifulSoup
 
-from . import Source, VacancyData
+from . import Listing, Source, VacancyData, VacancyGone
 
 NAME = "hh.ru"
+# The feed returns the latest 20 items and does not paginate: page, per_page
+# and items_on_page are all ignored. The corpus grows by running repeatedly,
+# which the (source, external_id) upsert makes free.
+RSS_URL = "https://hh.ru/search/vacancy/rss"
 # One HeadHunter, several domains: headhunter.ge (Georgia) serves the same
 # engine, the same layout and the same vacancy ids as hh.ru, so a vacancy
 # reached through either domain is one row. Which country's vacancies you get
@@ -139,11 +145,32 @@ def parse(html: str, url: str) -> VacancyData:
     )
 
 
+def discover(params: Mapping[str, Any]) -> Iterator[Listing]:
+    """Whatever the feed currently holds — 20 items, no paging."""
+    resp = requests.get(RSS_URL, params=dict(params), headers=HEADERS, timeout=TIMEOUT)
+    resp.raise_for_status()
+    for item in BeautifulSoup(resp.text, "xml").find_all("item"):
+        if not (link := item.find("link")):
+            continue
+        url = canonical_url(link.get_text(strip=True))
+        title = item.find("title")
+        pub = item.find("pubDate")
+        yield Listing(
+            external_id=vacancy_id(url),
+            url=url,
+            title=_clean(title.get_text() if title else None, inline=True),
+            # provisional: fetch replaces it with the JSON-LD datePosted
+            published_at=_parse_date(pub.get_text(strip=True) if pub else None),
+        )
+
+
 def fetch(url: str) -> VacancyData:
     url = canonical_url(url)
     resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+    if resp.status_code in (404, 410):
+        raise VacancyGone(f"{resp.status_code} for {url}")
     resp.raise_for_status()
     return parse(resp.text, url)
 
 
-SOURCE = Source(name=NAME, hosts=HOSTS, fetch=fetch)
+SOURCE = Source(name=NAME, hosts=HOSTS, discover=discover, fetch=fetch)

@@ -87,31 +87,70 @@ end to end, so the schema meets real data before more is built on it.
 
 ---
 
-## Task 2 — discovery, many vacancies
+## Task 2 — discovery, many vacancies — **done**
 
-**Goal:** `jobmatch discover` reads the search filter from config and stores
-every vacancy it finds.
+**Goal:** one command reads the search filter from config and stores every
+vacancy it finds.
 
-1. `config.toml` + `jobmatch/config.py` (`tomllib`, frozen `Settings`). Source
-   params pass through verbatim, never inspected. **Georgia only for now**, so
-   the filter starts as `text = "python"`, `area = 28`, `work_format = "REMOTE"`
-   — see the domain note below.
-2. `hh.discover()` — RSS → `Listing`. Strip tracking params from the URL;
+1. ~~`config.toml` + `jobmatch/config.py`~~ — `tomllib`, frozen `Settings` and
+   `SourceConfig`. Params pass through verbatim, never inspected. **Georgia
+   only for now:** `text = "python"`, `area = 28`, `work_format = "REMOTE"`,
+   `search_field = ["name", "description"]`.
+2. ~~`hh.discover()`~~ — RSS → `Listing`, `canonical_url()` on every link,
    `external_id` from `/vacancy/(\d+)`.
-3. Two-phase persistence: discovery upserts the listing and bumps
-   `last_seen_at` without touching `description`/`fetched_at`; fetching fills
-   the rest.
-4. `jobmatch/pipeline.py` — discover → upsert → fetch-if-`fetched_at IS NULL`,
-   one transaction per vacancy, politeness delay between fetches.
-5. `fetch_attempts` / `fetch_error` on failure, so a permanently broken page
-   stops being retried.
+3. ~~Two-phase persistence~~ — `upsert_listing()` bumps `last_seen_at` and
+   never touches `description`/`fetched_at`; `apply_fetched()` fills the rest.
+   A stored `title`/`published_at` beats the feed's thinner version
+   (`COALESCE`), and the page's `datePosted` beats the feed's `pubDate`.
+4. ~~`jobmatch/pipeline.py`~~ — `run()` + `RunReport`, politeness delay only
+   after a page hit.
+5. ~~`fetch_attempts` / `fetch_error`~~ — counted on failure, capped by
+   `max_fetch_attempts`; a 404 sets `delisted_at` instead and is never retried.
 
 **Done when**
 
-- [ ] A run stores ~20 vacancies from the configured filter
-- [ ] A second run immediately after costs one HTTP request and re-fetches nothing
-- [ ] A vacancy that 404s marks `delisted_at`; one that fails to parse increments
-      `fetch_attempts` and doesn't kill the run
+- [x] A run stores ~20 vacancies from the configured filter — 20 discovered,
+      20 fetched, 38s wall clock at `fetch_delay = 1.0`
+- [x] A second run immediately after costs one HTTP request and re-fetches
+      nothing — `discovered 20, fetched 0, skipped 20` in 0.9s
+- [x] A vacancy that 404s marks `delisted_at`; one that fails to parse
+      increments `fetch_attempts` and doesn't kill the run — both covered by
+      `tests/test_pipeline.py`, and hh.ru really does answer 404 for a dead id
+      (checked: `/vacancy/1` and `/vacancy/999999999`), so the signal is real
+      and not an archived-page 200
+
+**Changed from the original plan**
+
+- **The command is `jobmatch run`, not `jobmatch discover`.** It discovers
+  *and* fetches, which is what the goal describes, and task 3 adds matching to
+  the same loop — a command called `discover` would be a lie by then.
+  Architecture §1 already named it `run`.
+- **Two transactions per vacancy, not one.** The listing is committed *before*
+  the network call. With a single transaction, a fetch that raises rolls back
+  the listing too, and there is then no row to record `fetch_attempts` against
+  — the counter could never reach its cap on a vacancy that fails on first
+  sight. Discovery is cheap and always safe to commit; the fetch result is a
+  separate write.
+- **`VacancyGone` lives in `sources/__init__.py`.** The pipeline has to tell
+  "employer took it down" (delist, never retry) from "something broke" (count
+  it, try again next run), and it must do that without knowing what an HTTP
+  status is. The source raises the distinction; the pipeline reads it.
+- **`store_fetched()`** composes the two phases for `jobmatch fetch <url>`,
+  which has no feed. It fetches first and derives the `Listing` from the
+  result, so no source needs a "URL → Listing" function.
+- **`count_vacancies()`** so `run` can print the corpus size — this is the
+  rolling-window design's one visible reassurance that the corpus is growing.
+
+**Notes from the first real runs**
+
+- The `.ru` and `.ge` feeds with `area=28` returned *identical* id sets, so
+  `RSS_URL` stays on hh.ru and the domain question is settled: it's cosmetic.
+- The feed's `pubDate` is ISO 8601 with an offset (`2026-09-21T11:32:16.766+03:00`),
+  not the RFC 822 string the RSS spec suggests — `fromisoformat` handles it,
+  and `datePosted` from the page agrees with it.
+- Of the first 25 rows: all fetched, all with `published_at`, 5 with no skills
+  listed and only 6 with a salary. Both absences are normal, which is why
+  neither is a parse failure.
 
 Remember the feed is a **rolling 20-item window** (architecture §0). The corpus
 grows by running repeatedly, not by paging.

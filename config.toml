@@ -1,0 +1,21 @@
+# Checked in: what to search for and how politely. Secrets live in .env.
+#
+# `params` goes to the source verbatim and is never inspected on the way —
+# these are hh.ru's own RSS query params, and the next source's will look
+# nothing like them. Repeated keys are a list; requests expands them.
+#
+# area = 28 is Грузия (per api.hh.ru/areas). The domain does not filter:
+# headhunter.ge without this param returns Moscow vacancies, and with it
+# returns exactly the same 20 ids as hh.ru does.
+
+fetch_delay = 1.0        # seconds between vacancy page hits; pages are ~700KB
+max_fetch_attempts = 3   # a page that keeps failing stops being retried
+
+[[sources]]
+name = "hh.ru"
+
+[sources.params]
+text = "python"
+area = 28
+work_format = "REMOTE"
+search_field = ["name", "description"]
