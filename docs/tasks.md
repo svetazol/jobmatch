@@ -366,7 +366,109 @@ and 1001 before any code was written.
   them; that query is the manual step, and it is the reason it is written down
   here rather than buried in a shell history.
 
-## Task 5 — API (phase 2)
+## Task 5 — HTML search pagination, because RSS isn't enough
+
+**Goal:** discovery reads the paginated HTML search results instead of the RSS
+feed, so a run sees far more than the newest 20 per area.
+
+This was in *Deferred, deliberately* — "the rolling window genuinely isn't
+enough". It now isn't: the same filter that RSS answers with 40 vacancies
+(20 per area) reports **193** on the search page.
+
+**It fits the existing seam exactly.** `discover()` is source-owned, and
+architecture §0 already called this shot: *"hh.ru's HTML search results page
+*is* paginated — that would be a second function inside `sources/hh.py` and
+nothing outside it would change."* Nothing does: `Listing`, `Source`,
+`pipeline.run()`, the two-phase upsert and the whole matching layer are
+untouched. This task is one new function, one deleted one, and config.
+
+**Verified against the live site (2026-09-24)** before planning:
+
+- The results page is **server-rendered** — no JavaScript needed. Vacancy
+  links are plain `<a href=".../vacancy/123">`; the count is
+  `data-qa="vacancies-search-header"` ("Найдено 193 вакансии").
+- **20 results per page**, `page=0,1,2,…`. `items_on_page` is ignored: asking
+  for 100 still returns 20.
+- Of the browser URL's parameters, only `text`, `area` (repeatable),
+  `search_field` (repeatable), `excluded_text` and `page` matter.
+  `hhtmFrom`, `hhtmFromLabel`, `hhtmSource`, `hhtmSourceLabel`,
+  `L_save_area` and `enable_snippets` are UI and tracking noise — drop them.
+- **There is a depth cap of about 4 pages (~80 results) per query**, well
+  below the 193 the header advertises. Page 4 onward returns a page that has
+  the header but no vacancies. Splitting by area gets further: Georgia alone
+  reports 37, Belarus alone 155.
+
+**The one trap, and the reason this task is not trivial**
+
+An empty results page and a throttled response **look the same to
+`raise_for_status()`** — both are HTTP 200. Under fast paging hh intermittently
+serves a stripped ~629KB page carrying "Для работы с нашим сайтом необходимо,
+чтобы Вы включили JavaScript"; it has no results *and no search header*. A
+naive `while page_has_items` loop would treat that as the end of the results
+and silently stop early, at a different point every run — the worst kind of
+bug, because the run reports success.
+
+They are distinguishable, and the parser must do it:
+
+| Response | `vacancies-search-header` | Vacancies | Meaning |
+|---|---|---|---|
+| ~1.2MB | present | 20 | a good page |
+| ~629KB | **present** | 0 | genuinely past the end — stop |
+| ~629KB | **absent** | 0 | throttled — sleep and retry, do *not* stop |
+
+Observed directly: page 2 returned the JS-wall page at a 1s delay and the full
+20 results on retry at 3s.
+
+**Steps**
+
+1. `hh.discover()` walks pages instead of reading RSS: `page=0`, then `+1`,
+   until a page with the header holds no vacancies, or a page budget is hit.
+   Stop conditions are explicit — never "the page looked empty".
+2. A degraded page is a retry, with a short backoff, then a raised error if it
+   persists. An error here must not look like "no more results".
+3. Keep the per-area fan-out from task 4. It is now doing double duty: it
+   works around the depth cap as well as the per-request result cap, and the
+   numbers above say it roughly doubles the reachable corpus.
+4. `max_pages` in `config.toml` (default ~5, one past the observed cap) so a
+   filter that matches thousands cannot walk forever.
+5. Politeness: search pages are ~1.2MB and throttling is real at 1s. Use a
+   separate, longer delay than `fetch_delay` — 2–3s — and say so in config.
+6. Set `order_by=publication_time` in the filter params. HTML search defaults
+   to relevance order, where RSS was newest-first; with a depth cap, *which*
+   80 you get matters. Confirm it is honoured before relying on it.
+7. **Delete the RSS path.** Two discovery mechanisms would be two things to
+   keep working for one job, and HTML is a superset once ordered by date. The
+   `_feed()` helper and `RSS_URL` go; `discover()` keeps its signature, so
+   nothing outside `hh.py` notices.
+8. Tests off a saved fixture: a good page, an end page (header, no items), a
+   throttled page (no header) — asserting the third raises or retries rather
+   than ending the walk.
+
+**Done when**
+
+- [ ] One run discovers ≥150 vacancies for the current two-area filter, against
+      40 today
+- [ ] Re-running discovers the same set and fetches nothing new
+- [ ] A throttled page mid-walk does not truncate the run — forced in a test
+- [ ] `max_pages` is respected and logged when hit, so a truncated crawl is
+      visible rather than silent
+- [ ] Nothing outside `jobmatch/sources/hh.py` and `config.toml` changed, which
+      is the point: this is the seam's first real test
+
+**Cost.** Discovery gets slower (~10 page loads at 2–3s versus one RSS call),
+but that is HTTP, not money. The spend is in what it finds: ~150 new vacancies
+at $0.00042 is about **$0.06** for the first full run, then near zero.
+
+**Deferred from this task, deliberately**
+
+| Thing | Revisit when |
+|---|---|
+| Slicing the query further (by date posted, sub-region, salary band) to beat the ~80-per-query cap | The per-area split stops being enough — Belarus alone already exceeds it at 155 |
+| Retry/backoff as a general policy | It is local to the search walk here. If fetching starts throttling too, lift it out then |
+
+---
+
+## Task 6 — API (phase 2)
 
 FastAPI over the same models. Read: ranked list (source / min fit / unseen
 filters), vacancy detail. Write: triage (seen, star, hide).
@@ -378,7 +480,7 @@ filters), vacancy detail. Write: triage (seen, star, hide).
 
 ---
 
-## Task 6 — frontend (phase 2)
+## Task 7 — frontend (phase 2)
 
 Vue 3 + Vite SPA: ranked list with filters, detail view showing description,
 skills and Jev's answers with confidences, triage buttons.
@@ -391,9 +493,9 @@ Recorded so they're decisions rather than oversights.
 
 | Thing | Revisit when |
 |---|---|
-| HTML search pagination for bulk backfill | The rolling window genuinely isn't enough after running on a schedule for a while |
+| ~~HTML search pagination for bulk backfill~~ | **Now task 5** — the window wasn't enough: 40 via RSS against 193 on the search page |
 | `is_qualified` threshold (0.5, a generated column) | You disagree with its verdicts. Changing it needs a hand-written migration — Alembic doesn't detect `Computed` changes |
 | Re-fetch cadence (30d) and staleness hint (14d) | Arbitrary. Adjust once there's real data |
-| `min_fit` label → threshold mapping | Task 5. Derive from Jev's stored `legend` rather than hardcoding |
+| `min_fit` label → threshold mapping | Task 6. Derive from Jev's stored `legend` rather than hardcoding |
 | Retry/backoff on 429 | A 429 actually happens. §0 saw none, but that proves little |
 | A second source | Whenever. It's a new file in `sources/` plus a config block — nothing else changes |
