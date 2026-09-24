@@ -58,7 +58,7 @@ def run(settings: Settings, limit: int | None = None) -> RunReport:
         if source is None:
             log.error("config names unknown source %r; skipping", entry.name)
             continue
-        for listing in _safe_discover(source, entry, report):
+        for listing in _safe_discover(source, entry, settings, report):
             report.discovered += 1
             _process_one(source, listing, settings, report)
 
@@ -83,14 +83,23 @@ def _match_all(settings: Settings, report: RunReport, limit: int | None) -> None
             _match(vacancy_id, cv, client, settings, report)
 
 
-def _safe_discover(source: Source, entry: SourceConfig, report: RunReport) -> list[Listing]:
-    """A source being down costs one warning, not the other sources' work."""
+def _safe_discover(
+    source: Source, entry: SourceConfig, settings: Settings, report: RunReport
+) -> list[Listing]:
+    """A source being down costs one warning, not the other sources' work.
+
+    Consumed item by item rather than with ``list()`` so that a crawl which
+    dies on page four keeps the three pages it already walked. The failure is
+    still recorded — a partial crawl must not pass for a complete one.
+    """
+    listings: list[Listing] = []
     try:
-        return list(source.discover(entry.params))
+        for listing in source.discover(entry.params, settings.crawl):
+            listings.append(listing)
     except Exception as exc:
-        log.warning("discovery failed for %s: %s", source.name, exc)
+        log.warning("discovery failed for %s after %d: %s", source.name, len(listings), exc)
         report.failures.append((f"discover:{source.name}", exc))
-        return []
+    return listings
 
 
 def _process_one(

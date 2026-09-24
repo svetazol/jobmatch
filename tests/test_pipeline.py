@@ -101,7 +101,7 @@ def fake_source(monkeypatch):
         source = Source(
             name=SOURCE_NAME,
             hosts=("example.test",),
-            discover=lambda params: list(listings),
+            discover=lambda params, crawl: list(listings),
             fetch=fetch,
         )
         monkeypatch.setitem(SOURCES, SOURCE_NAME, source)
@@ -204,7 +204,7 @@ def test_discovery_alone_never_touches_fetched_columns(fake_source, settings):
 
 
 def test_a_source_that_is_down_costs_a_warning_not_the_run(fake_source, settings):
-    def explode(params):
+    def explode(params, crawl):
         raise ConnectionError("feed is down")
 
     source = Source(

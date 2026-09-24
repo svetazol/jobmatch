@@ -366,105 +366,81 @@ and 1001 before any code was written.
   them; that query is the manual step, and it is the reason it is written down
   here rather than buried in a shell history.
 
-## Task 5 — HTML search pagination, because RSS isn't enough
+## Task 5 — HTML search pagination, because RSS isn't enough — **done**
 
 **Goal:** discovery reads the paginated HTML search results instead of the RSS
 feed, so a run sees far more than the newest 20 per area.
 
-This was in *Deferred, deliberately* — "the rolling window genuinely isn't
-enough". It now isn't: the same filter that RSS answers with 40 vacancies
-(20 per area) reports **193** on the search page.
+**It fit the seam exactly, as architecture §0 predicted.** The diff is
+`sources/hh.py`, `config.toml`, and two lines of plumbing for the new `Crawl`
+limits. `Listing`, `VacancyData`, the two-phase upsert, `MatchResult`,
+`LlmCall` and the whole matching layer are untouched — the first real test of
+the source seam, and it held.
 
-**It fits the existing seam exactly.** `discover()` is source-owned, and
-architecture §0 already called this shot: *"hh.ru's HTML search results page
-*is* paginated — that would be a second function inside `sources/hh.py` and
-nothing outside it would change."* Nothing does: `Listing`, `Source`,
-`pipeline.run()`, the two-phase upsert and the whole matching layer are
-untouched. This task is one new function, one deleted one, and config.
+**What was built**
 
-**Verified against the live site (2026-09-24)** before planning:
+1. `hh.discover()` walks `page=0,1,…` of `SEARCH_URL`, one walk per `area`,
+   and yields each vacancy once. `RSS_URL` and `_feed()` are deleted: two
+   discovery mechanisms would be two things to keep working for one job.
+2. `_search_page()` tells an exhausted search from a throttled one — the whole
+   reason the walk is not a five-line loop. See below.
+3. `Crawl(max_pages, delay)` in `sources/__init__.py`, from a `[crawl]` table
+   in `config.toml`. It is not a search parameter — those stay opaque — but
+   every paginated source needs a page budget and a politeness delay.
+4. `order_by = "publication_time"` in the filter. Results default to relevance
+   order, and with a depth cap that decides *which* results you get.
+5. `_safe_discover()` now consumes the generator item by item instead of
+   calling `list()`, so a crawl that dies on page four keeps the three pages
+   it already walked. The failure is still recorded — a partial crawl must not
+   pass for a complete one.
 
-- The results page is **server-rendered** — no JavaScript needed. Vacancy
-  links are plain `<a href=".../vacancy/123">`; the count is
-  `data-qa="vacancies-search-header"` ("Найдено 193 вакансии").
-- **20 results per page**, `page=0,1,2,…`. `items_on_page` is ignored: asking
-  for 100 still returns 20.
-- Of the browser URL's parameters, only `text`, `area` (repeatable),
-  `search_field` (repeatable), `excluded_text` and `page` matter.
-  `hhtmFrom`, `hhtmFromLabel`, `hhtmSource`, `hhtmSourceLabel`,
-  `L_save_area` and `enable_snippets` are UI and tracking noise — drop them.
-- **There is a depth cap of about 4 pages (~80 results) per query**, well
-  below the 193 the header advertises. Page 4 onward returns a page that has
-  the header but no vacancies. Splitting by area gets further: Georgia alone
-  reports 37, Belarus alone 155.
+**The trap, confirmed in practice**
 
-**The one trap, and the reason this task is not trivial**
+An exhausted search and a throttled request are **both HTTP 200 with no
+vacancies**. Under fast paging hh serves a stripped ~629KB "включите
+JavaScript" stub. The obvious `while page_has_results` loop would have ended
+the crawl at a random page whenever that happened, and reported success.
 
-An empty results page and a throttled response **look the same to
-`raise_for_status()`** — both are HTTP 200. Under fast paging hh intermittently
-serves a stripped ~629KB page carrying "Для работы с нашим сайтом необходимо,
-чтобы Вы включили JavaScript"; it has no results *and no search header*. A
-naive `while page_has_items` loop would treat that as the end of the results
-and silently stop early, at a different point every run — the worst kind of
-bug, because the run reports success.
-
-They are distinguishable, and the parser must do it:
-
-| Response | `vacancies-search-header` | Vacancies | Meaning |
-|---|---|---|---|
-| ~1.2MB | present | 20 | a good page |
-| ~629KB | **present** | 0 | genuinely past the end — stop |
-| ~629KB | **absent** | 0 | throttled — sleep and retry, do *not* stop |
-
-Observed directly: page 2 returned the JS-wall page at a 1s delay and the full
-20 results on retry at 3s.
-
-**Steps**
-
-1. `hh.discover()` walks pages instead of reading RSS: `page=0`, then `+1`,
-   until a page with the header holds no vacancies, or a page budget is hit.
-   Stop conditions are explicit — never "the page looked empty".
-2. A degraded page is a retry, with a short backoff, then a raised error if it
-   persists. An error here must not look like "no more results".
-3. Keep the per-area fan-out from task 4. It is now doing double duty: it
-   works around the depth cap as well as the per-request result cap, and the
-   numbers above say it roughly doubles the reachable corpus.
-4. `max_pages` in `config.toml` (default ~5, one past the observed cap) so a
-   filter that matches thousands cannot walk forever.
-5. Politeness: search pages are ~1.2MB and throttling is real at 1s. Use a
-   separate, longer delay than `fetch_delay` — 2–3s — and say so in config.
-6. Set `order_by=publication_time` in the filter params. HTML search defaults
-   to relevance order, where RSS was newest-first; with a depth cap, *which*
-   80 you get matters. Confirm it is honoured before relying on it.
-7. **Delete the RSS path.** Two discovery mechanisms would be two things to
-   keep working for one job, and HTML is a superset once ordered by date. The
-   `_feed()` helper and `RSS_URL` go; `discover()` keeps its signature, so
-   nothing outside `hh.py` notices.
-8. Tests off a saved fixture: a good page, an end page (header, no items), a
-   throttled page (no header) — asserting the third raises or retries rather
-   than ending the walk.
+They differ by one thing: a real results page always carries
+`data-qa="vacancies-search-header"`, including the page past the last result;
+the stub never does. So header + no items = stop, no header = retry with
+increasing backoff, and give up loudly after three tries.
 
 **Done when**
 
-- [ ] One run discovers ≥150 vacancies for the current two-area filter, against
-      40 today
-- [ ] Re-running discovers the same set and fetches nothing new
-- [ ] A throttled page mid-walk does not truncate the run — forced in a test
-- [ ] `max_pages` is respected and logged when hit, so a truncated crawl is
-      visible rather than silent
-- [ ] Nothing outside `jobmatch/sources/hh.py` and `config.toml` changed, which
-      is the point: this is the seam's first real test
+- [x] One run discovers far more than RSS did — **85 vs 40**, and the corpus
+      went from 44 to 100 vacancies
+- [x] Re-running discovers the same 85 and fetches nothing new (`fetched 1`,
+      and that one was the previous run's single failure healing itself)
+- [x] A throttled page mid-walk does not truncate the run — forced in
+      `tests/test_hh_parse.py`, which asserts page 1 is re-requested and the
+      walk continues to page 2
+- [x] `max_pages` is respected and logged when hit
+- [x] Nothing outside `sources/hh.py` and `config.toml` changed, bar the
+      `Crawl` dataclass and passing it through
 
-**Cost.** Discovery gets slower (~10 page loads at 2–3s versus one RSS call),
-but that is HTTP, not money. The spend is in what it finds: ~150 new vacancies
-at $0.00042 is about **$0.06** for the first full run, then near zero.
+**What the first real crawl showed**
+
+- **85 distinct vacancies from two areas**, against 40 by RSS. Belarus 73,
+  Georgia 27. 2:51 wall clock, of which the crawl is ~30s and the rest is
+  fetching 55 pages at `fetch_delay = 1.0`.
+- **The best matches were not in the RSS window.** The corpus now holds two
+  `excellent` (0.67) results, both Belarusian; before this task nothing scored
+  above `good` at 0.58. That is the clearest possible argument for the task:
+  the rolling window was hiding the good ones, not just fewer of them.
+- No throttling and no `max_pages` hit on either run, at `delay = 2.5`.
+- **One vacancy failed to parse and the run carried on**, then succeeded on the
+  next run — `fetch_attempts` and the per-vacancy transaction working as
+  designed, with no intervention.
+- Spend: $0.0227 for 55 new matches, $0.0448 across the whole ledger.
 
 **Deferred from this task, deliberately**
 
 | Thing | Revisit when |
 |---|---|
-| Slicing the query further (by date posted, sub-region, salary band) to beat the ~80-per-query cap | The per-area split stops being enough — Belarus alone already exceeds it at 155 |
-| Retry/backoff as a general policy | It is local to the search walk here. If fetching starts throttling too, lift it out then |
+| Slicing the query further (date posted, sub-region, salary band) to beat the ~4-page depth cap | The per-area split stops being enough. Belarus reports 155 and the walk reached ~80 of them |
+| Detecting the archived-vacancy page and setting `delisted_at` | An archived page returns 200 with a different layout, so today it counts as a parse failure instead of a delisting. Harmless — `fetch_attempts` caps it — but it is the wrong label |
+| Retry/backoff as a general policy | It is local to the search walk. If fetching starts throttling too, lift it out then |
 
 ---
 

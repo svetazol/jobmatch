@@ -103,45 +103,109 @@ def test_a_posting_that_says_nothing_about_work_format():
     assert hh.parse(page, URL).work_formats == []
 
 
-def test_discover_makes_one_request_per_area(monkeypatch):
-    """The 20-item cap is per request, so a list of areas must fan out."""
-    seen = []
+# --- walking the search results -------------------------------------------
 
-    class FakeResponse:
-        text = "<rss><channel></channel></rss>"
+SEARCH_PAGE = """
+<html><body>
+<h1 data-qa="vacancies-search-header">Найдено 193 вакансии «python»</h1>
+<a data-qa="serp-item__title" href="https://hh.ru/vacancy/1?from=serp">First job</a>
+<a data-qa="serp-item__title" href="https://hh.ru/vacancy/2">Second job</a>
+<a data-qa="serp-item__title" href="/employer/99">Not a vacancy</a>
+</body></html>
+"""
 
-        @staticmethod
-        def raise_for_status():
-            pass
+# A real page past the last result: header present, no vacancies.
+SEARCH_END = """
+<html><body>
+<h1 data-qa="vacancies-search-header">Найдено 193 вакансии «python»</h1>
+</body></html>
+"""
 
-    def fake_get(url, params, headers, timeout):
-        seen.append(params)
-        return FakeResponse()
+# What hh serves when it throttles: HTTP 200, no header, no results.
+SEARCH_THROTTLED = """
+<html><body>
+Для работы с нашим сайтом необходимо, чтобы Вы включили JavaScript.
+</body></html>
+"""
 
-    monkeypatch.setattr(hh.requests, "get", fake_get)
-    monkeypatch.setattr(hh.time, "sleep", lambda _: None)
-
-    list(hh.discover({"text": "python", "area": [113, 28, 1001]}))
-
-    assert [p["area"] for p in seen] == [113, 28, 1001]
-    assert all(p["text"] == "python" for p in seen)
+FAST = hh.Crawl(max_pages=5, delay=0.0)
 
 
-def test_discover_still_works_with_a_single_area_or_none(monkeypatch):
-    seen = []
+class FakeGet:
+    """Serves a scripted page per request and records the params it saw."""
 
-    class FakeResponse:
-        text = "<rss><channel></channel></rss>"
+    def __init__(self, *pages):
+        self.pages = list(pages)
+        self.seen = []
 
-        @staticmethod
-        def raise_for_status():
-            pass
+    def __call__(self, url, params, headers, timeout):
+        self.seen.append(params)
+        body = self.pages.pop(0) if self.pages else SEARCH_END
 
-    monkeypatch.setattr(hh.requests, "get", lambda url, params, headers, timeout: (
-        seen.append(params) or FakeResponse()
-    ))
+        class Response:
+            text = body
 
-    list(hh.discover({"text": "python", "area": 28}))
-    list(hh.discover({"text": "python"}))
+            @staticmethod
+            def raise_for_status():
+                pass
 
-    assert seen == [{"text": "python", "area": 28}, {"text": "python"}]
+        return Response()
+
+
+def test_a_page_of_results_becomes_listings(monkeypatch):
+    monkeypatch.setattr(hh.requests, "get", FakeGet(SEARCH_PAGE, SEARCH_END))
+
+    listings = list(hh.discover({"text": "python"}, FAST))
+
+    assert [l.external_id for l in listings] == ["1", "2"]     # the employer link is skipped
+    assert listings[0].url == "https://hh.ru/vacancy/1"        # tracking params stripped
+    assert listings[1].title == "Second job"                   # nbsp normalised
+
+
+def test_the_walk_stops_at_a_real_empty_page(monkeypatch):
+    get = FakeGet(SEARCH_PAGE, SEARCH_PAGE, SEARCH_END, SEARCH_PAGE)
+    monkeypatch.setattr(hh.requests, "get", get)
+
+    list(hh.discover({"text": "python"}, FAST))
+
+    assert [p["page"] for p in get.seen] == [0, 1, 2]  # never asked for page 3
+
+
+def test_a_throttled_page_is_retried_not_mistaken_for_the_end(monkeypatch):
+    """The bug this guards: both look like HTTP 200 with no vacancies."""
+    get = FakeGet(SEARCH_PAGE, SEARCH_THROTTLED, SEARCH_PAGE, SEARCH_END)
+    monkeypatch.setattr(hh.requests, "get", get)
+
+    listings = list(hh.discover({"text": "python"}, FAST))
+
+    assert len(get.seen) == 4                       # the throttled page 1 was re-requested
+    assert [p["page"] for p in get.seen] == [0, 1, 1, 2]
+    assert len(listings) == 2                       # same two ids, deduplicated
+
+
+def test_persistent_throttling_raises_rather_than_truncating(monkeypatch):
+    monkeypatch.setattr(
+        hh.requests, "get", FakeGet(SEARCH_PAGE, *[SEARCH_THROTTLED] * hh.SEARCH_ATTEMPTS)
+    )
+
+    with pytest.raises(hh.SearchThrottled):
+        list(hh.discover({"text": "python"}, FAST))
+
+
+def test_max_pages_caps_the_walk(monkeypatch):
+    get = FakeGet(*[SEARCH_PAGE] * 10)
+    monkeypatch.setattr(hh.requests, "get", get)
+
+    list(hh.discover({"text": "python"}, hh.Crawl(max_pages=3, delay=0.0)))
+
+    assert [p["page"] for p in get.seen] == [0, 1, 2]
+
+
+def test_each_area_is_walked_separately_and_ids_are_not_repeated(monkeypatch):
+    get = FakeGet(SEARCH_PAGE, SEARCH_END, SEARCH_PAGE, SEARCH_END)
+    monkeypatch.setattr(hh.requests, "get", get)
+
+    listings = list(hh.discover({"text": "python", "area": [28, 16]}, FAST))
+
+    assert [p.get("area") for p in get.seen] == [28, 28, 16, 16]
+    assert [l.external_id for l in listings] == ["1", "2"]  # both areas returned the same two

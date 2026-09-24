@@ -14,6 +14,19 @@ from typing import Any
 from urllib.parse import urlsplit
 
 
+@dataclass(frozen=True, slots=True)
+class Crawl:
+    """How hard a source may walk a paginated listing.
+
+    Not search parameters — those are opaque and go to the site verbatim.
+    These are the two knobs that stop a crawl being rude or endless, and every
+    paginated source needs both.
+    """
+
+    max_pages: int = 5
+    delay: float = 2.5
+
+
 class VacancyGone(Exception):
     """A positive signal that the vacancy is no longer listed (404, archived).
 
@@ -57,7 +70,7 @@ class Source:
 
     name: str
     hosts: tuple[str, ...]                 # which URLs this source owns
-    discover: Callable[[Mapping[str, Any]], Iterable[Listing]]
+    discover: Callable[[Mapping[str, Any], Crawl], Iterable[Listing]]
     fetch: Callable[[str], VacancyData]    # a URL, not a Listing: `fetch <url>` has no feed
 
 

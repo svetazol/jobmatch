@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 import re
 import time
 from collections.abc import Iterator, Mapping
@@ -18,13 +19,20 @@ from urllib.parse import urlsplit, urlunsplit
 import requests
 from bs4 import BeautifulSoup
 
-from . import Listing, Source, VacancyData, VacancyGone
+from . import Crawl, Listing, Source, VacancyData, VacancyGone
+
+log = logging.getLogger(__name__)
 
 NAME = "hh.ru"
-# The feed returns the latest 20 items and does not paginate: page, per_page
-# and items_on_page are all ignored. The corpus grows by running repeatedly,
-# which the (source, external_id) upsert makes free.
-RSS_URL = "https://hh.ru/search/vacancy/rss"
+# The paginated HTML results, not the RSS feed: RSS serves only the newest 20
+# per query, where the same filter has ~193 results here. 20 per page,
+# `page=0,1,...`; `items_on_page` is ignored.
+SEARCH_URL = "https://hh.ru/search/vacancy"
+# Present on any real results page, including the one past the last result.
+# Its *absence* is how a throttled response gives itself away -- see _search_page.
+SEARCH_HEADER = "vacancies-search-header"
+SEARCH_ITEM = "serp-item__title"
+SEARCH_ATTEMPTS = 3
 # One HeadHunter, several domains: headhunter.ge (Georgia) serves the same
 # engine, the same layout and the same vacancy ids as hh.ru, so a vacancy
 # reached through either domain is one row. Which country's vacancies you get
@@ -205,40 +213,89 @@ def parse(html: str, url: str) -> VacancyData:
     )
 
 
-def discover(params: Mapping[str, Any], delay: float = 1.0) -> Iterator[Listing]:
-    """Whatever the feeds currently hold — 20 items each, no paging.
+class SearchThrottled(RuntimeError):
+    """hh served the "enable JavaScript" page instead of results, repeatedly."""
 
-    A list of ``area`` values becomes one request *per area*, because the
-    20-item cap is per request: nine areas in a single request would still
-    return 20 items in total, not 180. How many requests a filter costs is
-    hh's business, not the pipeline's — same seam as pagination.
+
+def discover(params: Mapping[str, Any], crawl: Crawl = Crawl()) -> Iterator[Listing]:
+    """Walk the search results, one area at a time.
+
+    A list of ``area`` values becomes a separate walk per area. That is not
+    only politeness: results are capped at roughly four pages per query, well
+    below the total the page advertises, so splitting the query is how you
+    reach more of it.
+
+    Yields each vacancy once -- pages overlap slightly when postings shift
+    between requests, and counting one twice would make the run report a
+    corpus it doesn't have.
     """
     params = dict(params)
     areas = params.pop("area", None)
     area_list = list(areas) if isinstance(areas, (list, tuple)) else [areas]
-    for index, area in enumerate(area_list):
-        if index:
-            time.sleep(delay)
+    seen: set[str] = set()
+    for area in area_list:
         query = params if area is None else {**params, "area": area}
-        yield from _feed(query)
+        for listing in _walk(query, crawl):
+            if listing.external_id not in seen:
+                seen.add(listing.external_id)
+                yield listing
 
 
-def _feed(params: Mapping[str, Any]) -> Iterator[Listing]:
-    resp = requests.get(RSS_URL, params=dict(params), headers=HEADERS, timeout=TIMEOUT)
-    resp.raise_for_status()
-    for item in BeautifulSoup(resp.text, "xml").find_all("item"):
-        if not (link := item.find("link")):
-            continue
-        url = canonical_url(link.get_text(strip=True))
-        title = item.find("title")
-        pub = item.find("pubDate")
-        yield Listing(
-            external_id=vacancy_id(url),
-            url=url,
-            title=_clean(title.get_text() if title else None, inline=True),
-            # provisional: fetch replaces it with the JSON-LD datePosted
-            published_at=_parse_date(pub.get_text(strip=True) if pub else None),
+def _walk(params: Mapping[str, Any], crawl: Crawl) -> Iterator[Listing]:
+    for page in range(crawl.max_pages):
+        listings = _search_page({**params, "page": page}, crawl)
+        if not listings:
+            return                      # a real page with no results: past the end
+        yield from listings
+    log.info(
+        "stopped at max_pages=%d for area=%s; there may be more",
+        crawl.max_pages,
+        params.get("area"),
+    )
+
+
+def _search_page(params: Mapping[str, Any], crawl: Crawl) -> list[Listing]:
+    """One page of results, or an empty list once past the last one.
+
+    The whole reason this is its own function: **an exhausted search and a
+    throttled request are both HTTP 200 with no vacancies on the page.**
+    Ending the walk on "no results" would truncate the crawl at a random page
+    whenever hh decided to throttle, and the run would still report success.
+    A real results page always carries the search header; the throttling page
+    -- a stripped "enable JavaScript" stub -- never does. So: header and no
+    items means the end; no header means try again.
+    """
+    for attempt in range(1, SEARCH_ATTEMPTS + 1):
+        time.sleep(crawl.delay * attempt)      # also the politeness delay
+        resp = requests.get(SEARCH_URL, params=dict(params), headers=HEADERS, timeout=TIMEOUT)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "lxml")
+        if soup.find(attrs={"data-qa": SEARCH_HEADER}) is not None:
+            return _listings(soup)
+        log.warning(
+            "throttled on page %s (attempt %d/%d)", params.get("page"), attempt, SEARCH_ATTEMPTS
         )
+    raise SearchThrottled(
+        f"no search header after {SEARCH_ATTEMPTS} attempts at page {params.get('page')}"
+    )
+
+
+def _listings(soup: BeautifulSoup) -> list[Listing]:
+    listings = []
+    for anchor in soup.find_all("a", attrs={"data-qa": SEARCH_ITEM}, href=True):
+        try:
+            url = canonical_url(anchor["href"])
+            external_id = vacancy_id(url)
+        except ValueError:
+            continue
+        listings.append(
+            Listing(
+                external_id=external_id,
+                url=url,
+                title=_clean(anchor.get_text(" ", strip=True), inline=True),
+            )
+        )
+    return listings
 
 
 def fetch(url: str) -> VacancyData:

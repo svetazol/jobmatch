@@ -28,6 +28,14 @@
 fetch_delay = 1.0        # seconds between vacancy page hits; pages are ~700KB
 max_fetch_attempts = 3   # a page that keeps failing stops being retried
 
+# Walking the search results. Slower than fetching on purpose: result pages are
+# ~1.2MB, and at a 1s interval hh starts serving a stripped "enable JavaScript"
+# page instead of results. max_pages is one past the ~4-page depth hh actually
+# serves per query, so hitting it means the cap moved and is worth a look.
+[crawl]
+max_pages = 5
+delay = 2.5
+
 # Pinned to an exact version, never jev-latest: the model is part of the
 # idempotency fingerprint, and with a floating alias a silent server-side roll
 # would be invisible — you cannot know the resolved model before paying.
@@ -40,6 +48,9 @@ name = "hh.ru"
 
 [sources.params]
 text = "python"
+# Results default to relevance order; with a depth cap that decides *which*
+# ones you get, so ask for newest first.
+order_by = "publication_time"
 excluded_text = '"QA","AQA",тестировщик,devops'
 search_field = ["name", "description"]
 area = [
