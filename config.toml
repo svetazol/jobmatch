@@ -18,6 +18,11 @@
 # No work_format filter on purpose -- the vacancies.work_formats column records
 # what each posting offers, so filtering happens after the fact instead of
 # throwing away onsite and hybrid at discovery time.
+#
+# excluded_text is checked against the same fields as search_field, so it drops
+# a posting whose *description* is QA or devops work even when the title looks
+# like something else. Quoted terms are exact phrases -- "QA" unquoted would
+# also strike words containing those letters.
 
 fetch_delay = 1.0        # seconds between vacancy page hits; pages are ~700KB
 max_fetch_attempts = 3   # a page that keeps failing stops being retried
@@ -34,5 +39,6 @@ name = "hh.ru"
 
 [sources.params]
 text = "python"
+excluded_text = '"QA","AQA",тестировщик,devops'
 search_field = ["name", "description"]
 area = 28

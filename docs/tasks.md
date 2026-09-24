@@ -334,6 +334,29 @@ and 1001 before any code was written.
   `hh.WORK_FORMATS`, whose keys are the site's own wording and have to be
   spelled the way it spells them, and in the test fixtures that imitate a real
   page.
+- **QA, AQA, testing and devops postings are excluded at the source**, via
+  `excluded_text = '"QA","AQA",тестировщик,devops'` in the filter (verified
+  against the live feed: 20 items before, a different 20 after). hh checks
+  `excluded_text` against the same fields as `search_field`, so it also drops a
+  posting whose *description* is QA work even when the title reads otherwise —
+  "AI Agent Developer" and "Middle Technical Writer" both went that way.
+  Quoted terms are exact phrases.
+
+  The nine stored rows the new filter would have excluded were deleted with
+  the query below, which mirrors those semantics. Deleting a vacancy cascades
+  its `match_results` and only *nulls* `llm_calls.vacancy_id`, so the spend
+  ledger stayed whole — 29 calls, $0.0119, nine of them now orphaned.
+
+  ```sql
+  DELETE FROM vacancies
+  WHERE title ~* '(^|[^a-z])(qa|aqa|devops)([^a-z]|$)' OR title ~* 'тестировщик'
+     OR description ~* '(^|[^a-z])(qa|aqa|devops)([^a-z]|$)' OR description ~* 'тестировщик';
+  ```
+
+  Worth knowing: **changing `excluded_text` later does not retroactively clean
+  the table.** Already-stored rows are never re-discovered, so nothing removes
+  them; that query is the manual step, and it is the reason it is written down
+  here rather than buried in a shell history.
 
 ## Task 5 — API (phase 2)
 
