@@ -4,9 +4,20 @@
 # these are hh.ru's own RSS query params, and the next source's will look
 # nothing like them. Repeated keys are a list; requests expands them.
 #
-# area = 28 is Грузия (per api.hh.ru/areas). The domain does not filter:
+# area 28 is Georgia (per api.hh.ru/areas). The domain does not filter:
 # headhunter.ge without this param returns Moscow vacancies, and with it
-# returns exactly the same 20 ids as hh.ru does.
+# returns exactly the same ids as hh.ru does.
+#
+# `area` may also be a list, in which case hh issues one request per entry --
+# the feed's 20-item cap is per request, so several areas in a single request
+# would still return 20 items in total. The other eight top-level areas are
+# 113 Russia, 5 Ukraine, 40 Kazakhstan, 9 Azerbaijan, 16 Belarus,
+# 48 Kyrgyzstan, 97 Uzbekistan and 1001 "other regions" (a catch-all that
+# returns whichever country the job is really in).
+#
+# No work_format filter on purpose -- the vacancies.work_formats column records
+# what each posting offers, so filtering happens after the fact instead of
+# throwing away onsite and hybrid at discovery time.
 
 fetch_delay = 1.0        # seconds between vacancy page hits; pages are ~700KB
 max_fetch_attempts = 3   # a page that keeps failing stops being retried
@@ -23,6 +34,5 @@ name = "hh.ru"
 
 [sources.params]
 text = "python"
-area = 28
-work_format = "REMOTE"
 search_field = ["name", "description"]
+area = 28

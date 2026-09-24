@@ -257,7 +257,85 @@ question for the data, not the code.
 
 ---
 
-## Task 4 — API (phase 2)
+## Task 4 — country and work format on the row — **done**
+
+**Goal:** each vacancy records which country it is in and whether it is remote,
+on-site, hybrid — or any combination of those. Discovery can cover every hh
+country; it is pointed at Georgia alone for now.
+
+**Verified against the live site (2026-09-24)**, sampling areas 28, 113, 40, 16
+and 1001 before any code was written.
+
+- All nine codes are valid and are the *complete* top-level area list from
+  `api.hh.ru/areas`: 113 Russia, 5 Ukraine, 40 Kazakhstan, 9 Azerbaijan,
+  16 Belarus, 28 Georgia, 48 Kyrgyzstan, 97 Uzbekistan, 1001 other regions.
+- **The searched area is the wrong thing to store.** Area 1001 is a catch-all
+  that returns real countries — the sample produced Serbia (`RS`) and Cyprus
+  (`CY`). Storing "other regions" on those rows would discard what the page
+  already knows, so `country` is read from the posting.
+- **Every sampled page carries the country twice:** JSON-LD
+  `applicantLocationRequirements.name` (hh's own localised label) and
+  `jobLocation.address.addressCountry` (ISO alpha-2). They agreed with the
+  searched area every time. Both were already inside `vacancies.raw`.
+- **Belarus needs no special handling**, despite hh running it as `rabota.by`:
+  the area 16 feed returns 20 items whose links are all on `hh.ru`, and the
+  pages resolve to `BY` like any other. No second domain in `HOSTS`. (Checked
+  because a source's own regional domain is exactly where this would break.)
+- **Work format is `data-qa="work-formats-text"`**, not JSON-LD
+  (`jobLocationType` and `employmentType` were `null` on every sample). It is
+  one line naming up to three formats, separated by commas and "or".
+
+**What was built**
+
+1. `hh.parse()` fills two new `VacancyData` fields: `country` and
+   `work_formats: list[str]`, normalised to `onsite` / `remote` / `hybrid` /
+   `field_work`. An unrecognised phrase is **kept verbatim, not dropped** —
+   same reasoning as the no-CHECK-constraint rule in architecture §11: an
+   unexpected value is a data-quality signal, and discarding it turns a
+   visible surprise into a mystery.
+2. `Vacancy.country` (text, nullable) and `Vacancy.work_formats` (`text[]`,
+   default `'{}'`), migration `582ff1f02df1`.
+3. `hh.discover()` accepts `area` as a **list** and issues one request per
+   entry. The 20-item cap is per request, so several areas in one request
+   would still return 20 items in total. This stays inside the seam: params
+   still reach the source verbatim, and "how many requests this filter costs"
+   is the same class of site knowledge as pagination (architecture §2).
+   Config currently passes a single area, 28.
+4. The `work_format = "REMOTE"` filter was **dropped** from the search. With
+   it the new column is nearly constant; without it the column is what you
+   filter on afterwards, which is the point of having it.
+
+**Done when**
+
+- [x] `country` populated on every fetched row
+- [x] `work_formats` holds a genuine *set* — of the first 20 rows: 12
+      `{remote}`, 2 `{onsite,remote}`, 2 `{onsite,hybrid}`, 2
+      `{onsite,remote,hybrid}`, 1 `{hybrid}`, 1 `{onsite}`. Dropping the REMOTE
+      filter was worth it: 8 of 20 would have been invisible
+- [x] A second run re-fetches nothing and pays nothing for rows it already had
+- [x] Parse tests cover a multi-value format, an unrecognised one, a posting
+      with no format at all, an unmapped country and a missing country
+
+**Decisions taken during the work**
+
+- **Country is stored as an English name**, mapped from the ISO code via
+  `hh.COUNTRY_NAMES` — the nine hh countries. A country outside that map (only
+  reachable through area 1001) is stored as its bare ISO code: visible and
+  obviously unmapped, rather than silently wrong. `country` is NULL when the
+  posting carries no ISO code at all; hh's own localised name stays in `raw`.
+- **Georgia only for now.** The multi-area fan-out exists and is tested, but
+  `config.toml` passes `area = 28`. Widening is a config edit, no code change.
+- **The database was wiped and re-scraped**, rather than backfilled. `country`
+  *could* have come from the JSON-LD already in `raw`, but only in the site's
+  own language, and `work_formats` comes from page markup that was never
+  stored — so the migration adds columns and nothing else. Cost of the reset:
+  20 re-matches, $0.0082.
+- **No Russian in comments.** The only Russian left in the codebase is in
+  `hh.WORK_FORMATS`, whose keys are the site's own wording and have to be
+  spelled the way it spells them, and in the test fixtures that imitate a real
+  page.
+
+## Task 5 — API (phase 2)
 
 FastAPI over the same models. Read: ranked list (source / min fit / unseen
 filters), vacancy detail. Write: triage (seen, star, hide).
@@ -269,7 +347,7 @@ filters), vacancy detail. Write: triage (seen, star, hide).
 
 ---
 
-## Task 5 — frontend (phase 2)
+## Task 6 — frontend (phase 2)
 
 Vue 3 + Vite SPA: ranked list with filters, detail view showing description,
 skills and Jev's answers with confidences, triage buttons.
@@ -285,6 +363,6 @@ Recorded so they're decisions rather than oversights.
 | HTML search pagination for bulk backfill | The rolling window genuinely isn't enough after running on a schedule for a while |
 | `is_qualified` threshold (0.5, a generated column) | You disagree with its verdicts. Changing it needs a hand-written migration — Alembic doesn't detect `Computed` changes |
 | Re-fetch cadence (30d) and staleness hint (14d) | Arbitrary. Adjust once there's real data |
-| `min_fit` label → threshold mapping | Task 4. Derive from Jev's stored `legend` rather than hardcoding |
+| `min_fit` label → threshold mapping | Task 5. Derive from Jev's stored `legend` rather than hardcoding |
 | Retry/backoff on 429 | A 429 actually happens. §0 saw none, but that proves little |
 | A second source | Whenever. It's a new file in `sources/` plus a config block — nothing else changes |

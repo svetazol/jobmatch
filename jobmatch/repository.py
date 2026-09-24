@@ -56,6 +56,8 @@ def apply_fetched(session: Session, vacancy_id: int, data: VacancyData) -> Vacan
     vacancy.experience_raw = data.experience
     vacancy.description = data.description
     vacancy.skills = data.skills
+    vacancy.country = data.country
+    vacancy.work_formats = data.work_formats
     vacancy.raw = {**vacancy.raw, **data.raw}
     if data.published_at:  # the page's date beats the feed's
         vacancy.published_at = data.published_at

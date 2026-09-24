@@ -45,7 +45,9 @@ class VacancyData:
     salary: str | None = None
     experience: str | None = None
     published_at: dt.datetime | None = None
+    country: str | None = None
     skills: list[str] = field(default_factory=list)
+    work_formats: list[str] = field(default_factory=list)   # a set: onsite/remote/hybrid
     raw: dict[str, Any] = field(default_factory=dict)  # -> vacancies.raw
 
 

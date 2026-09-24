@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import time
 from collections.abc import Iterator, Mapping
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -40,6 +41,35 @@ HEADERS = {
 }
 
 _VACANCY_ID = re.compile(r"/vacancy/(\d+)")
+# The site prints work formats as one comma-and-"or" separated line, which can
+# name up to three at once. The keys below are the site's own wording and must
+# stay spelled as it spells them; an unrecognised phrase is kept verbatim
+# rather than dropped, so a new one shows up in the data instead of vanishing.
+_WORK_FORMAT_PREFIX = "Формат работы:"
+_WORK_FORMAT_SPLIT = re.compile(r",\s*|\s+или\s+")
+# The site names the country in its own language; the JSON-LD also carries an
+# ISO 3166-1 alpha-2 code, which is what this maps to an English name. These
+# are hh's nine top-level areas. A country outside them — the "other regions"
+# area can return any — is stored as its bare ISO code, which is visible and
+# obviously unmapped rather than silently wrong.
+COUNTRY_NAMES = {
+    "RU": "Russia",
+    "UA": "Ukraine",
+    "KZ": "Kazakhstan",
+    "AZ": "Azerbaijan",
+    "BY": "Belarus",
+    "GE": "Georgia",
+    "KG": "Kyrgyzstan",
+    "UZ": "Uzbekistan",
+}
+
+WORK_FORMATS = {
+    "на месте работодателя": "onsite",
+    "удалённо": "remote",
+    "удаленно": "remote",
+    "гибрид": "hybrid",
+    "разъездной": "field_work",
+}
 _SPACES = re.compile(r"[^\S\n]+")
 _WHITESPACE = re.compile(r"\s+")
 _BLANK_LINES = re.compile(r"\n{3,}")
@@ -96,6 +126,34 @@ def _json_ld(soup: BeautifulSoup) -> dict | None:
     return None
 
 
+def _work_formats(value: str | None) -> list[str]:
+    value = _clean(value, inline=True)
+    if not value:
+        return []
+    value = value.removeprefix(_WORK_FORMAT_PREFIX).strip()
+    return [
+        WORK_FORMATS.get(part.lower(), part.lower())
+        for raw_part in _WORK_FORMAT_SPLIT.split(value)
+        if (part := raw_part.strip())
+    ]
+
+
+def _country(ld: dict) -> str | None:
+    """The country as an English name, from the posting's own ISO code.
+
+    ``jobLocation.address.addressCountry`` is ISO alpha-2. It cannot be
+    replaced by the searched area code: the "other regions" area is a catch-all
+    that returns whichever country the job is actually in. Both the raw code
+    and hh's own localised name stay in ``raw`` for anything that wants a flag
+    or the original wording.
+    """
+    address = (ld.get("jobLocation") or {}).get("address") or {}
+    code = _clean(address.get("addressCountry"), inline=True)
+    if not code:
+        return None
+    return COUNTRY_NAMES.get(code.upper(), code.upper())
+
+
 def _parse_date(value: str | None) -> dt.datetime | None:
     if not value:
         return None
@@ -136,6 +194,8 @@ def parse(html: str, url: str) -> VacancyData:
         salary=_clean(_text_of(soup, "vacancy-salary"), inline=True),
         experience=_clean(_text_of(soup, "vacancy-experience"), inline=True),
         published_at=_parse_date(ld.get("datePosted")),
+        country=_country(ld),
+        work_formats=_work_formats(_text_of(soup, "work-formats-text")),
         skills=[
             text
             for s in soup.find_all(attrs={"data-qa": re.compile(r"^skills-element")})
@@ -145,8 +205,25 @@ def parse(html: str, url: str) -> VacancyData:
     )
 
 
-def discover(params: Mapping[str, Any]) -> Iterator[Listing]:
-    """Whatever the feed currently holds — 20 items, no paging."""
+def discover(params: Mapping[str, Any], delay: float = 1.0) -> Iterator[Listing]:
+    """Whatever the feeds currently hold — 20 items each, no paging.
+
+    A list of ``area`` values becomes one request *per area*, because the
+    20-item cap is per request: nine areas in a single request would still
+    return 20 items in total, not 180. How many requests a filter costs is
+    hh's business, not the pipeline's — same seam as pagination.
+    """
+    params = dict(params)
+    areas = params.pop("area", None)
+    area_list = list(areas) if isinstance(areas, (list, tuple)) else [areas]
+    for index, area in enumerate(area_list):
+        if index:
+            time.sleep(delay)
+        query = params if area is None else {**params, "area": area}
+        yield from _feed(query)
+
+
+def _feed(params: Mapping[str, Any]) -> Iterator[Listing]:
     resp = requests.get(RSS_URL, params=dict(params), headers=HEADERS, timeout=TIMEOUT)
     resp.raise_for_status()
     for item in BeautifulSoup(resp.text, "xml").find_all("item"):

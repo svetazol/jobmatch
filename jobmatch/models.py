@@ -75,6 +75,16 @@ class Vacancy(Base):
         ARRAY(Text), server_default=text("'{}'::text[]")
     )
     published_at: Mapped[dt.datetime | None] = mapped_column()
+    # hh's own name for the country, as the posting states it; the ISO code
+    # stays in `raw`. Not the searched area code: the "other regions" area is
+    # a catch-all that returns real countries, so the page is the only honest
+    # source.
+    country: Mapped[str | None] = mapped_column(Text)
+    # a set, not one value: a real posting can offer on-site, remote and
+    # hybrid at once. Empty when the posting doesn't say.
+    work_formats: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), server_default=text("'{}'::text[]")
+    )
 
     # source-specific payload; the escape hatch that keeps the columns above
     # source-agnostic
