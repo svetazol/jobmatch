@@ -37,6 +37,11 @@ def answers(score=2.4, probabilities=None):
             probabilities={"technical_skills": 0.87, "none": 0.13},
             confidence=0.84,
         ),
+        "best_angle": ChoiceAnswer(
+            choice="ai_llm",
+            probabilities={"ai_llm": 0.6, "backend": 0.4},
+            confidence=0.72,
+        ),
     }
 
 
@@ -172,6 +177,8 @@ def test_a_successful_call_is_flattened_and_costed(vacancy):
     assert outcome.overall_fit_label == "good"
     assert outcome.is_qualified_noul == 0.74
     assert outcome.top_gap == "technical_skills"
+    assert outcome.best_angle == "ai_llm"
+    assert outcome.best_angle_confidence == 0.72
     assert outcome.answers["overall_fit"]["score"] == 2.4  # the raw value is kept
 
     (call,) = calls_for(vacancy)
@@ -266,6 +273,8 @@ def test_preview_and_match_agree_on_every_promoted_field(vacancy):
         "overall_fit_confidence",
         "top_gap",
         "top_gap_confidence",
+        "best_angle",
+        "best_angle_confidence",
         "answers",
     ):
         assert getattr(preview, field) == getattr(outcome, field), field

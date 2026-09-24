@@ -41,6 +41,8 @@ class Preview:
     overall_fit_confidence: float
     top_gap: str
     top_gap_confidence: float
+    best_angle: str
+    best_angle_confidence: float
     answers: dict[str, Any]
     cost_usd: Decimal | None
     duration_ms: int
@@ -61,6 +63,8 @@ class MatchOutcome:
     overall_fit_confidence: float
     top_gap: str
     top_gap_confidence: float
+    best_angle: str
+    best_angle_confidence: float
 
     answers: dict[str, Any]
     call_id: int  # the already-committed llm_calls row
@@ -134,6 +138,7 @@ def _flatten(response: Any, cost: Decimal | None, duration_ms: int) -> Preview:
     answers = response.answers
     score, label, confidence = _score_to_unit(answers["overall_fit"])
     gap = answers["top_gap"]
+    angle = answers["best_angle"]
     return Preview(
         is_qualified_noul=answers["is_qualified"].noul,
         overall_fit_score=score,
@@ -141,6 +146,8 @@ def _flatten(response: Any, cost: Decimal | None, duration_ms: int) -> Preview:
         overall_fit_confidence=confidence,
         top_gap=gap.choice,
         top_gap_confidence=gap.confidence,
+        best_angle=angle.choice,
+        best_angle_confidence=angle.confidence,
         answers={name: a.model_dump(mode="json") for name, a in answers.items()},
         cost_usd=cost,
         duration_ms=duration_ms,
@@ -243,6 +250,8 @@ def match_vacancy(
         overall_fit_confidence=preview.overall_fit_confidence,
         top_gap=preview.top_gap,
         top_gap_confidence=preview.top_gap_confidence,
+        best_angle=preview.best_angle,
+        best_angle_confidence=preview.best_angle_confidence,
         answers=preview.answers,
         call_id=call_id,
     )

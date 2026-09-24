@@ -207,9 +207,10 @@ def _match(vacancy_id: int, cv: str, client, settings: Settings, report: RunRepo
     report.matched += 1
     report.cost += cost or Decimal(0)
     log.info(
-        "matched %s — %s %.2f (%s)",
+        "matched %s — %s %.2f, angle %s, gap %s",
         vacancy.url,
         outcome.overall_fit_label,
         outcome.overall_fit_score,
+        outcome.best_angle,
         outcome.top_gap,
     )

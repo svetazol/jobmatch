@@ -60,6 +60,8 @@ def never_call_jev(monkeypatch):
             overall_fit_confidence=0.5,
             top_gap="technical_skills",
             top_gap_confidence=0.8,
+            best_angle="backend",
+            best_angle_confidence=0.7,
             answers={"overall_fit": {"score": 2.4}},
             call_id=call_id,
         )

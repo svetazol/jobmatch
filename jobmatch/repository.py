@@ -186,6 +186,8 @@ def save_match(session: Session, vacancy_id: int, outcome: MatchOutcome) -> Matc
         overall_fit_confidence=outcome.overall_fit_confidence,
         top_gap=outcome.top_gap,
         top_gap_confidence=outcome.top_gap_confidence,
+        best_angle=outcome.best_angle,
+        best_angle_confidence=outcome.best_angle_confidence,
         answers=outcome.answers,
     )
     session.add(result)

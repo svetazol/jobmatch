@@ -175,6 +175,9 @@ class MatchResult(Base):
     overall_fit_confidence: Mapped[float] = mapped_column(Double)
     top_gap: Mapped[str] = mapped_column(String(64))
     top_gap_confidence: Mapped[float] = mapped_column(Double)
+    # which of the master CV's positioning angles the posting calls for
+    best_angle: Mapped[str] = mapped_column(String(32))
+    best_angle_confidence: Mapped[float] = mapped_column(Double)
 
     answers: Mapped[dict[str, Any]] = mapped_column(JSONB)  # the complete record
 
@@ -205,7 +208,8 @@ class MatchResult(Base):
         # the sort key
         CheckConstraint(
             "overall_fit_score BETWEEN 0 AND 1 AND is_qualified_noul BETWEEN 0 AND 1 "
-            "AND overall_fit_confidence BETWEEN 0 AND 1 AND top_gap_confidence BETWEEN 0 AND 1",
+            "AND overall_fit_confidence BETWEEN 0 AND 1 AND top_gap_confidence BETWEEN 0 AND 1 "
+            "AND best_angle_confidence BETWEEN 0 AND 1",
             name="probabilities_in_range",
         ),
     )

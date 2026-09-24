@@ -111,7 +111,8 @@ def _dry_run(settings: Settings, country: str | None, limit: int | None) -> int:
             print(f"{(vacancy.title or '')[:46]:46} {before:>15} -> "
                   f"{preview.overall_fit_label} {preview.overall_fit_score:.2f}{delta}")
             print(f"{'':46} confidence {preview.overall_fit_confidence:.2f}  "
-                  f"qualified {preview.is_qualified_noul:.2f}  gap {preview.top_gap}")
+                  f"qualified {preview.is_qualified_noul:.2f}  gap {preview.top_gap}  "
+                  f"angle {preview.best_angle} ({preview.best_angle_confidence:.2f})")
 
     print(f"\n{len(vacancies)} calls, ${total:.6f} — not recorded in llm_calls")
     return 0

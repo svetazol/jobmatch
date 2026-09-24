@@ -322,6 +322,7 @@ One row per *paid* Jev call. Append-only; the only update is setting
 | `overall_fit_label` | `text` | no | Resolved from the response `legend`. Display + equality filter. |
 | `overall_fit_confidence` | `double precision` | no | 0–1. |
 | `top_gap` / `top_gap_confidence` | `text` / `double precision` | no | Winning Choice label + confidence. |
+| `best_angle` / `best_angle_confidence` | `text` / `double precision` | no | Which of the master CV's positioning angles (§2 of `data/cv.md`) the posting calls for — `backend`, `ai_llm`, `product`, `data`, or `none`. Promoted because it is read per vacancy and the UI will filter on it. |
 | `answers` | `jsonb` | no | Complete `answers` object incl. probabilities and legend. Source of truth; the promoted columns are projections. |
 | `created_at` | `timestamptz` | no | Call time. |
 | `superseded_at` | `timestamptz` | yes | NULL = current. |
@@ -848,6 +849,8 @@ class MatchResult(Base):
     overall_fit_confidence: Mapped[float] = mapped_column(Double)
     top_gap: Mapped[str] = mapped_column(String(64))
     top_gap_confidence: Mapped[float] = mapped_column(Double)
+    best_angle: Mapped[str] = mapped_column(String(32))                  # which CV angle to lead with
+    best_angle_confidence: Mapped[float] = mapped_column(Double)
 
     answers: Mapped[dict[str, Any]] = mapped_column(JSONB)   # complete record
 

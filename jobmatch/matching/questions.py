@@ -37,10 +37,42 @@ TOP_GAP = Choice(
     },
 )
 
+# The four angles from the master CV's positioning bank. One angle is picked
+# per posting, never blended -- so this asks which one a vacancy calls for.
+# "none" exists because plenty of postings fit no angle at all, and forcing a
+# choice would make the answer look meaningful when it isn't.
+BEST_ANGLE = Choice(
+    instructions=(
+        "Which single professional angle should the candidate lead with when applying "
+        "to this job, given what the posting emphasises?"
+    ),
+    criteria={
+        "backend": (
+            "Generalist backend engineering: Python/Django/PostgreSQL depth, REST API "
+            "design, background processing, production database migrations, performance work."
+        ),
+        "ai_llm": (
+            "AI/LLM application engineering: production LLM API features, structured "
+            "extraction, summaries, MCP tools and agentic workflows."
+        ),
+        "product": (
+            "Product-minded end-to-end ownership: taking a feature from discovery through "
+            "rollout and adoption, working with PMs on scope; judgment and delivery rather "
+            "than depth in one stack."
+        ),
+        "data": (
+            "Data-intensive work: data warehousing, ETL, analytics, MPP or columnar "
+            "databases, large-scale data processing and performance tuning."
+        ),
+        "none": "The posting fits none of these angles.",
+    },
+)
+
 QUESTIONS = {
     "is_qualified": IS_QUALIFIED,
     "overall_fit": OVERALL_FIT,
     "top_gap": TOP_GAP,
+    "best_angle": BEST_ANGLE,
 }
 
 
