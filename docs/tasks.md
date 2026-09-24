@@ -323,8 +323,16 @@ and 1001 before any code was written.
   reachable through area 1001) is stored as its bare ISO code: visible and
   obviously unmapped, rather than silently wrong. `country` is NULL when the
   posting carries no ISO code at all; hh's own localised name stays in `raw`.
-- **Georgia only for now.** The multi-area fan-out exists and is tested, but
-  `config.toml` passes `area = 28`. Widening is a config edit, no code change.
+- **Georgia and Belarus.** `config.toml` passes `area = [28, 16]`; the
+  fan-out issues one feed request per area. Widening further is a config edit,
+  no code change — adding Belarus took exactly one, and the first run brought
+  in 20 Belarusian vacancies with `country = 'Belarus'` resolved from the
+  page's ISO code, no `rabota.by` handling needed.
+
+  Worth noting from that run: only **1 of 20** Belarusian postings offers
+  remote, against 18 of 22 Georgian ones. Whatever the reason, it is the kind
+  of thing the `work_formats` column exists to make visible rather than
+  guessable.
 - **The database was wiped and re-scraped**, rather than backfilled. `country`
   *could* have come from the JSON-LD already in `raw`, but only in the site's
   own language, and `work_formats` comes from page markup that was never

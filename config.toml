@@ -4,16 +4,17 @@
 # these are hh.ru's own RSS query params, and the next source's will look
 # nothing like them. Repeated keys are a list; requests expands them.
 #
-# area 28 is Georgia (per api.hh.ru/areas). The domain does not filter:
-# headhunter.ge without this param returns Moscow vacancies, and with it
-# returns exactly the same ids as hh.ru does.
-#
-# `area` may also be a list, in which case hh issues one request per entry --
-# the feed's 20-item cap is per request, so several areas in a single request
-# would still return 20 items in total. The other eight top-level areas are
-# 113 Russia, 5 Ukraine, 40 Kazakhstan, 9 Azerbaijan, 16 Belarus,
+# `area` is a list and hh issues one request per entry: the feed's 20-item cap
+# is per request, so both areas in a single request would still return 20 items
+# in total rather than 40. Codes are from api.hh.ru/areas. The remaining
+# top-level areas are 113 Russia, 5 Ukraine, 40 Kazakhstan, 9 Azerbaijan,
 # 48 Kyrgyzstan, 97 Uzbekistan and 1001 "other regions" (a catch-all that
 # returns whichever country the job is really in).
+#
+# The domain does not filter: headhunter.ge without an area param returns
+# Moscow vacancies, and with area=28 returns exactly the same ids as hh.ru.
+# Belarus needs no special domain either, though hh runs it as rabota.by --
+# the area 16 feed returns hh.ru links.
 #
 # No work_format filter on purpose -- the vacancies.work_formats column records
 # what each posting offers, so filtering happens after the fact instead of
@@ -41,4 +42,7 @@ name = "hh.ru"
 text = "python"
 excluded_text = '"QA","AQA",тестировщик,devops'
 search_field = ["name", "description"]
-area = 28
+area = [
+    28,   # Georgia
+    16,   # Belarus
+]
