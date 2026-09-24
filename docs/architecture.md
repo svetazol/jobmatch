@@ -79,7 +79,7 @@ cv/
 │  ├─ models.py           # SQLAlchemy 2.0 declarative — THE schema source of truth
 │  ├─ repository.py       # ~6 query/upsert functions; the only module writing SQL
 │  ├─ pipeline.py         # run(): discover -> fetch -> persist -> match -> persist
-│  ├─ cli.py              # argparse: run / fetch (match, stats join later)
+│  ├─ cli.py              # argparse: run / fetch / match [--dry-run] (stats later)
 │  ├─ sources/
 │  │  ├─ __init__.py      # Listing, VacancyData, Source, SOURCES, source_for_url
 │  │  └─ hh.py            # hh.ru: RSS discovery + page parsing (data-qa + JSON-LD)
@@ -684,6 +684,7 @@ Public surface:
 
 ```python
 def open_client(settings) -> AbstractContextManager[TypeSafeClient]   # one client per run
+def preview_vacancy(client, cv, vacancy, model, *, job) -> Preview    # asks, records nothing
 def load_cv(path: Path) -> str                                        # read + sanitize_cv
 def inputs_fingerprint(cv, job_text, questions, model) -> str
 def match_vacancy(client, cv: str, vacancy: Vacancy, model: str) -> MatchOutcome

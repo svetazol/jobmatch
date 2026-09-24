@@ -28,6 +28,25 @@ BASE_URL = "https://openrouter.ai/api"  # the SDK appends /v1/systemone itself
 
 
 @dataclass(frozen=True, slots=True)
+class Preview:
+    """What Jev answered, flattened — with nothing written down.
+
+    Everything a `MatchOutcome` holds except the identity of a stored call, so
+    a dry run can report exactly what a real one would have saved.
+    """
+
+    is_qualified_noul: float
+    overall_fit_score: float  # normalised 0-1; the raw scale value is in answers
+    overall_fit_label: str
+    overall_fit_confidence: float
+    top_gap: str
+    top_gap_confidence: float
+    answers: dict[str, Any]
+    cost_usd: Decimal | None
+    duration_ms: int
+
+
+@dataclass(frozen=True, slots=True)
 class MatchOutcome:
     """A paid call that produced a usable answer, flattened for storage."""
 
@@ -110,6 +129,47 @@ def _usage(response: Any) -> dict[str, Any]:
     }
 
 
+def _flatten(response: Any, cost: Decimal | None, duration_ms: int) -> Preview:
+    """The one place that knows the SDK's answer shape."""
+    answers = response.answers
+    score, label, confidence = _score_to_unit(answers["overall_fit"])
+    gap = answers["top_gap"]
+    return Preview(
+        is_qualified_noul=answers["is_qualified"].noul,
+        overall_fit_score=score,
+        overall_fit_label=label,
+        overall_fit_confidence=confidence,
+        top_gap=gap.choice,
+        top_gap_confidence=gap.confidence,
+        answers={name: a.model_dump(mode="json") for name, a in answers.items()},
+        cost_usd=cost,
+        duration_ms=duration_ms,
+    )
+
+
+def _ask(client: TypeSafeClient, cv: str, job: str, model: str) -> tuple[Any, dict, int]:
+    clock = time.monotonic()
+    response = client.system_one(
+        state={"cv": cv, "job_description": job}, questions=QUESTIONS, model=model
+    )
+    return response, _usage(response), int((time.monotonic() - clock) * 1000)
+
+
+def preview_vacancy(
+    client: TypeSafeClient, cv: str, vacancy: Vacancy, model: str, *, job: str
+) -> Preview:
+    """Ask Jev and return the answer without recording anything.
+
+    The deliberate opposite of `match_vacancy`: no `llm_calls` row, no
+    fingerprint, no `match_results`. That makes the spend invisible to the
+    ledger, which is the price of a dry run — `Preview.cost_usd` is the only
+    record of it, and it dies with the process.
+    """
+    response, meta, duration_ms = _ask(client, cv, job, model)
+    cost = Decimal(str(meta["cost"])) if meta.get("cost") is not None else None
+    return _flatten(response, cost, duration_ms)
+
+
 def _record_call(**values: Any) -> int:
     """Write the ledger row in its *own* session, so it survives the caller's
     rollback. A log that disappears when things go wrong is worse than none."""
@@ -142,9 +202,7 @@ def match_vacancy(
         "started_at": started,
     }
     try:
-        response = client.system_one(
-            state={"cv": cv, "job_description": job}, questions=QUESTIONS, model=model
-        )
+        response, meta, duration_ms = _ask(client, cv, job, model)
     except Exception as exc:
         _record_call(
             **common,
@@ -157,8 +215,7 @@ def match_vacancy(
         )
         raise
 
-    duration_ms = int((time.monotonic() - clock) * 1000)
-    meta = _usage(response)
+    cost = Decimal(str(meta["cost"])) if meta.get("cost") is not None else None
     call_id = _record_call(
         **common,
         status="ok",
@@ -167,27 +224,25 @@ def match_vacancy(
         response_id=meta.get("response_id"),
         input_tokens=response.usage.input_tokens,
         output_tokens=response.usage.output_tokens,
-        cost_usd=Decimal(str(meta["cost"])) if meta.get("cost") is not None else None,
+        cost_usd=cost,
         duration_ms=duration_ms,
         finished_at=dt.datetime.now(dt.UTC),
     )
 
     # Anything below here can raise on an SDK shape change; the call is already
     # recorded, so the money spent is visible even when the answer is not.
-    answers = response.answers
-    score, label, confidence = _score_to_unit(answers["overall_fit"])
-    gap = answers["top_gap"]
+    preview = _flatten(response, cost, duration_ms)
     return MatchOutcome(
         inputs_fingerprint=fingerprint,
         vacancy_content_hash=content_hash,
         cv_hash=cv_hash,
         questions_hash=QUESTIONS_HASH,
-        is_qualified_noul=answers["is_qualified"].noul,
-        overall_fit_score=score,
-        overall_fit_label=label,
-        overall_fit_confidence=confidence,
-        top_gap=gap.choice,
-        top_gap_confidence=gap.confidence,
-        answers={name: a.model_dump(mode="json") for name, a in answers.items()},
+        is_qualified_noul=preview.is_qualified_noul,
+        overall_fit_score=preview.overall_fit_score,
+        overall_fit_label=preview.overall_fit_label,
+        overall_fit_confidence=preview.overall_fit_confidence,
+        top_gap=preview.top_gap,
+        top_gap_confidence=preview.top_gap_confidence,
+        answers=preview.answers,
         call_id=call_id,
     )

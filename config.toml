@@ -55,5 +55,6 @@ excluded_text = '"QA","AQA",тестировщик,devops'
 search_field = ["name", "description"]
 area = [
     28,   # Georgia
-    16,   # Belarus
+    16,   # Belarus,
+    113,  # Russia
 ]

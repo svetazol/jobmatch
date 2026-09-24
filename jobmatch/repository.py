@@ -98,7 +98,9 @@ def mark_delisted(session: Session, vacancy_id: int) -> None:
     vacancy.fetch_error = None
 
 
-def matchable_vacancy_ids(session: Session, sources: Sequence[str]) -> list[int]:
+def matchable_vacancy_ids(
+    session: Session, sources: Sequence[str], country: str | None = None
+) -> list[int]:
     """Every vacancy worth asking about — *not* only the ones in today's feed.
 
     The feed is a rolling 20-item window, so the corpus outgrows it by design.
@@ -110,14 +112,19 @@ def matchable_vacancy_ids(session: Session, sources: Sequence[str]) -> list[int]
     Scoped to the sources config currently enables, so disabling a source
     stops the spending on it rather than quietly continuing.
     """
+    query = (
+        select(Vacancy.id)
+        .where(
+            Vacancy.source.in_(sources),
+            Vacancy.fetched_at.is_not(None),
+            Vacancy.description.is_not(None),
+        )
+    )
+    if country:
+        query = query.where(Vacancy.country == country)
     return list(
         session.scalars(
-            select(Vacancy.id)
-            .where(
-                Vacancy.source.in_(sources),
-                Vacancy.fetched_at.is_not(None),
-                Vacancy.description.is_not(None),
-            )
+            query
             .order_by(Vacancy.published_at.desc().nullslast(), Vacancy.id)
         )
     )

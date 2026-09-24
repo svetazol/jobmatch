@@ -10,12 +10,13 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .jev import MatchOutcome, job_text, match_vacancy, open_client
+from .jev import MatchOutcome, Preview, job_text, match_vacancy, open_client, preview_vacancy
 from .questions import QUESTIONS, QUESTIONS_HASH, canonical
 from .sanitize import load_text, sanitize_cv
 
 __all__ = [
     "MatchOutcome",
+    "Preview",
     "QUESTIONS",
     "QUESTIONS_HASH",
     "content_hash",
@@ -24,6 +25,7 @@ __all__ = [
     "load_cv",
     "match_vacancy",
     "open_client",
+    "preview_vacancy",
     "sha256",
 ]
 

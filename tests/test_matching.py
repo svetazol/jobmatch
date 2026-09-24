@@ -11,7 +11,7 @@ from typesafe_sdk import ChoiceAnswer, NoulAnswer, ScoreAnswer
 from jobmatch import matching
 from jobmatch.db import SessionLocal
 from jobmatch.matching import jev
-from jobmatch.models import LlmCall, Vacancy
+from jobmatch.models import LlmCall, MatchResult, Vacancy
 
 FINGERPRINT = "f" * 64
 LEGEND = {
@@ -216,3 +216,56 @@ def test_the_job_text_leaves_out_what_the_posting_doesnt_have(vacancy):
     assert "Salary" not in text  # this posting has none; an empty line is noise
     assert "# Python Developer" in text
     assert "- Python" in text
+
+
+# --- the dry run -----------------------------------------------------------
+
+
+def test_preview_returns_the_same_answers_but_records_nothing(vacancy):
+    """The whole contract of --dry-run: identical flattening, zero rows."""
+    client = FakeClient(response=FakeResponse())
+
+    preview = jev.preview_vacancy(
+        client, "cv", load(vacancy), "jev-1.13", job="job text"
+    )
+
+    assert preview.overall_fit_score == pytest.approx(0.6)
+    assert preview.overall_fit_label == "good"
+    assert preview.is_qualified_noul == 0.74
+    assert preview.top_gap == "technical_skills"
+    assert float(preview.cost_usd) == pytest.approx(0.000413616)
+    assert preview.answers["overall_fit"]["score"] == 2.4
+
+    assert calls_for(vacancy) == []          # no llm_calls row
+    with SessionLocal() as session:
+        assert session.scalars(
+            select(MatchResult).where(MatchResult.vacancy_id == vacancy)
+        ).all() == []                        # and no match_results row
+
+
+def test_preview_and_match_agree_on_every_promoted_field(vacancy):
+    """A dry run that disagreed with the real thing would be worse than none."""
+    preview = jev.preview_vacancy(
+        FakeClient(response=FakeResponse()), "cv", load(vacancy), "jev-1.13", job="job"
+    )
+    outcome = jev.match_vacancy(
+        FakeClient(response=FakeResponse()),
+        "cv",
+        load(vacancy),
+        "jev-1.13",
+        fingerprint=FINGERPRINT,
+        cv_hash="a" * 64,
+        content_hash="b" * 64,
+        job="job",
+    )
+
+    for field in (
+        "is_qualified_noul",
+        "overall_fit_score",
+        "overall_fit_label",
+        "overall_fit_confidence",
+        "top_gap",
+        "top_gap_confidence",
+        "answers",
+    ):
+        assert getattr(preview, field) == getattr(outcome, field), field

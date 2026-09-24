@@ -62,25 +62,39 @@ def run(settings: Settings, limit: int | None = None) -> RunReport:
             report.discovered += 1
             _process_one(source, listing, settings, report)
 
-    _match_all(settings, report, limit)
+    match_all(settings, report=report, limit=limit)
     return report
 
 
-def _match_all(settings: Settings, report: RunReport, limit: int | None) -> None:
+def match_all(
+    settings: Settings,
+    *,
+    report: RunReport | None = None,
+    limit: int | None = None,
+    country: str | None = None,
+) -> RunReport:
+    """The paid phase on its own, over what is already stored.
+
+    `run()` calls this after crawling; `jobmatch match` calls it without
+    crawling at all, which is how you re-match after editing the CV or the
+    questions without touching the site.
+    """
+    report = report if report is not None else RunReport()
     with SessionLocal() as session:
         candidates = repository.matchable_vacancy_ids(
-            session, [entry.name for entry in settings.sources]
+            session, [entry.name for entry in settings.sources], country
         )
     if not candidates:
-        return
+        return report
 
     cv = matching.load_cv(settings.cv_path)   # read and sanitized once per run
     with matching.open_client() as client:    # one HTTP session per run
         for vacancy_id in candidates:
             if limit is not None and report.matched >= limit:
                 log.info("stopping at --limit %d matches", limit)
-                return
+                break
             _match(vacancy_id, cv, client, settings, report)
+    return report
 
 
 def _safe_discover(
