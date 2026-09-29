@@ -33,6 +33,16 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+# How many times a failing page is re-asked before it leaves the fetch queue.
+#
+# Not a config setting, and deliberately not one: the same number is baked into
+# `ix_vacancies_fetch_queue`'s partial predicate below and into the query that
+# has to match it (`repository.fetch_queue`). A config knob would only be
+# honoured by `pipeline._fetch`, so raising it emptied the queue instead of
+# retrying more -- the queue query still filtered on 3. Changing it now means
+# changing it here and writing an Alembic migration to rebuild the index.
+MAX_FETCH_ATTEMPTS = 3
+
 # Deterministic constraint names, so Alembic autogenerate stays stable.
 NAMING_CONVENTION = {
     "ix": "ix_%(table_name)s_%(column_0_N_name)s",
@@ -124,7 +134,8 @@ class Vacancy(Base):
             "ix_vacancies_fetch_queue",
             "first_seen_at",
             postgresql_where=text(
-                "fetched_at IS NULL AND delisted_at IS NULL AND fetch_attempts < 3"
+                "fetched_at IS NULL AND delisted_at IS NULL AND "
+                f"fetch_attempts < {MAX_FETCH_ATTEMPTS}"
             ),
         ),
     )

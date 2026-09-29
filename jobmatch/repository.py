@@ -17,7 +17,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from .matching import MatchOutcome
-from .models import LlmCall, MatchResult, Vacancy
+from .models import MAX_FETCH_ATTEMPTS, LlmCall, MatchResult, Vacancy
 from .sources import Listing, VacancyData
 
 
@@ -152,7 +152,7 @@ def fetch_queue(
             Vacancy.source.in_(sources),
             Vacancy.fetched_at.is_(None),
             Vacancy.delisted_at.is_(None),
-            Vacancy.fetch_attempts < 3,
+            Vacancy.fetch_attempts < MAX_FETCH_ATTEMPTS,
         )
         .order_by(Vacancy.first_seen_at)
     )

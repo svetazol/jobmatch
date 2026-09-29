@@ -7,8 +7,11 @@
 # refresh just these two without re-walking the 88 Russian regions.
 
 fetch_delay = 1.0
-fetch_workers = 6
-max_fetch_attempts = 3
+# 3, not 6: config.toml records that 6 workers made hh answer 200 with a
+# stripped page and 597 vacancies came back with no description. The rate is
+# fetch_workers / fetch_delay, and 3 at 1.0s is the measured safe one. This
+# file said 6 for a while, which is what a duplicated config does.
+fetch_workers = 3
 
 model = "jev-1.13"
 cv_path = "data/cv3.md"

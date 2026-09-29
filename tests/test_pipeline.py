@@ -27,7 +27,6 @@ def settings(tmp_path):
     return Settings(
         sources=(SourceConfig(name=SOURCE_NAME, params={}),),
         fetch_delay=0.0,
-        max_fetch_attempts=3,
         model="test-model",
         cv_path=cv,
     )

@@ -25,8 +25,9 @@ log = logging.getLogger(__name__)
 
 NAME = "hh.ru"
 # The paginated HTML results, not the RSS feed: RSS serves only the newest 20
-# per query, where the same filter has ~193 results here. 20 per page,
-# `page=0,1,...`; `items_on_page` is ignored.
+# per query, where the same filter has thousands here. 50 per page,
+# `page=0,1,...`; `items_on_page` is ignored. (The *markup* shows only the first
+# 20 -- see `_listings` -- but the embedded state carries all 50.)
 SEARCH_URL = "https://hh.ru/search/vacancy"
 # Present on any real results page, including the one past the last result.
 # Its *absence* is how a throttled response gives itself away -- see _search_page.
@@ -231,9 +232,9 @@ def discover(params: Mapping[str, Any], crawl: Crawl = Crawl()) -> Iterator[List
     """Walk the search results, one area at a time.
 
     A list of ``area`` values becomes a separate walk per area. That is not
-    only politeness: results are capped at roughly four pages per query, well
-    below the total the page advertises, so splitting the query is how you
-    reach more of it.
+    only politeness: hh caps a *query* at 2 000 results (40 pages of 50, then
+    404 -- verified 2026-09-29), however many it says it found, so splitting
+    the query into narrower ones is how you reach the rest.
 
     Yields each vacancy once -- pages overlap slightly when postings shift
     between requests, and counting one twice would make the run report a
@@ -286,8 +287,10 @@ def _search_page(params: Mapping[str, Any], crawl: Crawl) -> list[Listing]:
     for attempt in range(1, SEARCH_ATTEMPTS + 1):
         time.sleep(crawl.delay * attempt)      # also the politeness delay
         resp = requests.get(SEARCH_URL, params=dict(params), headers=HEADERS, timeout=TIMEOUT)
-        # Verified 2026-09-24: hh serves pages 0-39 and answers 404 from page
-        # 40 on. That is the end of the results, not an error -- raising here
+        # Verified 2026-09-24, re-checked 2026-09-29: hh serves pages 0-39 and
+        # answers 404 from page 40 on -- and page 39 is a *full* 50, so the cap
+        # is 2 000 results per query, not a page count that runs out.
+        # That is the end of the results, not an error -- raising here
         # would abort the walk, and because `discover` is one generator across
         # every area, it would take the areas after this one with it.
         if resp.status_code == 404:
@@ -307,12 +310,13 @@ def _search_page(params: Mapping[str, Any], crawl: Crawl) -> list[Listing]:
 def _listings(soup: BeautifulSoup) -> list[Listing]:
     """Every result on the page -- from the embedded state, not the markup.
 
-    Verified 2026-09-24: hh serves **50 results per page** but renders only the
-    first 20 as ``data-qa`` anchors; the rest are drawn lazily, so reading the
-    DOM silently takes 20 and calls the page done. Georgia is the clearest case
-    -- 33 results, one page, no paging block, and the walk stopped at 20 having
-    seen a perfectly valid page. The `<template>` blob is the same payload the
-    page itself renders from, and it carries all 50 with ids, titles and links.
+    Verified 2026-09-24, re-checked 2026-09-29: hh serves **50 results per page**
+    but renders only the first 20 as ``data-qa`` anchors; the rest are drawn
+    lazily, so reading the DOM silently takes 20 and calls the page done.
+    Georgia is the clearest case -- one page, no paging block, and the walk
+    stopped at 20 having seen a perfectly valid page (36 were there). The
+    `<template>` blob is the same payload the page itself renders from, and it
+    carries all 50 with ids, titles and links.
 
     The anchor scan stays as the fallback: it is what the saved test pages have,
     and it is the honest answer if hh ever drops the blob.

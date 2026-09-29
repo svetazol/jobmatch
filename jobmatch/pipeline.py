@@ -19,7 +19,7 @@ from decimal import Decimal
 from . import matching, repository
 from .config import Settings, SourceConfig
 from .db import SessionLocal
-from .models import LlmCall, Vacancy
+from .models import MAX_FETCH_ATTEMPTS, LlmCall, Vacancy
 from .sources import SOURCES, Listing, Source, VacancyGone, source_for_url
 
 log = logging.getLogger(__name__)
@@ -133,9 +133,10 @@ def fetch_all(
     """Drain the fetch queue over what is already stored, without crawling.
 
     The free-phase twin of `match_all`. Useful whenever discovery already ran
-    and the fetches did not: a throttled run, a dropped connection, a raised
-    `max_fetch_attempts`. Re-running is safe because `fetched_at IS NULL` is
-    the queue, so anything that succeeded simply is not in it any more.
+    and the fetches did not: a throttled run, or a dropped connection.
+    Re-running is safe because `fetched_at IS NULL` is the queue, so anything
+    that succeeded simply is not in it any more -- and anything that failed
+    `MAX_FETCH_ATTEMPTS` times has left it for good.
     """
     report = report if report is not None else RunReport()
     with SessionLocal() as session:
@@ -239,7 +240,7 @@ def _fetch(
         vacancy = session.get_one(Vacancy, vacancy_id)
         if (
             vacancy.fetched_at is not None
-            or vacancy.fetch_attempts >= settings.max_fetch_attempts
+            or vacancy.fetch_attempts >= MAX_FETCH_ATTEMPTS
         ):
             report.record("skipped")
             return

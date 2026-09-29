@@ -5,10 +5,10 @@
 # nothing like them. Repeated keys are a list; requests expands them.
 #
 # `area` is a list and hh issues one request per entry. That is not politeness:
-# the 800-result ceiling is per *query*, and repeated area params are one query
-# -- `area=113&area=16&area=28` matches ~4 500 postings and still hands back
-# only the first 800. Split into separate walks it is 800 + 155 + 33, and with
-# Moscow split out by region it is ~3 750. Codes are from api.hh.ru/areas. The remaining
+# the 2 000-result ceiling is per *query*, and repeated area params are one
+# query -- `area=113&area=16&area=28` matches ~4 500 postings and still hands
+# back only the first 2 000. Split into separate walks, every area is reachable
+# in full. Codes are from api.hh.ru/areas. The remaining
 # top-level areas are 113 Russia, 5 Ukraine, 40 Kazakhstan, 9 Azerbaijan,
 # 48 Kyrgyzstan, 97 Uzbekistan and 1001 "other regions" (a catch-all that
 # returns whichever country the job is really in).
@@ -29,7 +29,11 @@
 
 fetch_delay = 1.0        # seconds each worker waits after its own page hit
 fetch_workers = 3        # pages in flight at once; see below
-max_fetch_attempts = 3   # a page that keeps failing stops being retried
+
+# How many times a failing page is retried is *not* here: the number is in the
+# `ix_vacancies_fetch_queue` index predicate, so it lives beside it as
+# `models.MAX_FETCH_ATTEMPTS`. It used to be a setting that only the fetch loop
+# honoured -- raising it emptied the queue instead of retrying more.
 
 # The number that matters is the *rate*: fetch_workers / fetch_delay requests a
 # second. Measured 2026-09-24: at 6 workers (~6 pages/s of ~800KB) hh started
@@ -61,11 +65,15 @@ stats_cv_hash = "9e5bbcb28e19493e48b23ef128359014dc4fbbc38153d6261693d76225e1f4a
 # ~1.2MB, and at a 1s interval hh starts serving a stripped "enable JavaScript"
 # page instead of results.
 #
-# Verified 2026-09-24: hh serves pages 0-39 and answers 404 from page 40 on, at
-# 20 results a page -- a hard ceiling of 800 per query, whatever this is set to.
-# So 40 asks for everything hh will give, and a query that reports more than
-# 800 hits (Russia has 4 347) has to be split -- by area below, or by date
-# window -- to reach the rest.
+# Verified 2026-09-24, re-checked 2026-09-29: hh serves pages 0-39 and answers
+# 404 from page 40 on, at **50** results a page -- a hard ceiling of 2 000 per
+# query, whatever this is set to. So 40 asks for everything hh will give, and a
+# query that reports more than 2 000 hits (Russia has ~4 350) has to be split --
+# by area below, or by date window -- to reach the rest.
+#
+# This said "20 results a page, 800 per query" until 2026-09-29. The page-40
+# 404 is the same boundary either way, which is why the wrong number was
+# invisible: 40 x 20 and 40 x 50 both stop where hh stops.
 [crawl]
 max_pages = 40
 delay = 2.5
