@@ -13,7 +13,7 @@ import Message from 'primevue/message'
 import { useToast } from 'primevue/usetoast'
 import type { ToastMessageOptions } from 'primevue/toast'
 import { api } from '@/api/client'
-import type { Pitch, VacancyRow } from '@/api/types'
+import type { Pitch, VacancyQuery, VacancyRow } from '@/api/types'
 import FitHistogram from '@/components/FitHistogram.vue'
 import { PITCH_LABEL, fmtScore, isVague } from '@/composables/useFit'
 
@@ -44,7 +44,7 @@ const fitSteps = [
   { label: '≥ strong', value: 0.7 },
 ]
 
-function filters() {
+function filters(): VacancyQuery {
   return {
     q: q.value || undefined,
     unseen: unseenOnly.value || undefined,
@@ -54,12 +54,27 @@ function filters() {
   }
 }
 
+/**
+ * The filters the rows on screen were fetched with.
+ *
+ * `loadMore` has to send these rather than whatever the controls hold now:
+ * the cursor is a keyset position in one ranking, and `q` is bound with
+ * `v-model` while `load()` only fires on Enter. Typing in the search box and
+ * clicking "Load more" without pressing Enter therefore asked the API to
+ * continue the *unfiltered* ranking from inside the filtered one, and the
+ * rows it returned were appended silently — a wrong answer with nothing on
+ * screen to give it away.
+ */
+const applied = ref<VacancyQuery>(filters())
+
 /** A filter change is a new query, so the cursor resets with it. */
 async function load() {
   loading.value = true
   error.value = null
+  const query = filters()
   try {
-    const page = await api.vacancies(filters())
+    const page = await api.vacancies(query)
+    applied.value = query
     rows.value = page.items
     total.value = page.total
     cursor.value = page.next_cursor
@@ -74,7 +89,7 @@ async function loadMore() {
   if (!cursor.value || loadingMore.value) return
   loadingMore.value = true
   try {
-    const page = await api.vacancies({ ...filters(), cursor: cursor.value })
+    const page = await api.vacancies({ ...applied.value, cursor: cursor.value })
     rows.value = [...rows.value, ...page.items]
     cursor.value = page.next_cursor
   } catch (e) {

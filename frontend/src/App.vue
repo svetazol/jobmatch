@@ -1,24 +1,18 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted } from 'vue'
 import { RouterLink, RouterView } from 'vue-router'
 import Button from 'primevue/button'
 import Toast from 'primevue/toast'
 import { api } from '@/api/client'
 import type { VacancyRow } from '@/api/types'
-
-const dark = ref(false)
+import { dark, setDark } from '@/theme'
 
 onMounted(() => {
   const saved = localStorage.getItem('theme')
-  dark.value = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches
-  apply()
+  setDark(saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches)
 })
 
-function apply() {
-  document.documentElement.classList.toggle('dark', dark.value)
-  localStorage.setItem('theme', dark.value ? 'dark' : 'light')
-}
-function toggle() { dark.value = !dark.value; apply() }
+function toggle() { setDark(!dark.value) }
 
 async function undoHide(row: VacancyRow) {
   row.hidden_at = null

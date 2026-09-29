@@ -24,6 +24,23 @@ async function load(id: number) {
   v.value = null
   try { v.value = await api.vacancy(id) }
   catch (e) { error.value = (e as Error).message }
+  if (v.value) markSeen(v.value)
+}
+
+/**
+ * Opening a vacancy is what "seen" means — nothing else ever set it, so
+ * `seen_at` stayed null for the whole corpus and the list's "Unseen only"
+ * filter quietly returned everything.
+ *
+ * Deliberately not awaited and deliberately swallowed: this is a side effect
+ * of reading, and a failed PATCH must not put an error banner over a page
+ * that loaded fine. The list picks the change up on its own — it is not kept
+ * alive, so going back re-mounts it and refetches.
+ */
+function markSeen(row: VacancyDetail) {
+  if (row.seen_at) return
+  row.seen_at = new Date().toISOString()
+  api.triage(row.id, 'seen', true).catch(() => { /* a read, not a promise */ })
 }
 onMounted(() => load(Number(route.params.id)))
 watch(() => route.params.id, (id) => load(Number(id)))

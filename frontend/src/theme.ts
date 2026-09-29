@@ -1,3 +1,4 @@
+import { ref } from 'vue'
 import Aura from '@primevue/themes/aura'
 import { definePreset } from '@primevue/themes'
 
@@ -23,8 +24,29 @@ export const NEUTRAL = {
   dark: { dim: '#4a4a47', rule: '#2c2c2a', surface: '#1a1a19' },
 } as const
 
-export const isDark = () =>
-  document.documentElement.classList.contains('dark')
+/**
+ * Which mode is on, as a ref rather than a read of the DOM class.
+ *
+ * `ramp()` and `neutral()` are called inside the charts' `computed()`s, and a
+ * computed only re-runs when something reactive it read has changed. Reading
+ * `classList` gave it nothing to depend on, so toggling the theme left every
+ * chart holding the other mode's colours until an unrelated re-render — the
+ * light ramp runs light to dark and the dark one runs the other way, so the
+ * bars came out inverted, with near-white segment borders across them.
+ */
+export const dark = ref(
+  typeof document !== 'undefined'
+  && document.documentElement.classList.contains('dark'),
+)
+
+/** The one writer. Owns the class, the ref and the stored preference. */
+export function setDark(on: boolean): void {
+  dark.value = on
+  document.documentElement.classList.toggle('dark', on)
+  try { localStorage.setItem('theme', on ? 'dark' : 'light') } catch { /* private mode */ }
+}
+
+export const isDark = () => dark.value
 
 export const ramp = () => (isDark() ? FIT_RAMP.dark : FIT_RAMP.light)
 export const neutral = () => (isDark() ? NEUTRAL.dark : NEUTRAL.light)
