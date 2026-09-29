@@ -33,6 +33,8 @@ SEARCH_URL = "https://hh.ru/search/vacancy"
 SEARCH_HEADER = "vacancies-search-header"
 SEARCH_ITEM = "serp-item__title"
 SEARCH_ATTEMPTS = 3
+FETCH_ATTEMPTS = 3       # a vacancy page re-asked past the throttling stub
+THROTTLE_BACKOFF = 3.0   # seconds, multiplied by the attempt number
 # One HeadHunter, several domains: headhunter.ge (Georgia) serves the same
 # engine, the same layout and the same vacancy ids as hh.ru, so a vacancy
 # reached through either domain is one row. Which country's vacancies you get
@@ -213,8 +215,16 @@ def parse(html: str, url: str) -> VacancyData:
     )
 
 
-class SearchThrottled(RuntimeError):
-    """hh served the "enable JavaScript" page instead of results, repeatedly."""
+class Throttled(RuntimeError):
+    """hh served its stripped page instead of content, repeatedly.
+
+    Raised for both a search page and a vacancy page: same 200-with-no-content
+    behaviour, same meaning — slow down.
+    """
+
+
+# the search path's older name, kept so nothing importing it breaks
+SearchThrottled = Throttled
 
 
 def discover(params: Mapping[str, Any], crawl: Crawl = Crawl()) -> Iterator[Listing]:
@@ -242,10 +252,17 @@ def discover(params: Mapping[str, Any], crawl: Crawl = Crawl()) -> Iterator[List
 
 
 def _walk(params: Mapping[str, Any], crawl: Crawl) -> Iterator[Listing]:
+    total = 0
     for page in range(crawl.max_pages):
         listings = _search_page({**params, "page": page}, crawl)
         if not listings:
             return                      # a real page with no results: past the end
+        total += len(listings)
+        # One line per page. Without it a 40-page walk is ~4 minutes of silence
+        # before the first fetch, which is indistinguishable from a hang --
+        # discovery is collected in full before fetching starts.
+        log.info("area=%s page %d/%d: %d listings (%d so far)",
+                 params.get("area"), page + 1, crawl.max_pages, len(listings), total)
         yield from listings
     log.info(
         "stopped at max_pages=%d for area=%s; there may be more",
@@ -259,6 +276,7 @@ def _search_page(params: Mapping[str, Any], crawl: Crawl) -> list[Listing]:
 
     The whole reason this is its own function: **an exhausted search and a
     throttled request are both HTTP 200 with no vacancies on the page.**
+    (Past hh's 40-page ceiling the answer is a 404 instead, handled below.)
     Ending the walk on "no results" would truncate the crawl at a random page
     whenever hh decided to throttle, and the run would still report success.
     A real results page always carries the search header; the throttling page
@@ -268,6 +286,12 @@ def _search_page(params: Mapping[str, Any], crawl: Crawl) -> list[Listing]:
     for attempt in range(1, SEARCH_ATTEMPTS + 1):
         time.sleep(crawl.delay * attempt)      # also the politeness delay
         resp = requests.get(SEARCH_URL, params=dict(params), headers=HEADERS, timeout=TIMEOUT)
+        # Verified 2026-09-24: hh serves pages 0-39 and answers 404 from page
+        # 40 on. That is the end of the results, not an error -- raising here
+        # would abort the walk, and because `discover` is one generator across
+        # every area, it would take the areas after this one with it.
+        if resp.status_code == 404:
+            return []
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "lxml")
         if soup.find(attrs={"data-qa": SEARCH_HEADER}) is not None:
@@ -281,6 +305,55 @@ def _search_page(params: Mapping[str, Any], crawl: Crawl) -> list[Listing]:
 
 
 def _listings(soup: BeautifulSoup) -> list[Listing]:
+    """Every result on the page -- from the embedded state, not the markup.
+
+    Verified 2026-09-24: hh serves **50 results per page** but renders only the
+    first 20 as ``data-qa`` anchors; the rest are drawn lazily, so reading the
+    DOM silently takes 20 and calls the page done. Georgia is the clearest case
+    -- 33 results, one page, no paging block, and the walk stopped at 20 having
+    seen a perfectly valid page. The `<template>` blob is the same payload the
+    page itself renders from, and it carries all 50 with ids, titles and links.
+
+    The anchor scan stays as the fallback: it is what the saved test pages have,
+    and it is the honest answer if hh ever drops the blob.
+    """
+    listings = _listings_from_state(soup)
+    if listings:
+        return listings
+    return _listings_from_anchors(soup)
+
+
+def _listings_from_state(soup: BeautifulSoup) -> list[Listing]:
+    """Parse `vacancySearchResult.vacancies` out of the page's initial state."""
+    template = soup.find("template")
+    if template is None or not template.string:
+        return []
+    try:
+        result = json.loads(template.string)["vacancySearchResult"]["vacancies"]
+    except (ValueError, KeyError, TypeError):
+        return []
+
+    listings = []
+    for item in result:
+        link = (item.get("links") or {}).get("desktop")
+        if not link:
+            continue
+        try:
+            url = canonical_url(link)
+            external_id = vacancy_id(url)
+        except ValueError:
+            continue
+        listings.append(
+            Listing(
+                external_id=external_id,
+                url=url,
+                title=_clean(item.get("name") or "", inline=True),
+            )
+        )
+    return listings
+
+
+def _listings_from_anchors(soup: BeautifulSoup) -> list[Listing]:
     listings = []
     for anchor in soup.find_all("a", attrs={"data-qa": SEARCH_ITEM}, href=True):
         try:
@@ -298,13 +371,40 @@ def _listings(soup: BeautifulSoup) -> list[Listing]:
     return listings
 
 
+def _is_real_page(soup: BeautifulSoup) -> bool:
+    """Is this an actual vacancy page, or hh's throttling stub?
+
+    Under load hh answers **200 with a stripped page** — same trick it plays on
+    search results — and that stub has no `data-qa` markers and no JSON-LD.
+    Parsing it raises "No description found", which reads like a layout change
+    and is nothing of the sort. A real page always has the title marker or the
+    JobPosting block (branded layouts drop the markers but keep the JSON-LD).
+    """
+    return (
+        soup.find(attrs={"data-qa": "vacancy-title"}) is not None
+        or _json_ld(soup) is not None
+    )
+
+
 def fetch(url: str) -> VacancyData:
+    """One vacancy page, retried past the throttling stub.
+
+    The retry is the same shape as `_search_page`'s: a stub is not a failure of
+    the page, it is hh asking us to slow down, so back off and ask again rather
+    than spending one of the vacancy's three attempts on it.
+    """
     url = canonical_url(url)
-    resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
-    if resp.status_code in (404, 410):
-        raise VacancyGone(f"{resp.status_code} for {url}")
-    resp.raise_for_status()
-    return parse(resp.text, url)
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+        if resp.status_code in (404, 410):
+            raise VacancyGone(f"{resp.status_code} for {url}")
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "lxml")
+        if _is_real_page(soup):
+            return parse(resp.text, url)
+        log.warning("throttled on %s (attempt %d/%d)", url, attempt, FETCH_ATTEMPTS)
+        time.sleep(THROTTLE_BACKOFF * attempt)
+    raise Throttled(f"only the stripped page after {FETCH_ATTEMPTS} attempts: {url}")
 
 
 SOURCE = Source(name=NAME, hosts=HOSTS, discover=discover, fetch=fetch)

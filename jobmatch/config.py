@@ -22,9 +22,15 @@ class SourceConfig:
 class Settings:
     sources: tuple[SourceConfig, ...]
     fetch_delay: float = 1.0
+    fetch_workers: int = 1        # >1 overlaps page fetches; see pipeline._process_all
     max_fetch_attempts: int = 3
     model: str = "jev-1.13"          # pinned; part of the match fingerprint
     cv_path: Path = Path("data/cv.md")
+    # Which CV the market view reports on. A hash, not a path: the answers are
+    # stored under the hash of the CV that earned them, and that hash stays
+    # valid after the file is edited, renamed or deleted. Empty means "every
+    # CV at once", which is only honest when there has only ever been one.
+    stats_cv_hash: str = ""
     crawl: Crawl = Crawl()
 
 
@@ -46,9 +52,11 @@ def load_settings(path: Path | str = DEFAULT_PATH) -> Settings:
     return Settings(
         sources=sources,
         fetch_delay=float(raw.get("fetch_delay", 1.0)),
+        fetch_workers=max(1, int(raw.get("fetch_workers", 1))),
         max_fetch_attempts=int(raw.get("max_fetch_attempts", 3)),
         model=str(raw.get("model", "jev-1.13")),
         cv_path=Path(raw.get("cv_path", "data/cv.md")),
+        stats_cv_hash=str(raw.get("stats_cv_hash", "")).strip(),
         crawl=Crawl(
             max_pages=int(crawl.get("max_pages", 5)),
             delay=float(crawl.get("delay", 2.5)),

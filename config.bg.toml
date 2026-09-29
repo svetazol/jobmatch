@@ -1,0 +1,28 @@
+# Belarus and Georgia only — the two areas that fit whole under hh's 800-result
+# ceiling (155 and 33 postings as of 2026-09-24), so one walk returns everything
+# hh will give and nothing has to be split.
+#
+# Everything else is config.toml verbatim: same query, same politeness, same
+# pinned model and CV. Point `jobmatch run --config config.bg.toml` at this to
+# refresh just these two without re-walking the 88 Russian regions.
+
+fetch_delay = 1.0
+fetch_workers = 6
+max_fetch_attempts = 3
+
+model = "jev-1.13"
+cv_path = "data/cv3.md"
+
+[crawl]
+max_pages = 40
+delay = 2.5
+
+[[sources]]
+name = "hh.ru"
+
+[sources.params]
+text = "python"
+order_by = "publication_time"
+excluded_text = '"QA","AQA",тестировщик,devops'
+search_field = ["name", "description"]
+area = [16, 28]                 # Беларусь, Грузия

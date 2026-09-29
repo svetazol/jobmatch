@@ -4,9 +4,11 @@
 # these are hh.ru's own RSS query params, and the next source's will look
 # nothing like them. Repeated keys are a list; requests expands them.
 #
-# `area` is a list and hh issues one request per entry: the feed's 20-item cap
-# is per request, so both areas in a single request would still return 20 items
-# in total rather than 40. Codes are from api.hh.ru/areas. The remaining
+# `area` is a list and hh issues one request per entry. That is not politeness:
+# the 800-result ceiling is per *query*, and repeated area params are one query
+# -- `area=113&area=16&area=28` matches ~4 500 postings and still hands back
+# only the first 800. Split into separate walks it is 800 + 155 + 33, and with
+# Moscow split out by region it is ~3 750. Codes are from api.hh.ru/areas. The remaining
 # top-level areas are 113 Russia, 5 Ukraine, 40 Kazakhstan, 9 Azerbaijan,
 # 48 Kyrgyzstan, 97 Uzbekistan and 1001 "other regions" (a catch-all that
 # returns whichever country the job is really in).
@@ -25,36 +27,122 @@
 # like something else. Quoted terms are exact phrases -- "QA" unquoted would
 # also strike words containing those letters.
 
-fetch_delay = 1.0        # seconds between vacancy page hits; pages are ~700KB
+fetch_delay = 1.0        # seconds each worker waits after its own page hit
+fetch_workers = 3        # pages in flight at once; see below
 max_fetch_attempts = 3   # a page that keeps failing stops being retried
 
-# Walking the search results. Slower than fetching on purpose: result pages are
-# ~1.2MB, and at a 1s interval hh starts serving a stripped "enable JavaScript"
-# page instead of results. max_pages is one past the ~4-page depth hh actually
-# serves per query, so hitting it means the cap moved and is worth a look.
-[crawl]
-max_pages = 5
-delay = 2.5
+# The number that matters is the *rate*: fetch_workers / fetch_delay requests a
+# second. Measured 2026-09-24: at 6 workers (~6 pages/s of ~800KB) hh started
+# answering 200 with a stripped page instead of content -- 597 vacancies came
+# back "No description found", which looks like a layout change and is really
+# just hh asking us to slow down. `fetch` now retries past that stub, but the
+# honest fix is the rate: 3 workers at 1.0s held up. Raise it only if you watch
+# the warnings. fetch_workers = 1 is strictly sequential.
 
 # Pinned to an exact version, never jev-latest: the model is part of the
 # idempotency fingerprint, and with a floating alias a silent server-side roll
 # would be invisible — you cannot know the resolved model before paying.
 # Bumping this here re-matches everything, cleanly.
 model = "jev-1.13"
-cv_path = "data/cv.md"
+cv_path = "data/cv3.md"
+
+# Which CV the market view reports on by default. One row per vacancy is
+# current, so a *finished* re-match leaves one CV behind and this hardly
+# matters -- but a re-match in progress splits the corpus between the old CV
+# and the new one, and an average over the two describes neither. Stored as
+# the hash rather than the path because that is what match_results records,
+# and it survives the file being edited or renamed. `jobmatch cv-hash <path>`
+# prints it for a file; `GET /api/stats?cv=<file name>` overrides it per
+# request, which is what the picker on the stats page sends.
+stats_cv_hash = "9e5bbcb28e19493e48b23ef128359014dc4fbbc38153d6261693d76225e1f4a5"  # data/cv2.md
+
+
+# Walking the search results. Slower than fetching on purpose: result pages are
+# ~1.2MB, and at a 1s interval hh starts serving a stripped "enable JavaScript"
+# page instead of results.
+#
+# Verified 2026-09-24: hh serves pages 0-39 and answers 404 from page 40 on, at
+# 20 results a page -- a hard ceiling of 800 per query, whatever this is set to.
+# So 40 asks for everything hh will give, and a query that reports more than
+# 800 hits (Russia has 4 347) has to be split -- by area below, or by date
+# window -- to reach the rest.
+[crawl]
+max_pages = 40
+delay = 2.5
+
+# ---------------------------------------------------------------------------
+# One block per query that fits under hh's 800-result ceiling. The same source
+# may appear many times; `discover` walks each block's areas separately, and
+# ids repeated across blocks are deduped in the run.
+#
+# Verified 2026-09-24: Georgia 33, Belarus 155 and every Russian region except
+# Moscow sit under 800, so each is reachable in full. Moscow alone holds 2 744
+# and has no child areas, so it is split by `experience` -- the one facet that
+# partitions cleanly (the four buckets sum to exactly 2 744; `schedule`
+# overlaps and still breaks the cap).
+# ---------------------------------------------------------------------------
 
 [[sources]]
 name = "hh.ru"
 
 [sources.params]
 text = "python"
-# Results default to relevance order; with a depth cap that decides *which*
-# ones you get, so ask for newest first.
 order_by = "publication_time"
 excluded_text = '"QA","AQA",тестировщик,devops'
 search_field = ["name", "description"]
+# Georgia, Belarus, then all 88 Russian regions except Moscow (id 1)
 area = [
-    28,   # Georgia
-    16,   # Belarus,
-    113,  # Russia
+    28, 16,
+    2, 145, 1008, 1020, 1041, 1051, 1061, 1077, 1090, 1103, 1118, 1124,
+    1146, 1169, 1174, 1187, 1192, 1202, 1216, 1217, 1229, 1249, 1255,
+    1261, 1308, 1317, 1342, 1347, 1368, 1384, 1414, 1422, 1424, 1434,
+    1438, 1463, 1471, 1475, 1481, 1500, 1505, 1511, 1530, 1553, 1556,
+    1563, 1575, 1586, 1596, 1614, 1620, 1624, 1646, 1652, 1661, 1679,
+    1704, 1716, 1739, 1754, 1771, 1783, 1806, 1817, 1828, 1844, 1859,
+    1880, 1890, 1898, 1905, 1913, 1932, 1941, 1943, 1946, 1948, 1960,
+    1975, 1982, 1985, 2019, 2114, 2134, 2155, 2173, 2209, 18563,
 ]
+
+[[sources]]
+name = "hh.ru"
+
+[sources.params]
+text = "python"
+order_by = "publication_time"
+excluded_text = '"QA","AQA",тестировщик,devops'
+search_field = ["name", "description"]
+area = [1]                      # Москва
+experience = "noExperience"      # 115 postings
+
+[[sources]]
+name = "hh.ru"
+
+[sources.params]
+text = "python"
+order_by = "publication_time"
+excluded_text = '"QA","AQA",тестировщик,devops'
+search_field = ["name", "description"]
+area = [1]                      # Москва
+experience = "between1And3"      # 864 postings  # 864 > 800: the oldest ~64 stay out of reach
+
+[[sources]]
+name = "hh.ru"
+
+[sources.params]
+text = "python"
+order_by = "publication_time"
+excluded_text = '"QA","AQA",тестировщик,devops'
+search_field = ["name", "description"]
+area = [1]                      # Москва
+experience = "between3And6"      # 1458 postings  # 1458 > 800: the oldest ~658 stay out of reach
+
+[[sources]]
+name = "hh.ru"
+
+[sources.params]
+text = "python"
+order_by = "publication_time"
+excluded_text = '"QA","AQA",тестировщик,devops'
+search_field = ["name", "description"]
+area = [1]                      # Москва
+experience = "moreThan6"      # 307 postings

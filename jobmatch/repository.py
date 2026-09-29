@@ -7,14 +7,17 @@ it *is* the fetch queue.
 """
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Sequence
+from decimal import Decimal
+from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from .matching import MatchOutcome
-from .models import MatchResult, Vacancy
+from .models import LlmCall, MatchResult, Vacancy
 from .sources import Listing, VacancyData
 
 
@@ -130,6 +133,34 @@ def matchable_vacancy_ids(
     )
 
 
+def fetch_queue(
+    session: Session, sources: Sequence[str], limit: int | None = None
+) -> list[tuple[int, str]]:
+    """Every vacancy still waiting for its detail page, as (id, url).
+
+    The counterpart to ``matchable_vacancy_ids``: that one drives the paid
+    phase over stored rows, this one drives the free phase, so neither needs
+    the crawl to have just run. ``fetched_at IS NULL`` *is* the queue, which is
+    why a failed fetch needs no retry table — the row simply stays in it.
+
+    Matches the predicate on ``ix_vacancies_fetch_queue``, oldest first so a
+    backlog drains in the order it arrived.
+    """
+    query = (
+        select(Vacancy.id, Vacancy.url)
+        .where(
+            Vacancy.source.in_(sources),
+            Vacancy.fetched_at.is_(None),
+            Vacancy.delisted_at.is_(None),
+            Vacancy.fetch_attempts < 3,
+        )
+        .order_by(Vacancy.first_seen_at)
+    )
+    if limit is not None:
+        query = query.limit(limit)
+    return [(row.id, row.url) for row in session.execute(query)]
+
+
 def make_current(session: Session, vacancy_id: int, fingerprint: str) -> bool:
     """Is this exact request already answered? If so, make that answer current.
 
@@ -214,3 +245,313 @@ def count_vacancies(session: Session) -> tuple[int, int, int]:
         or 0
     )
     return stored, fetched, matched
+
+
+# --------------------------------------------------------------------------
+# Read paths for the API. Still the only module writing SQL — the routers do
+# no querying of their own, they shape what these return.
+# --------------------------------------------------------------------------
+
+# The current match, as a correlated subquery-free join condition. Every read
+# below reuses it, so "current" is defined exactly once.
+_CURRENT = MatchResult.superseded_at.is_(None)
+
+# How long a vacancy can go unseen by discovery before the UI calls it stale.
+# Derived, never stored (§6): a stored flag needs a job to maintain it and is
+# wrong between runs.
+STALE_AFTER = dt.timedelta(days=14)
+
+
+def list_vacancies(
+    session: Session,
+    *,
+    source: str | None = None,
+    min_fit: float | None = None,
+    qualified_only: bool = False,
+    unseen_only: bool = False,
+    best_angle: Sequence[str] | None = None,
+    country: Sequence[str] | None = None,
+    work_format: Sequence[str] | None = None,
+    q: str | None = None,
+    cursor: tuple[float | None, int] | None = None,
+    limit: int = 50,
+) -> tuple[list[tuple[Vacancy, MatchResult | None]], int]:
+    """The ranked list, plus the total the same filters would return.
+
+    A LEFT JOIN, deliberately: a fetched-but-unmatched vacancy is a real state
+    the UI shows as "not matched yet", not a row to drop. That is also why the
+    sort takes NULLS LAST — unmatched rows sit at the bottom rather than
+    pretending to score zero.
+    """
+    stmt = (
+        select(Vacancy, MatchResult)
+        .outerjoin(MatchResult, and_(MatchResult.vacancy_id == Vacancy.id, _CURRENT))
+        .where(Vacancy.hidden_at.is_(None))
+    )
+
+    if source:
+        stmt = stmt.where(Vacancy.source == source)
+    if min_fit is not None:
+        # A threshold on the score, never on the label: the labels overlap
+        # (weak spans .13-.56, good .43-.62) because the label is the most
+        # probable level while the score is the expectation.
+        stmt = stmt.where(MatchResult.overall_fit_score >= min_fit)
+    if qualified_only:
+        stmt = stmt.where(MatchResult.is_qualified.is_(True))
+    if unseen_only:
+        stmt = stmt.where(Vacancy.seen_at.is_(None))
+    if best_angle:
+        stmt = stmt.where(MatchResult.best_angle.in_(list(best_angle)))
+    if country:
+        stmt = stmt.where(Vacancy.country.in_(list(country)))
+    if work_format:
+        stmt = stmt.where(Vacancy.work_formats.overlap(list(work_format)))
+    if q:
+        pattern = f"%{q}%"
+        stmt = stmt.where(
+            or_(
+                Vacancy.title.ilike(pattern),
+                Vacancy.company.ilike(pattern),
+                # a skill match, without a GIN index: array_to_string keeps it
+                # one expression and the corpus is small enough to scan
+                func.array_to_string(Vacancy.skills, " ").ilike(pattern),
+            )
+        )
+
+    total = session.scalar(
+        select(func.count()).select_from(stmt.order_by(None).subquery())
+    ) or 0
+
+    if cursor is not None:
+        # Keyset on the same (score DESC NULLS LAST, id) the ORDER BY uses.
+        #
+        # The NULL arm is not a nicety: an unmatched vacancy has no score, so
+        # `score < last_score` is NULL for it, and a naive predicate drops
+        # every unmatched row from page two onwards -- silently, since they
+        # simply never appear.
+        last_score, last_id = cursor
+        score = MatchResult.overall_fit_score
+        if last_score is None:
+            # already inside the NULL block: only later ids remain
+            stmt = stmt.where(and_(score.is_(None), Vacancy.id > last_id))
+        else:
+            stmt = stmt.where(
+                or_(
+                    score < last_score,
+                    and_(score == last_score, Vacancy.id > last_id),
+                    score.is_(None),          # the NULLS LAST tail
+                )
+            )
+
+    stmt = stmt.order_by(
+        MatchResult.overall_fit_score.desc().nullslast(), Vacancy.id
+    ).limit(limit)
+
+    return list(session.execute(stmt).all()), total
+
+
+def get_vacancy(session: Session, vacancy_id: int) -> tuple[Vacancy, MatchResult | None] | None:
+    """One vacancy and its current match, or None when the id is unknown."""
+    row = session.execute(
+        select(Vacancy, MatchResult)
+        .outerjoin(MatchResult, and_(MatchResult.vacancy_id == Vacancy.id, _CURRENT))
+        .where(Vacancy.id == vacancy_id)
+    ).first()
+    return (row[0], row[1]) if row else None
+
+
+def call_cost(session: Session, match: MatchResult | None) -> Decimal | None:
+    """What the current match cost. Lives on llm_calls, not match_results."""
+    if match is None:
+        return None
+    return session.scalar(select(LlmCall.cost_usd).where(LlmCall.id == match.llm_call_id))
+
+
+def set_triage(session: Session, vacancy_id: int, field: str, on: bool) -> bool:
+    """Set or clear one triage timestamp. False when the id is unknown.
+
+    Clearing is a first-class operation, not an afterthought: it is what the
+    UI's Undo sends after a hide.
+    """
+    column = {"seen": Vacancy.seen_at, "starred": Vacancy.starred_at,
+              "hidden": Vacancy.hidden_at}[field]
+    result = session.execute(
+        update(Vacancy)
+        .where(Vacancy.id == vacancy_id)
+        .values({column: func.now() if on else None})
+    )
+    return result.rowcount > 0
+
+
+def _cv_scope(cv_hash: str):
+    """The one row this CV holds for each vacancy: its latest.
+
+    A CV can answer the same vacancy more than once — a reworded question set
+    is a new fingerprint under the same CV — and the market view wants one
+    answer per posting either way, so the newest wins. `id` breaks a tie on
+    `created_at`, which a bulk insert can hand out identically.
+    """
+    return MatchResult.id.in_(
+        select(MatchResult.id)
+        .where(MatchResult.cv_hash == cv_hash)
+        .distinct(MatchResult.vacancy_id)
+        .order_by(
+            MatchResult.vacancy_id,
+            MatchResult.created_at.desc(),
+            MatchResult.id.desc(),
+        )
+    )
+
+
+def stats(
+    session: Session,
+    *,
+    country: Sequence[str] | None = None,
+    cv_hash: str | None = None,
+) -> dict[str, Any]:
+    """Everything the market view shows, in four queries rather than eight.
+
+    Scoped to current matches only; a superseded row answered a different
+    question set and must not be counted beside the answers that replaced it.
+
+    ``cv_hash`` replaces that scope rather than narrowing it: one CV's answers
+    to the whole corpus, current or superseded. Superseded does not mean
+    wrong — it means another CV answered afterwards — and only one row per
+    vacancy can be current, so without this a finished re-match would leave
+    the older CV with nothing to show and a running one would split the corpus
+    between the two, averaging a median over answers from neither.
+
+    ``country`` narrows every aggregate to postings in those countries — the
+    one exception is the country breakdown itself, which stays over the whole
+    corpus so the filter's own options do not disappear as soon as one is
+    picked.
+    """
+    where = [_cv_scope(cv_hash) if cv_hash else _CURRENT]
+    if country:
+        where.append(Vacancy.country.in_(list(country)))
+
+    # The join is unconditional: MatchResult.vacancy_id is a non-null FK, so it
+    # adds no rows, and one shape is easier to trust than two.
+    def matched(*columns):
+        return (
+            select(*columns)
+            .join(Vacancy, Vacancy.id == MatchResult.vacancy_id)
+            .where(and_(*where))
+        )
+
+    headline = session.execute(
+        matched(
+            func.count(),
+            func.count().filter(MatchResult.is_qualified),
+            func.count().filter(
+                and_(MatchResult.is_qualified, MatchResult.overall_fit_score >= 0.5)
+            ),
+            func.percentile_cont(0.5).within_group(MatchResult.overall_fit_score),
+            func.avg(MatchResult.overall_fit_score),
+        )
+    ).one()
+
+    fit_rows = session.execute(
+        matched(MatchResult.overall_fit_label, func.count())
+        .group_by(MatchResult.overall_fit_label)
+    ).all()
+
+    # One pass for both the per-pitch totals and their fit breakdown: the
+    # counts have to agree, and two queries are two chances to disagree.
+    pitch_rows = session.execute(
+        matched(
+            MatchResult.best_angle,
+            MatchResult.overall_fit_label,
+            func.count(),
+            func.avg(MatchResult.overall_fit_score),
+            func.count().filter(MatchResult.is_qualified),
+        )
+        .group_by(MatchResult.best_angle, MatchResult.overall_fit_label)
+    ).all()
+
+    spend_stmt = select(
+        func.count(), func.coalesce(func.sum(LlmCall.cost_usd), 0), func.avg(LlmCall.duration_ms)
+    )
+    if cv_hash:
+        # llm_calls has no cv_hash of its own — it records the request, not
+        # what the request was about — so the spend for one CV is the spend on
+        # the calls its matches point at. A call that errored produced no match
+        # row and so cannot be attributed to any CV; it drops out here rather
+        # than being guessed at.
+        spend_stmt = spend_stmt.where(
+            LlmCall.id.in_(select(MatchResult.llm_call_id).where(_cv_scope(cv_hash)))
+        )
+    if country:
+        # An inner join, so calls not tied to a vacancy drop out — which is
+        # what the filter asks for: spend *on these postings*.
+        spend_stmt = spend_stmt.join(Vacancy, Vacancy.id == LlmCall.vacancy_id).where(
+            Vacancy.country.in_(list(country))
+        )
+    spend = session.execute(spend_stmt).one()
+
+    # Deliberately unfiltered by country — see the docstring — but still over
+    # this CV's current matches, so these counts add up to `total` instead of
+    # quietly counting postings that were never matched, or matched for
+    # somebody else's CV.
+    country_where = [
+        _cv_scope(cv_hash) if cv_hash else _CURRENT,
+        Vacancy.country.is_not(None),
+    ]
+    countries = session.execute(
+        select(Vacancy.country, func.count())
+        .join(MatchResult, MatchResult.vacancy_id == Vacancy.id)
+        .where(and_(*country_where))
+        .group_by(Vacancy.country)
+        .order_by(func.count().desc())
+    ).all()
+
+    formats_stmt = (
+        select(func.unnest(Vacancy.work_formats).label("fmt"), func.count())
+        .group_by(text("fmt"))
+        .order_by(func.count().desc())
+    )
+    if cv_hash:
+        formats_stmt = formats_stmt.join(
+            MatchResult, MatchResult.vacancy_id == Vacancy.id
+        ).where(_cv_scope(cv_hash))
+    if country:
+        formats_stmt = formats_stmt.where(Vacancy.country.in_(list(country)))
+    formats = session.execute(formats_stmt).all()
+
+    return {
+        "headline": headline,
+        "fit_rows": fit_rows,
+        "pitch_rows": pitch_rows,
+        "spend": spend,
+        "countries": countries,
+        "formats": formats,
+    }
+
+
+def cv_hashes(session: Session) -> list[tuple[str, int, dt.datetime]]:
+    """Every CV the stored corpus has been matched against: (hash, vacancies
+    answered, when it was last matched).
+
+    Over every stored row, not only the current ones: a CV that has been
+    re-matched away holds no current row at all, and it is still one of the
+    CVs this corpus has an answer for — which is the whole point of being able
+    to pick it.
+
+    The database knows a CV only as the hash its answers were stored under —
+    there is no `cvs` table and there should not be one, because the file is
+    not the record: it gets edited, renamed and deleted, while the answers it
+    earned stay true about the text that earned them. Putting a name back on
+    a hash is the API's job, and only for the files still on disk.
+    """
+    return [
+        (cv_hash, count, last)
+        for cv_hash, count, last in session.execute(
+            select(
+                MatchResult.cv_hash,
+                func.count(func.distinct(MatchResult.vacancy_id)),
+                func.max(MatchResult.created_at),
+            )
+            .group_by(MatchResult.cv_hash)
+            .order_by(func.max(MatchResult.created_at).desc())
+        ).all()
+    ]

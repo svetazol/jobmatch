@@ -324,3 +324,75 @@ def test_limit_caps_what_a_run_spends(fake_source, settings):
 
     assert report.matched == 2
     assert report.fetched == 5  # fetching is free and still finishes
+
+
+def test_no_match_crawls_and_fetches_but_never_pays(settings, monkeypatch):
+    """`run(match=False)` must not reach the matcher at all.
+
+    Not merely "matches nothing": opening the client is itself a failure here,
+    because it requires an API key and the whole point of the flag is to run
+    the free phases on a machine that has none.
+    """
+    def explode(*args, **kwargs):
+        raise AssertionError("the paid phase ran despite match=False")
+
+    monkeypatch.setattr(pipeline.matching, "open_client", explode)
+    monkeypatch.setattr(pipeline, "match_all", explode)
+
+    SOURCES[SOURCE_NAME] = Source(
+        name=SOURCE_NAME,
+        hosts=("example.test",),
+        discover=lambda params, crawl: [listing("1"), listing("2")],
+        fetch=lambda url: data(url.rsplit("/", 1)[-1]),
+    )
+    try:
+        report = pipeline.run(settings, match=False)
+    finally:
+        del SOURCES[SOURCE_NAME]
+
+    assert report.discovered > 0
+    assert report.matched == 0
+    with SessionLocal() as session:
+        stored = session.scalars(
+            select(Vacancy).where(Vacancy.source == SOURCE_NAME)
+        ).all()
+        assert stored, "nothing was crawled"
+        assert all(v.fetched_at is not None for v in stored), "fetch phase was skipped too"
+
+
+def test_fetch_all_drains_the_queue_without_crawling(settings, monkeypatch):
+    """The free-phase twin of `match_all`: no discovery, no spending.
+
+    Discovery must not run — the point of the command is to finish work that
+    discovery already did, on a corpus that may be far larger than today's
+    search results.
+    """
+    def no_crawling(*args, **kwargs):
+        raise AssertionError("fetch_all must not discover")
+
+    SOURCES[SOURCE_NAME] = Source(
+        name=SOURCE_NAME,
+        hosts=("example.test",),
+        discover=no_crawling,
+        fetch=lambda url: data(url.rsplit("/", 1)[-1]),
+    )
+    try:
+        # two listings stored but never fetched — exactly the queue state a
+        # throttled run leaves behind
+        with SessionLocal.begin() as session:
+            for n in ("901", "902"):
+                repository.upsert_listing(session, SOURCE_NAME, listing(n))
+
+        report = pipeline.fetch_all(settings)
+
+        assert report.fetched == 2
+        with SessionLocal() as session:
+            assert repository.fetch_queue(session, [SOURCE_NAME]) == []
+    finally:
+        del SOURCES[SOURCE_NAME]
+
+
+def test_fetch_all_is_a_no_op_on_an_empty_queue(settings):
+    report = pipeline.fetch_all(settings)
+    assert report.fetched == 0
+    assert report.failures == []

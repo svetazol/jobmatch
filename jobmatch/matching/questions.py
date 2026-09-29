@@ -37,7 +37,7 @@ TOP_GAP = Choice(
     },
 )
 
-# The four angles from the master CV's positioning bank. One angle is picked
+# The six angles from the master CV's positioning bank. One angle is picked
 # per posting, never blended -- so this asks which one a vacancy calls for.
 # "none" exists because plenty of postings fit no angle at all, and forcing a
 # choice would make the answer look meaningful when it isn't.
@@ -61,8 +61,19 @@ BEST_ANGLE = Choice(
             "than depth in one stack."
         ),
         "data": (
-            "Data-intensive work: data warehousing, ETL, analytics, MPP or columnar "
-            "databases, large-scale data processing and performance tuning."
+            "Data *engineering*: building and running the plumbing -- warehousing, ETL "
+            "and orchestration, MPP or columnar databases, large-scale processing and "
+            "performance tuning. The pipelines, not the conclusions drawn from them."
+        ),
+        "analytics": (
+            "Analytics: answering business questions from data -- SQL analysis, BI "
+            "dashboards and reporting, product and business metrics, experiment design "
+            "and A/B testing. The conclusions, not the pipelines that feed them."
+        ),
+        "ml": (
+            "Machine learning: training and shipping models -- classical ML, deep "
+            "learning, scoring, recommendations, computer vision. Building the model, "
+            "not calling someone else's API."
         ),
         "none": "The posting fits none of these angles.",
     },

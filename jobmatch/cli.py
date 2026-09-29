@@ -8,7 +8,7 @@ import sys
 from decimal import Decimal
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from . import matching, pipeline, repository
 from .config import DEFAULT_PATH, Settings, load_settings
@@ -19,9 +19,9 @@ from .sources import source_for_url
 log = logging.getLogger(__name__)
 
 
-def cmd_run(config_path: str, limit: int | None) -> int:
+def cmd_run(config_path: str, limit: int | None, match: bool = True) -> int:
     settings = load_settings(config_path)
-    report = pipeline.run(settings, limit=limit)
+    report = pipeline.run(settings, limit=limit, match=match)
     with SessionLocal() as session:
         stored, fetched, matched = repository.count_vacancies(session)
     print(f"\n{report.summary()}")
@@ -118,6 +118,39 @@ def _dry_run(settings: Settings, country: str | None, limit: int | None) -> int:
     return 0
 
 
+def cmd_cv_hash(config_path: str, cv: str | None) -> int:
+    """Print the hash a CV's answers are stored under — what `stats_cv_hash`
+    wants, and the only way to tell which of several CVs a stored match
+    belongs to. Hashed after sanitising, exactly as matching does it."""
+    settings = load_settings(config_path)
+    path = Path(cv) if cv else settings.cv_path
+    digest = matching.sha256(matching.load_cv(path))
+    with SessionLocal() as session:
+        current = session.scalar(
+            select(func.count())
+            .select_from(MatchResult)
+            .where(MatchResult.cv_hash == digest, MatchResult.superseded_at.is_(None))
+        )
+    print(f"{digest}  {path}  ({current} current matches)")
+    return 0
+
+
+def cmd_fetch_pending(config_path: str, limit: int | None) -> int:
+    """Drain the fetch queue. No crawling, no spending."""
+    settings = load_settings(config_path)
+    report = pipeline.fetch_all(settings, limit=limit)
+    with SessionLocal() as session:
+        stored, fetched, matched = repository.count_vacancies(session)
+        remaining = len(repository.fetch_queue(session, [e.name for e in settings.sources]))
+    print(f"\n{report.summary()}")
+    print(f"database now holds {stored} vacancies, {fetched} fetched; {remaining} still queued")
+    for url, exc in report.failures[:10]:
+        print(f"  ! {url}: {type(exc).__name__}: {exc}")
+    if len(report.failures) > 10:
+        print(f"  ... and {len(report.failures) - 10} more")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     parser = argparse.ArgumentParser(prog="jobmatch")
@@ -130,9 +163,31 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         help="pay for at most this many matches — try a change cheaply first",
     )
+    run.add_argument(
+        "--no-match",
+        action="store_true",
+        help="crawl and fetch only, spend nothing; `jobmatch match` pays later",
+    )
 
-    fetch = sub.add_parser("fetch", help="scrape one vacancy page into the database")
-    fetch.add_argument("url")
+    fetch = sub.add_parser("fetch", help="scrape vacancy pages into the database")
+    fetch.add_argument(
+        "url",
+        nargs="?",
+        help="one vacancy URL; omit it with --pending to drain the fetch queue",
+    )
+    fetch.add_argument(
+        "--pending",
+        action="store_true",
+        help="fetch every stored vacancy still missing its page, without crawling",
+    )
+    fetch.add_argument("--config", default=str(DEFAULT_PATH))
+    fetch.add_argument("--limit", type=int, help="at most this many pages")
+
+    cv_hash = sub.add_parser(
+        "cv-hash", help="print the hash a CV's stored answers live under"
+    )
+    cv_hash.add_argument("cv", nargs="?", help="a CV file; default is the configured one")
+    cv_hash.add_argument("--config", default=str(DEFAULT_PATH))
 
     match = sub.add_parser("match", help="match stored vacancies, without crawling")
     match.add_argument("--config", default=str(DEFAULT_PATH))
@@ -147,9 +202,13 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.command == "run":
-        return cmd_run(args.config, args.limit)
+        return cmd_run(args.config, args.limit, match=not args.no_match)
+    if args.command == "fetch" and args.pending:
+        return cmd_fetch_pending(args.config, args.limit)
     if args.command == "fetch":
         return cmd_fetch(args.url)
+    if args.command == "cv-hash":
+        return cmd_cv_hash(args.config, args.cv)
     if args.command == "match":
         return cmd_match(args.config, dry_run=args.dry_run, cv=args.cv,
                          country=args.country, limit=args.limit)

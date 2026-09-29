@@ -134,20 +134,32 @@ FAST = hh.Crawl(max_pages=5, delay=0.0)
 class FakeGet:
     """Serves a scripted page per request and records the params it saw."""
 
-    def __init__(self, *pages):
+    def __init__(self, *pages, not_found_from=None):
         self.pages = list(pages)
         self.seen = []
+        # hh answers 404 past its 40-page ceiling; `not_found_from` is the
+        # page index where this fake starts doing the same.
+        self.not_found_from = not_found_from
 
     def __call__(self, url, params, headers, timeout):
         self.seen.append(params)
-        body = self.pages.pop(0) if self.pages else SEARCH_END
+        page = params.get("page", 0)
+        if self.not_found_from is not None and page >= self.not_found_from:
+            body, status = "", 404
+        else:
+            body, status = (self.pages.pop(0) if self.pages else SEARCH_END), 200
 
         class Response:
             text = body
+            status_code = status
 
             @staticmethod
             def raise_for_status():
-                pass
+                if status >= 400:
+                    raise AssertionError(
+                        f"raise_for_status() called on {status}; the walk should "
+                        "have treated it as the end of the results"
+                    )
 
         return Response()
 
@@ -209,3 +221,77 @@ def test_each_area_is_walked_separately_and_ids_are_not_repeated(monkeypatch):
 
     assert [p.get("area") for p in get.seen] == [28, 28, 16, 16]
     assert [l.external_id for l in listings] == ["1", "2"]  # both areas returned the same two
+
+
+def test_a_404_ends_the_walk_instead_of_raising(monkeypatch):
+    """hh answers 404 from page 40 on — the end of the results, not an error.
+
+    Raising there would abort the walk, and since `discover` is one generator
+    across every configured area, it would take the remaining areas with it.
+    """
+    get = FakeGet(SEARCH_PAGE, SEARCH_PAGE, not_found_from=2)
+    monkeypatch.setattr(hh.requests, "get", get)
+
+    listings = list(hh.discover({"text": "python", "area": [1, 2]}, FAST))
+
+    # area 1 walked two full pages then met the 404 and stopped there;
+    # crucially area 2 was still reached, which a raised error would have
+    # prevented
+    assert [p["area"] for p in get.seen] == [1, 1, 1, 2]
+    assert [p["page"] for p in get.seen] == [0, 1, 2, 0]
+    assert len(listings) == 2          # the two ids, deduped across both areas
+
+
+STRIPPED = """<!doctype html><html><body>
+<noscript>Для работы с нашим сайтом необходимо, чтобы Вы включили JavaScript</noscript>
+</body></html>"""
+
+
+class FakeFetch:
+    """Serves scripted bodies for fetch(), recording how many times it was hit."""
+
+    def __init__(self, *bodies):
+        self.bodies = list(bodies)
+        self.calls = 0
+
+    def __call__(self, url, headers, timeout):
+        self.calls += 1
+        body = self.bodies.pop(0) if self.bodies else STRIPPED
+
+        class Response:
+            status_code = 200
+            text = body
+
+            @staticmethod
+            def raise_for_status():
+                pass
+
+        return Response()
+
+
+def test_the_throttling_stub_is_retried_not_reported_as_a_layout_change(monkeypatch):
+    """hh answers 200 with a stripped page when we push too hard.
+
+    Parsing it raises "No description found", which reads like the site
+    changed and is nothing of the sort — and worse, it burns one of the
+    vacancy's three fetch attempts on a problem that is ours, not the page's.
+    """
+    get = FakeFetch(STRIPPED, STRIPPED, PAGE)
+    monkeypatch.setattr(hh.requests, "get", get)
+    monkeypatch.setattr(hh.time, "sleep", lambda _: None)
+
+    data = hh.fetch("https://hh.ru/vacancy/1")
+
+    assert get.calls == 3, "should have retried past both stubs"
+    assert data.description, "the third, real page should have parsed"
+
+
+def test_a_page_that_is_only_ever_stripped_raises_throttled(monkeypatch):
+    """Distinct from ParseError: this one says 'slow down', not 'page changed'."""
+    get = FakeFetch()          # every body is the stub
+    monkeypatch.setattr(hh.requests, "get", get)
+    monkeypatch.setattr(hh.time, "sleep", lambda _: None)
+
+    with pytest.raises(hh.Throttled):
+        hh.fetch("https://hh.ru/vacancy/1")
+    assert get.calls == hh.FETCH_ATTEMPTS
