@@ -101,8 +101,14 @@ def main(argv: list[str] | None = None) -> int:
     """The queries a country name expands to."""
     import sys
 
+    # local: the package imports this module, so it cannot be imported back at
+    # module level
+    from . import ORDER_BY, SEARCH_URL
+
     args = argv if argv is not None else sys.argv[1:]
     print(f"areas.json generated {fetched()}")
+    print(f"GET {SEARCH_URL}")
+    print(f"    order_by={ORDER_BY}, the configured search, and one line below each")
     if not args:
         for name, area in sorted(COUNTRIES.items(), key=lambda kv: kv[1]):
             note = " (over the cap: split by region)" if name in OVERSIZED_COUNTRIES else ""
@@ -112,8 +118,7 @@ def main(argv: list[str] | None = None) -> int:
         queries = coverage(name)
         print(f"\n{name} -> {len(queries)} quer{'y' if len(queries) == 1 else 'ies'}")
         for query in queries:
-            extra = "".join(f"  {k}={v}" for k, v in query.items() if k != "area")
-            print(f"  area={query['area']}{extra}")
+            print("  " + "&".join(f"{k}={v}" for k, v in query.items()))
     return 0
 
 
