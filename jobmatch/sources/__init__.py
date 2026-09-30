@@ -27,6 +27,19 @@ class Crawl:
     delay: float = 2.5
 
 
+@dataclass(frozen=True, slots=True)
+class Rate:
+    """How fast a source's *detail pages* may be fetched.
+
+    Per source, not global: throttling tolerance belongs to the site. The rate
+    is ``workers / delay`` a second -- each worker sleeps ``delay`` after its own
+    page, so raising workers alone raises the rate.
+    """
+
+    workers: int = 1
+    delay: float = 1.0
+
+
 class VacancyGone(Exception):
     """A positive signal that the vacancy is no longer listed (404, archived).
 
@@ -66,12 +79,18 @@ class VacancyData:
 
 @dataclass(frozen=True, slots=True)
 class Source:
-    """A site: a search feed and a page parser, and nothing else."""
+    """A site: a search feed, a page parser, and the limits it imposes.
+
+    ``crawl`` and ``rate`` are data, not behaviour: what this site tolerates,
+    measured against it, so no config has to restate them.
+    """
 
     name: str
     hosts: tuple[str, ...]                 # which URLs this source owns
-    discover: Callable[[Mapping[str, Any], Crawl], Iterable[Listing]]
+    discover: Callable[..., Iterable[Listing]]
     fetch: Callable[[str], VacancyData]    # a URL, not a Listing: `fetch <url>` has no feed
+    crawl: Crawl = Crawl()                 # how far its listing may be walked
+    rate: Rate = Rate()                    # how fast its pages may be fetched
 
 
 from . import hh  # noqa: E402  (circular-free: hh imports only the dataclasses)

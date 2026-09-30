@@ -19,8 +19,11 @@ from .sources import source_for_url
 log = logging.getLogger(__name__)
 
 
-def cmd_run(config_path: str, limit: int | None, match: bool = True) -> int:
+def cmd_run(config_path: str, limit: int | None, match: bool = True,
+            only: str | None = None) -> int:
     settings = load_settings(config_path)
+    if only:
+        settings = settings.only(only)
     report = pipeline.run(settings, limit=limit, match=match)
     with SessionLocal() as session:
         stored, fetched, matched = repository.count_vacancies(session)
@@ -168,6 +171,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="crawl and fetch only, spend nothing; `jobmatch match` pays later",
     )
+    run.add_argument(
+        "--only",
+        metavar="SWEEP",
+        help="crawl only this sweep, e.g. --only bg; omit it to crawl them all",
+    )
 
     fetch = sub.add_parser("fetch", help="scrape vacancy pages into the database")
     fetch.add_argument(
@@ -202,7 +210,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.command == "run":
-        return cmd_run(args.config, args.limit, match=not args.no_match)
+        return cmd_run(args.config, args.limit, match=not args.no_match, only=args.only)
     if args.command == "fetch" and args.pending:
         return cmd_fetch_pending(args.config, args.limit)
     if args.command == "fetch":

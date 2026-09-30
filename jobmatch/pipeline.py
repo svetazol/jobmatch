@@ -20,7 +20,7 @@ from . import matching, repository
 from .config import Settings, SourceConfig
 from .db import SessionLocal
 from .models import MAX_FETCH_ATTEMPTS, LlmCall, Vacancy
-from .sources import SOURCES, Listing, Source, VacancyGone, source_for_url
+from .sources import SOURCES, Listing, Rate, Source, VacancyGone, source_for_url
 
 log = logging.getLogger(__name__)
 
@@ -79,12 +79,10 @@ def run(settings: Settings, limit: int | None = None, *, match: bool = True) -> 
     are the queue, and `jobmatch match` picks up exactly where this stopped.
     """
     report = RunReport()
-    for entry in settings.sources:
-        source = SOURCES.get(entry.name)
-        if source is None:
-            log.error("config names unknown source %r; skipping", entry.name)
-            continue
-        listings = _safe_discover(source, entry, settings, report)
+    for entry, sweep, countries in settings.crawls():
+        source = SOURCES[entry.name]     # validated at load
+        log.info("sweep %s: %s", sweep, ", ".join(countries))
+        listings = _safe_discover(source, entry, countries, settings, report)
         report.discovered += len(listings)
         _process_all(source, listings, settings, report)
 
@@ -147,17 +145,23 @@ def fetch_all(
         log.info("fetch queue is empty")
         return report
 
-    log.info("fetching %d pending pages, %d at a time", len(pending), settings.fetch_workers)
+    source = source_for_url(pending[0][1])
+    rate = settings.rate_for(source.rate)
+    log.info("fetching %d pending pages, %d at a time", len(pending), rate.workers)
     work = [
         (vacancy_id, Listing(external_id=str(vacancy_id), url=url))
         for vacancy_id, url in pending
     ]
-    _fetch_concurrently(source_for_url(work[0][1].url), work, settings, report)
+    _fetch_concurrently(source, work, settings, report)
     return report
 
 
 def _safe_discover(
-    source: Source, entry: SourceConfig, settings: Settings, report: RunReport
+    source: Source,
+    entry: SourceConfig,
+    countries: tuple[str, ...],
+    settings: Settings,
+    report: RunReport,
 ) -> list[Listing]:
     """A source being down costs one warning, not the other sources' work.
 
@@ -167,11 +171,11 @@ def _safe_discover(
     """
     listings: list[Listing] = []
     try:
-        for listing in source.discover(entry.params, settings.crawl):
+        for listing in source.discover(entry.search, settings.crawl, countries):
             listings.append(listing)
     except Exception as exc:
         log.warning("discovery failed for %s after %d: %s", source.name, len(listings), exc)
-        report.failures.append((f"discover:{source.name}", exc))
+        report.failures.append((f"discover:{source.name}:{','.join(countries)}", exc))
     return listings
 
 
@@ -181,11 +185,9 @@ def _process_all(
     """Upsert every listing, then fetch the outstanding ones concurrently.
 
     Fetching is almost entirely waiting on hh, so it is the one phase worth
-    overlapping: `fetch_workers` pages are in flight at once, each worker still
-    sleeping `fetch_delay` after its own page. The request rate is therefore
-    roughly `fetch_workers / fetch_delay` per second, which is the number to
-    keep honest -- raising workers without raising the delay is how you get
-    throttled (and hh does throttle: see sources/hh.py).
+    overlapping: `rate.workers` pages are in flight at once, each worker still
+    sleeping `rate.delay` after its own page, so the rate is `workers / delay`
+    per second. The source states its own measured value (`sources/hh` RATE).
 
     Threads rather than asyncio: the work is `requests` + BeautifulSoup, both
     synchronous, and a thread pool buys the same overlap without an async
@@ -206,15 +208,16 @@ def _fetch_concurrently(
     settings: Settings,
     report: RunReport,
 ) -> None:
-    workers = max(1, settings.fetch_workers)
+    rate = settings.rate_for(source.rate)
+    workers = rate.workers
     if workers == 1 or len(work) <= 1:
         for vacancy_id, listing in work:
-            _fetch(source, listing, vacancy_id, settings, report)
+            _fetch(source, listing, vacancy_id, rate, report)
         return
 
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="fetch") as pool:
         futures = [
-            pool.submit(_fetch, source, listing, vacancy_id, settings, report)
+            pool.submit(_fetch, source, listing, vacancy_id, rate, report)
             for vacancy_id, listing in work
         ]
         for future in as_completed(futures):
@@ -234,7 +237,7 @@ def _persist_listing(source: Source, listing: Listing, report: RunReport) -> int
 
 
 def _fetch(
-    source: Source, listing: Listing, vacancy_id: int, settings: Settings, report: RunReport
+    source: Source, listing: Listing, vacancy_id: int, rate: Rate, report: RunReport
 ) -> None:
     with SessionLocal() as session:
         vacancy = session.get_one(Vacancy, vacancy_id)
@@ -263,10 +266,9 @@ def _fetch(
         report.record("fetched")
         log.info("fetched %s — %s", listing.url, data.title)
     finally:
-        # per worker, not global: with N workers the effective rate is
-        # N/fetch_delay per second. Pages are ~700KB, which is the real
-        # argument for keeping the delay at all.
-        time.sleep(settings.fetch_delay)
+        # per worker: with N workers the rate is N/delay per second. Pages are
+        # ~700KB. The number is the source's own -- see sources/hh RATE.
+        time.sleep(rate.delay)
 
 
 def _match(vacancy_id: int, cv: str, client, settings: Settings, report: RunReport) -> None:

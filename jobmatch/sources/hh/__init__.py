@@ -12,18 +12,35 @@ import json
 import logging
 import re
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
 from bs4 import BeautifulSoup
 
-from . import Crawl, Listing, Source, VacancyData, VacancyGone
+from .. import Crawl, Listing, Rate, Source, VacancyData, VacancyGone
+from . import areas
 
 log = logging.getLogger(__name__)
 
 NAME = "hh.ru"
+
+# What hh tolerates -- measured, not configured. Rate is workers/delay per
+# second; 2026-09-24 at 6 workers hh answered 200 with a stripped page and 597
+# vacancies came back empty. 3 at 1.0s held. workers=1 is sequential.
+RATE = Rate(workers=3, delay=1.0)
+
+# 2026-09-29: search pages 0-39 at 50 results, 404 from page 40 -- 2 000 per
+# query, so 40 asks for all hh will give. Result pages are ~1.2MB, hence the
+# larger delay than for vacancy pages.
+CRAWL = Crawl(max_pages=40, delay=2.5)
+RESULT_CEILING = 2000
+
+# Coverage, not preference: under the cap, ordering decides *which* 2 000 you
+# get, and newest-first is the only ordering a repeated crawl converges under.
+# A configured `order_by` still wins.
+ORDER_BY = "publication_time"
 # The paginated HTML results, not the RSS feed: RSS serves only the newest 20
 # per query, where the same filter has thousands here. 50 per page,
 # `page=0,1,...`; `items_on_page` is ignored. (The *markup* shows only the first
@@ -228,25 +245,33 @@ class Throttled(RuntimeError):
 SearchThrottled = Throttled
 
 
-def discover(params: Mapping[str, Any], crawl: Crawl = Crawl()) -> Iterator[Listing]:
-    """Walk the search results, one area at a time.
+def discover(
+    params: Mapping[str, Any],
+    crawl: Crawl | None = None,
+    countries: Sequence[str] = (),
+) -> Iterator[Listing]:
+    """Walk the search results, one query at a time.
 
-    A list of ``area`` values becomes a separate walk per area. That is not
-    only politeness: hh caps a *query* at 2 000 results (40 pages of 50, then
-    404 -- verified 2026-09-29), however many it says it found, so splitting
-    the query into narrower ones is how you reach the rest.
+    ``countries`` holds plain names like ``russia``, each expanded by
+    ``areas.coverage`` into the queries it takes to get under ``RESULT_CEILING``.
+    Without them, an ``area`` in ``params`` is walked directly, one query per
+    entry -- the path the parser tests use. ``crawl`` defaults to ``CRAWL``.
 
-    Yields each vacancy once -- pages overlap slightly when postings shift
-    between requests, and counting one twice would make the run report a
-    corpus it doesn't have.
+    Yields each vacancy once: queries overlap when postings shift between
+    requests, and counting one twice would misreport the corpus.
     """
-    params = dict(params)
-    areas = params.pop("area", None)
-    area_list = list(areas) if isinstance(areas, (list, tuple)) else [areas]
+    crawl = crawl or CRAWL
+    base: dict[str, Any] = {"order_by": ORDER_BY, **dict(params)}
+    if countries:
+        queries = [query for country in countries for query in areas.coverage(country)]
+    else:
+        spec = base.pop("area", None)
+        listed = spec if isinstance(spec, (list, tuple)) else [spec]
+        queries = [{} if area is None else {"area": area} for area in listed]
+
     seen: set[str] = set()
-    for area in area_list:
-        query = params if area is None else {**params, "area": area}
-        for listing in _walk(query, crawl):
+    for query in queries:
+        for listing in _walk({**base, **query}, crawl):
             if listing.external_id not in seen:
                 seen.add(listing.external_id)
                 yield listing
@@ -411,4 +436,6 @@ def fetch(url: str) -> VacancyData:
     raise Throttled(f"only the stripped page after {FETCH_ATTEMPTS} attempts: {url}")
 
 
-SOURCE = Source(name=NAME, hosts=HOSTS, discover=discover, fetch=fetch)
+SOURCE = Source(
+    name=NAME, hosts=HOSTS, discover=discover, fetch=fetch, crawl=CRAWL, rate=RATE
+)

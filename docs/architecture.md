@@ -38,7 +38,7 @@ wrong.
 **Superseded by task 5 (2026-09-24).** The rolling window turned out to be too
 narrow in practice, so discovery now walks hh.ru's paginated **HTML** search
 results instead of the RSS feed. As predicted, the change was contained to
-`sources/hh.py` plus one new `Crawl` knob pair — nothing outside `sources/`
+`sources/hh/` plus one new `Crawl` knob pair — nothing outside `sources/`
 moved. The RSS feed is no longer called at all. Two things the search pages
 demand that the feed did not: results are ~1.2MB each, and at a 1s interval hh
 starts serving a stripped "enable JavaScript" page instead of results, so the
@@ -73,7 +73,7 @@ real argument for the delay.
 cv/
 ├─ pyproject.toml         # uv; [project.scripts] jobmatch = "jobmatch.cli:main"
 ├─ alembic.ini            # points at migrations/; DB URL comes from env, not from here
-├─ config.toml            # checked in: enabled sources + their opaque params, knobs
+├─ config.toml            # checked in: *choices* only — what to search for, where, which CV
 ├─ docker-compose.yml     # this project's Postgres 18, host port 5433
 ├─ .env                   # secrets only: DATABASE_URL, OPENROUTER_API_KEY
 ├─ .env.example           # checked-in template for .env
@@ -179,7 +179,7 @@ UI filters on both. `work_formats` is a list, not one value: a real posting can
 offer on-site, remote and hybrid at once.
 
 ```python
-# jobmatch/sources/hh.py — everything hh-shaped is in here
+# jobmatch/sources/hh/ — everything hh-shaped is in here
 SEARCH_URL = "https://hh.ru/search/vacancy"
 HOSTS = ("hh.ru", "headhunter.ge")
 HEADERS = {"User-Agent": "...", "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8"}
@@ -805,41 +805,53 @@ project can tear down.
 `config.toml`, read with stdlib `tomllib` — no YAML dependency, no
 pydantic-settings, and unlike JSON it takes comments.
 
+It holds **choices only**. hh's crawl ceiling and its safe fetch rate are
+properties of the site, measured against it, and live beside the code that
+measured them — `CRAWL` and `RATE` in `sources/hh/__init__.py`, carried on
+`Source`. A `[crawl]` block or a `fetch_workers` line in config is an override
+for a deliberate experiment, never a requirement; omit them and the source's own
+values are used. The rule that produced this: a setting a config *must* restate
+is a setting a config can contradict, which is how `config.bg.toml` came to run
+`fetch_workers = 6` after `config.toml` had recorded 6 as the rate that made hh
+serve stripped pages.
+
 ```toml
-fetch_delay = 1.0        # seconds between vacancy page hits; pages are ~700KB
-max_fetch_attempts = 3   # a page that keeps failing stops being retried
+model = "jev-1.13"       # pinned, never an alias — see §4
+cv_path = "data/cv3.md"  # what the *next* match run uses
+stats_cv_hash = "9e5b…"  # what has *already* been matched — a different thing
 
-model = "jev-1.13"       # pinned, never jev-latest — see §4
-cv_path = "data/cv.md"
-
-# Walking the search results. Slower than fetching on purpose: result pages are
-# ~1.2MB, and at a 1s interval hh serves a stripped "enable JavaScript" page.
-[crawl]
-max_pages = 5
-delay = 2.5
-
-[[sources]]
-name = "hh.ru"
-
-[sources.params]
+[sources."hh.ru".search]           # opaque: passed to the source verbatim
 text = "python"
-order_by = "publication_time"
 excluded_text = '"QA","AQA",тестировщик,devops'
 search_field = ["name", "description"]
-area = [28, 16, 113]     # Georgia, Belarus, Russia — one request per entry
+
+[sources."hh.ru".sweeps]           # `run --only bg` crawls just that one
+bg = ["belarus", "georgia"]
+ru = ["russia"]
 ```
 
-`area` is a list because hh's result cap is *per request*, so both areas in one
-request would still return one page's worth in total rather than two. No
-`work_format` filter on purpose: `vacancies.work_formats` records what each
-posting offers, so filtering happens after the fact instead of throwing away
-on-site and hybrid at discovery time.
+A country name is the whole "where". `areas.coverage()` expands it into the
+queries needed to get under hh's ceiling — one for Belarus or Georgia, 92 for
+Russia (88 regions, plus Moscow four times by `experience` because it busts the
+cap alone and has no child areas). `python -m jobmatch.sources.hh russia` prints
+them. The area ids come from `areas.json`, generated from `api.hh.ru/areas` by
+`_refresh.py`, because 88 integers are the answer to one API call rather than
+authored knowledge.
 
-`params` is a free-form table copied into `SourceConfig.params` without being
-looked inside. Validation is two checks in `load_settings()`: the file parses,
-and every `name` is in `SOURCES` (fail fast: `unknown source 'lever'; known: hh.ru`).
-One filter per source, as decided; the list-of-tables form already allows the
-same source twice at zero cost today.
+`search` is nested under the source, not shared across sources: each site has its
+own query vocabulary, and one `search` per source makes it structurally
+impossible for two sweeps to drift apart — which is what a second config file
+did. `search` is never inspected on the way through; `stats.py::_search()` is the
+one sanctioned exception, reading `text`/`search_field`/`excluded_text` to
+*describe* the corpus on the market page.
+
+Validation in `load_settings()`, all of it fatal at load rather than mid-crawl:
+the file parses; unknown top-level settings are named (`fetch_worker` silently
+ran one worker before); every source name is in `SOURCES`; a stray key under a
+source is refused (notably `params`, what `search` used to be called); every
+sweep is a non-empty list; and every country name is in `areas.COUNTRIES`, so a
+typo fails before the first request instead of after the earlier sweeps have
+spent theirs.
 
 Alembic reads `DATABASE_URL` from the environment in `migrations/env.py`, not
 from `alembic.ini`, so pipeline, API and migrations share one connection string.

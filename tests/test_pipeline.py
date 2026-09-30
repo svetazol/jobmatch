@@ -25,7 +25,9 @@ def settings(tmp_path):
     cv = tmp_path / "cv.md"
     cv.write_text("A CV with enough text to survive sanitising.\n", encoding="utf-8")
     return Settings(
-        sources=(SourceConfig(name=SOURCE_NAME, params={}),),
+        sources=(
+            SourceConfig(name=SOURCE_NAME, search={}, sweeps={"all": ("georgia",)}),
+        ),
         fetch_delay=0.0,
         model="test-model",
         cv_path=cv,
@@ -102,7 +104,7 @@ def fake_source(monkeypatch):
         source = Source(
             name=SOURCE_NAME,
             hosts=("example.test",),
-            discover=lambda params, crawl: list(listings),
+            discover=lambda params, crawl, countries=(): list(listings),
             fetch=fetch,
         )
         monkeypatch.setitem(SOURCES, SOURCE_NAME, source)
@@ -341,7 +343,7 @@ def test_no_match_crawls_and_fetches_but_never_pays(settings, monkeypatch):
     SOURCES[SOURCE_NAME] = Source(
         name=SOURCE_NAME,
         hosts=("example.test",),
-        discover=lambda params, crawl: [listing("1"), listing("2")],
+        discover=lambda params, crawl, countries=(): [listing("1"), listing("2")],
         fetch=lambda url: data(url.rsplit("/", 1)[-1]),
     )
     try:

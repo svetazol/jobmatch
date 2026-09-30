@@ -37,10 +37,9 @@ def _split_terms(raw: str) -> list[str]:
 def _search() -> Search:
     """What the corpus was filtered by.
 
-    Read from config.toml at request time rather than stored: the params are
-    opaque everywhere else in this codebase (§2), and this is the one place
-    that is allowed to look inside them — to describe them, never to act on
-    them.
+    Read from config.toml at request time rather than stored: a source's search
+    is opaque everywhere else in this codebase (§2), and this is the one place
+    that is allowed to look inside it — to describe it, never to act on it.
     """
     empty = Search(source="", keyword="", fields=[], excluded=[])
     try:
@@ -49,17 +48,17 @@ def _search() -> Search:
         return empty
 
     for source in settings.sources:
-        keyword = source.params.get("text")
+        keyword = source.search.get("text")
         if not keyword:
             continue
-        fields = source.params.get("search_field") or []
+        fields = source.search.get("search_field") or []
         if isinstance(fields, str):
             fields = [fields]
         return Search(
             source=source.name,
             keyword=str(keyword),
             fields=[_FIELD_NAMES.get(f, f) for f in fields],
-            excluded=_split_terms(str(source.params.get("excluded_text") or "")),
+            excluded=_split_terms(str(source.search.get("excluded_text") or "")),
         )
     return empty
 
