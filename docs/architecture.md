@@ -1,112 +1,20 @@
-# Architecture — vacancy pipeline + CV matching
+# Architecture
 
-Design for `initial_task.md`. Two decisions carry most of the weight:
+Why the code is shaped the way it is. The companion documents:
 
-1. **A source owns everything about its site.** Outside `sources/`, only two
-   dataclasses exist — `Listing` and `VacancyData`. Adding a source is a new
-   module plus a config entry.
-2. **Idempotency is a fingerprint of the request, not a flag on a row.** Two
-   unique constraints — one on the vacancy's natural key, one on the match
-   request hash — are the whole of "safe and cheap to re-run".
+- `docs/pipeline.md` — the three phases, and what is on disk after each
+- `docs/decisions.md` — what was considered and refused
+- `jobmatch/models.py` — the schema itself, with the reason for each column
 
-Everything else follows from those.
+This file holds the reasoning that none of those can: the seams, the two
+idempotency rules, what the timestamps mean, and where the hard edges are.
 
-**Settled:** Postgres runs in this repo's own Docker container
-(`docker-compose.yml`, Postgres 18 on host port **5433** — 5432 belongs to an
-unrelated project). The model is pinned
-to an exact version, never `jev-latest` (§4). The package is `jobmatch/`;
-`cv_match/` is absorbed into it (§8).
-
----
-
-## 0. Verified against the live site — 2026-09-23
-
-Probed before designing further, because two assumptions were load-bearing.
-
-**The RSS feed returns the latest 20 items and does not paginate.** `page`,
-`per_page` and `items_on_page` are all ignored — every variant returns 20.
-Repeated calls return slightly different sets as new vacancies arrive, so the
-feed is a *rolling window*, not a corpus.
-
-This is the one finding that changes the design, and the answer is to lean on
-idempotency rather than to fight it: run the pipeline on a schedule and let the
-corpus accumulate. `ON CONFLICT (source, external_id)` means a vacancy seen in
-ten consecutive runs is one row, and the match is paid for once. Hourly for a
-day gets you far more than 20 vacancies, with no paging code and nothing to get
-wrong.
-
-**Superseded by task 5 (2026-09-24).** The rolling window turned out to be too
-narrow in practice, so discovery now walks hh.ru's paginated **HTML** search
-results instead of the RSS feed. As predicted, the change was contained to
-`sources/hh/` plus one new `Crawl` knob pair — nothing outside `sources/`
-moved. The RSS feed is no longer called at all. Two things the search pages
-demand that the feed did not: results are ~1.2MB each, and at a 1s interval hh
-starts serving a stripped "enable JavaScript" page instead of results, so the
-crawl gets its own slower delay (`[crawl]` in §9).
-
-**The prototype parser still works.** All `data-qa` selectors resolve on a live
-page: title, company, salary, experience, description, and 13 `skills-element`
-entries. Two details the prototype glosses over:
-
-- The JSON-LD `JobPosting` block is present *alongside* the normal layout, not
-  only as a branded-page fallback. It carries `datePosted`, `validThrough` and
-  `identifier` — so read `published_at` from there rather than parsing the RSS
-  `pubDate` string, and keep the whole block in `vacancies.raw`.
-- Scraped text needs normalising: salary comes back as
-  `'до\n5\xa0500\n$\nза\xa0месяц\nдо вычета налогов'`. Collapse non-breaking
-  spaces and newlines in the source module, before it ever reaches the DB.
-- `skills` mixes in language requirements (`'Английский — B1 — Средний'`)
-  alongside real tech skills. Don't try to separate them; Jev reads them fine
-  as-is.
-
-**No rate limiting observed** at six requests over two seconds, no `Retry-After`
-header, ~450ms per response. That is browsing-scale volume and proves very
-little about sustained scraping — keep the politeness delay, and treat a 429 as
-expected rather than exceptional. Vacancy pages are ~700KB each, which is the
-real argument for the delay.
+Nothing here restates a value that lives in code. hh's measured limits are in
+`jobmatch/sources/hh/`; the config's contents are in `config.toml`.
 
 ---
 
 ## 1. Layout
-
-```
-cv/
-├─ pyproject.toml         # uv; [project.scripts] jobmatch = "jobmatch.cli:main"
-├─ alembic.ini            # points at migrations/; DB URL comes from env, not from here
-├─ config.toml            # checked in: *choices* only — what to search for, where, which CV
-├─ docker-compose.yml     # this project's Postgres 18, host port 5433
-├─ .env                   # secrets only: DATABASE_URL, OPENROUTER_API_KEY
-├─ .env.example           # checked-in template for .env
-├─ migrations/versions/   # alembic; env.py imports jobmatch.models.Base.metadata
-├─ data/cv.md             # private master CV (gitignored)
-├─ docs/
-├─ jobmatch/
-│  ├─ config.py           # config.toml -> frozen Settings; .env stays in db.py
-│  ├─ db.py               # engine + sessionmaker; the only reader of DATABASE_URL
-│  ├─ models.py           # SQLAlchemy 2.0 declarative — THE schema source of truth
-│  ├─ repository.py       # ~6 query/upsert functions; the only module writing SQL
-│  ├─ pipeline.py         # run(): discover -> fetch -> persist -> match -> persist
-│  ├─ cli.py              # argparse: run / discover / fetch / match / cv-hash
-│  ├─ sources/
-│  │  ├─ __init__.py      # Listing, VacancyData, Source, Crawl, VacancyGone, SOURCES
-│  │  └─ hh.py            # hh.ru: HTML search crawl + page parsing (data-qa + JSON-LD)
-│  ├─ matching/
-│  │  ├─ __init__.py      # open_client, load_cv, inputs_fingerprint, match_vacancy
-│  │  ├─ questions.py     # moved from cv_match/questions.py, unchanged
-│  │  ├─ sanitize.py      # moved from cv_match/sanitize.py (SystemExit -> ValueError)
-│  │  └─ jev.py           # TypeSafeClient call, vacancy->prompt, answer flattening
-│  └─ api/               # PHASE 2 — built
-│     ├─ app.py           #   FastAPI; imports jobmatch.models + jobmatch.repository
-│     ├─ deps.py          #   get_session() yielding from jobmatch.db
-│     ├─ schemas.py       #   response models: projections for one screen, not a mirror
-│     └─ routers/{vacancies,triage,stats}.py
-├─ frontend/              # PHASE 2 — Vue 3 + Vite, separate npm project, no Python coupling
-└─ tests/
-   ├─ test_hh_parse.py    # saved HTML fixtures -> VacancyData, no network
-   ├─ test_matching.py    # fake SDK answers -> MatchOutcome; fingerprint stability
-   ├─ test_pipeline.py    # fake Source + fake matcher, real DB session
-   └─ test_api.py         # the routes over rows the test owns and deletes
-```
 
 Three leaf areas that know nothing about each other — `sources/` (the web),
 `matching/` (the LLM), `models.py`+`repository.py` (the DB) — and one module,
@@ -127,73 +35,9 @@ re-declaring anything. Nothing in phase 1 moves when it appears, because
 A source answers exactly two questions and owns everything else — base URL,
 RSS-vs-JSON-vs-HTML, pagination, headers, parsing, id extraction:
 
-```python
-# jobmatch/sources/__init__.py
-@dataclass(frozen=True, slots=True)
-class Crawl:
-    """How hard a source may walk a paginated listing. Not search params —
-    those stay opaque. Every paginated source needs exactly these two."""
-    max_pages: int = 5
-    delay: float = 2.5
-
-class VacancyGone(Exception):
-    """A *positive* signal that the posting is gone (404, archived page).
-    Distinct from any other fetch failure, so the pipeline can set
-    `delisted_at` without knowing anything about HTTP."""
-
-@dataclass(frozen=True, slots=True)
-class Listing:
-    external_id: str          # stable within the source; the source decides how
-    url: str                  # canonical link, also what fetch() will hit
-    title: str | None = None
-    published_at: datetime | None = None
-
-@dataclass(frozen=True, slots=True)
-class VacancyData:
-    external_id: str
-    url: str
-    title: str
-    description: str          # plain text, already de-HTML'd by the source
-    company: str | None = None
-    salary: str | None = None
-    experience: str | None = None
-    published_at: datetime | None = None
-    country: str | None = None                            # the page's own name for it
-    skills: list[str] = field(default_factory=list)
-    work_formats: list[str] = field(default_factory=list) # a set: onsite/remote/hybrid
-    raw: dict[str, Any] = field(default_factory=dict)     # -> vacancies.raw JSONB
-
-@dataclass(frozen=True, slots=True)
-class Source:
-    name: str
-    hosts: tuple[str, ...]    # which URLs this source owns; see source_for_url()
-    discover: Callable[[Mapping[str, Any], Crawl], Iterable[Listing]]
-    fetch: Callable[[str], VacancyData]   # a URL, not a Listing: `fetch <url>` has no feed
-
-from . import hh
-SOURCES: dict[str, Source] = {s.name: s for s in (hh.SOURCE,)}
-```
-
 `country` and `work_formats` are columns rather than `raw` lookups because the
 UI filters on both. `work_formats` is a list, not one value: a real posting can
 offer on-site, remote and hybrid at once.
-
-```python
-# jobmatch/sources/hh/ — everything hh-shaped is in here
-SEARCH_URL = "https://hh.ru/search/vacancy"
-HOSTS = ("hh.ru", "headhunter.ge")
-HEADERS = {"User-Agent": "...", "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8"}
-
-def discover(params, crawl=Crawl()) -> Iterator[Listing]:
-    """Walk the paginated search results, page 0 upwards, until a page comes
-    back empty or `crawl.max_pages` is reached."""
-
-def parse(html, url) -> VacancyData: ...   # the initial_task.md prototype, minus file writing
-def fetch(url) -> VacancyData: ...         # requests.get + parse; split so tests skip the network
-                                           # raises VacancyGone on 404/archived
-
-SOURCE = Source(name=NAME, hosts=HOSTS, discover=discover, fetch=fetch)
-```
 
 `discover` yields as much as the crawl cap allows; hh serves roughly four pages
 deep per query, and `max_pages = 5` is one past that so hitting the cap means
@@ -303,33 +147,8 @@ erDiagram
 One row per vacancy per source. Discovery and fetch are two phases, so a
 partially-filled row is a first-class, indexable state — not a second table.
 
-| Column | Type | Null | Default | Purpose |
-|---|---|---|---|---|
-| `id` | `bigint` identity | no | identity | Surrogate PK, FK target. |
-| `source` | `text` | no | — | Source module key (`hh.ru`). Half the natural key. |
-| `external_id` | `text` | no | — | Source's own id. Text, not bigint — the next source may use a slug. |
-| `url` | `text` | no | — | Canonical URL, tracking params stripped. |
-| `title` | `text` | yes | — | Null between discovery and fetch. |
-| `company` | `text` | yes | — | Display only. |
-| `salary_raw` | `text` | yes | — | As shown ("от 200 000 ₽"). Unparsed; nothing filters numerically. |
-| `experience_raw` | `text` | yes | — | As shown. Same reasoning. |
-| `description` | `text` | yes | — | Full plain text. Null until fetched; this is what makes a vacancy matchable. |
-| `skills` | `text[]` | no | `'{}'` | Rendered as chips, never joined — an array, not a join table. |
-| `published_at` | `timestamptz` | yes | — | From the JSON-LD `datePosted` when given. Secondary sort. |
-| `country` | `text` | yes | — | hh's own name for the country, as the posting states it; the ISO code stays in `raw`. Not the searched area code — the "other regions" area is a catch-all that returns real countries, so the page is the only honest source. |
-| `work_formats` | `text[]` | no | `'{}'` | A set, not one value: a posting can offer on-site, remote and hybrid at once. Empty when the posting doesn't say. Filtered on, never joined. |
-| `raw` | `jsonb` | no | `'{}'` | Source-specific payload. The escape hatch that keeps the core columns source-agnostic. |
-| `content_hash` | `char(64)` | yes | — | sha256 of the exact `job_description` string sent to Jev. Change detector. |
-| `first_seen_at` | `timestamptz` | no | `now()` | First discovery hit. |
-| `last_seen_at` | `timestamptz` | no | `now()` | Last discovery hit. |
-| `fetched_at` | `timestamptz` | yes | — | Last successful detail parse. `IS NULL` = the fetch queue. |
-| `fetch_attempts` | `smallint` | no | `0` | Consecutive failures; caps retries on permanently broken pages. |
-| `fetch_error` | `text` | yes | — | Last failure message; NULL on success. |
-| `delisted_at` | `timestamptz` | yes | — | Set only by a positive signal (404/410/archived page). |
-| `seen_at` | `timestamptz` | yes | — | Triage. `IS NULL` powers "unseen only". |
-| `starred_at` | `timestamptz` | yes | — | Triage. |
-| `hidden_at` | `timestamptz` | yes | — | Triage. |
-| `created_at` / `updated_at` | `timestamptz` | no | `now()` | Row insert / last write (`onupdate`). |
+Columns, types and the reason for each: `jobmatch/models.py`, which is the
+schema's source of truth and carries that reasoning as comments.
 
 Triage is three nullable timestamps rather than booleans: same filter cost
 (`seen_at IS NULL`), "when" for free, one consistent style, and no left join on
@@ -342,25 +161,7 @@ without them every run re-fetches the same broken page forever — which is the
 One row per *paid* Jev call. Append-only; the only update is setting
 `superseded_at`.
 
-| Column | Type | Null | Purpose |
-|---|---|---|---|
-| `id` | `bigint` identity | no | PK. |
-| `vacancy_id` | `bigint` FK → `vacancies.id` ON DELETE CASCADE | no | Owner. |
-| `llm_call_id` | `bigint` FK → `llm_calls.id` | no | The call that produced this row. Tokens, cost and provider live there — see §3.3. |
-| `inputs_fingerprint` | `char(64)` | no | sha256 of the canonicalised request. **The idempotency key.** |
-| `vacancy_content_hash` | `char(64)` | no | Copy at call time. Diagnostic: "the posting was edited". |
-| `cv_hash` | `char(64)` | no | sha256 of the **sanitized** CV. Diagnostic: "I rewrote my CV". |
-| `questions_hash` | `char(64)` | no | sha256 of canonical `QUESTIONS`. Diagnostic + label-vocabulary marker. |
-| `is_qualified_noul` | `double precision` | no | Raw Noul 0–1. |
-| `is_qualified` | `boolean` GENERATED ALWAYS AS (`is_qualified_noul >= 0.5`) STORED | no | Derived in the DB so the threshold can't drift between pipeline and API. |
-| `overall_fit_score` | `double precision` | no | Score 0–1. **The sort key.** |
-| `overall_fit_label` | `text` | no | Resolved from the response `legend`. Display + equality filter. |
-| `overall_fit_confidence` | `double precision` | no | 0–1. |
-| `top_gap` / `top_gap_confidence` | `text` / `double precision` | no | Winning Choice label + confidence. |
-| `best_angle` / `best_angle_confidence` | `text` / `double precision` | no | Which of the master CV's positioning angles (§2 of `data/cv.md`) the posting calls for — `backend`, `ai_llm`, `product`, `data`, `analytics`, `ml`, or `none`. Promoted because it is read per vacancy and the UI filters on it. Plain text, so adding an angle (`analytics` and `ml`, added 2026-09-24) is a `questions.py` edit and nothing else — no migration, per §11. It does change `questions_hash`, which re-matches the corpus: that is §4 working, not a mistake. |
-| `answers` | `jsonb` | no | Complete `answers` object incl. probabilities and legend. Source of truth; the promoted columns are projections. |
-| `created_at` | `timestamptz` | no | Call time. |
-| `superseded_at` | `timestamptz` | yes | NULL = current. |
+Columns and the reason for each: `jobmatch/models.py`.
 
 This table holds *conclusions*. Everything operational about the call that
 produced them — model, provider, tokens, cost, how long it took, whether it
@@ -376,46 +177,9 @@ what went wrong.
 this table, a run where a third of the calls 429'd leaves no evidence at all,
 and a call that cost money but returned an unparseable body is invisible.
 
-| Column | Type | Null | Purpose |
-|---|---|---|---|
-| `id` | `bigint` identity | no | PK. |
-| `vacancy_id` | `bigint` FK → `vacancies.id` ON DELETE **SET NULL** | yes | What the call was about. Nulled rather than cascaded, so deleting a vacancy never erases what you spent. |
-| `inputs_fingerprint` | `char(64)` | no | The request hash — recorded even on failure, so you can see *which* question kept failing. |
-| `model_requested` | `text` | no | What we asked for. Part of the fingerprint. |
-| `model_resolved` | `text` | yes | What actually answered (`typesafe/jev-1.13`). Null on failure. **Not** in the fingerprint — unknowable before paying. |
-| `provider` | `text` | yes | From the response. |
-| `response_id` | `text` | yes | Jev/OpenRouter id. Support trail when you need to ask why an answer looks wrong. |
-| `status` | `text` | no | `ok` or `error`. Plain text, not an enum — see §11. |
-| `http_status` | `smallint` | yes | Transport status when there was one. Distinguishes 429 (back off) from 401 (fix the key) from a timeout (null). |
-| `error_type` | `text` | yes | Exception class name. Groupable: `SELECT error_type, count(*) ... GROUP BY 1`. |
-| `error_message` | `text` | yes | The detail, for reading. |
-| `input_tokens` | `integer` | yes | From `usage`. |
-| `output_tokens` | `integer` | yes | From `usage`. |
-| `cost_usd` | `numeric(14,9)` | yes | From `usage.cost` — read off the raw JSON body, since the SDK's `Usage` model drops it. `numeric`, never float — money doesn't round in binary. 9 decimal places because a real call costs `$0.000413616`, which `(12,6)` would round to `$0.000414`. |
-| `duration_ms` | `integer` | yes | Wall clock. Catches "the API got slow" before it becomes "the API timed out". |
-| `started_at` | `timestamptz` | no | Call start. |
-| `finished_at` | `timestamptz` | yes | Call end; null if the process died mid-call. |
+Columns and the reason for each: `jobmatch/models.py`.
 
 The questions this answers, each a one-liner:
-
-```sql
--- what have I spent, ever / this month
-SELECT sum(cost_usd) FROM llm_calls;
-SELECT date_trunc('day', started_at) AS day, count(*), sum(cost_usd)
-FROM llm_calls GROUP BY 1 ORDER BY 1 DESC;
-
--- what am I paying per useful answer, including the failures
-SELECT status, count(*), sum(cost_usd), avg(duration_ms) FROM llm_calls GROUP BY 1;
-
--- what is actually breaking
-SELECT error_type, http_status, count(*), max(started_at)
-FROM llm_calls WHERE status = 'error' GROUP BY 1, 2 ORDER BY 3 DESC;
-
--- money spent on calls that never produced a stored result
-SELECT sum(c.cost_usd) FROM llm_calls c
-LEFT JOIN match_results m ON m.llm_call_id = c.id
-WHERE m.id IS NULL AND c.cost_usd IS NOT NULL;
-```
 
 **Why a separate table rather than more columns on `match_results`:** the two
 have different lifetimes and different row counts. A `match_results` row is a
@@ -436,32 +200,6 @@ rather than fixing it. Fix it only if it actually happens.
 
 ### 3.4 Keys and indexes
 
-```sql
--- natural key: no duplicate vacancies, ever, enforced by Postgres
-ALTER TABLE vacancies ADD CONSTRAINT uq_vacancies_source_external_id
-  UNIQUE (source, external_id);
-
--- never pay twice
-ALTER TABLE match_results ADD CONSTRAINT uq_match_results_vacancy_fingerprint
-  UNIQUE (vacancy_id, inputs_fingerprint);
-
--- "the current match" is a DB-enforced fact, not a MAX(created_at) convention
-CREATE UNIQUE INDEX uq_match_results_current
-  ON match_results (vacancy_id) WHERE superseded_at IS NULL;
-
--- phase-2 support
-CREATE INDEX ix_match_results_current_rank
-  ON match_results (overall_fit_score DESC, vacancy_id) WHERE superseded_at IS NULL;
-CREATE INDEX ix_vacancies_fetch_queue ON vacancies (first_seen_at)
-  WHERE fetched_at IS NULL AND delisted_at IS NULL AND fetch_attempts < 3;
-
--- the call log is written far more often than it's read; one index, for
--- "what broke recently" and the per-day cost rollup
-CREATE INDEX ix_llm_calls_started_at ON llm_calls (started_at DESC);
-CREATE INDEX ix_llm_calls_errors ON llm_calls (started_at DESC)
-  WHERE status = 'error';
-```
-
 `llm_calls` gets **no unique constraint**. It is an append-only log of things
 that happened; two identical attempts are two facts, not a conflict. The
 no-double-pay rule lives on `match_results`, where it belongs.
@@ -475,17 +213,6 @@ Re-scrape is one statement, no read-modify-write race — and it deliberately
 never touches `description`, `content_hash` or `fetched_at`, which belong to
 the fetch phase:
 
-```sql
-INSERT INTO vacancies (source, external_id, url, title, published_at, raw, last_seen_at)
-VALUES (...)
-ON CONFLICT (source, external_id) DO UPDATE
-SET last_seen_at = EXCLUDED.last_seen_at,
-    url          = EXCLUDED.url,
-    title        = COALESCE(EXCLUDED.title, vacancies.title),
-    raw          = vacancies.raw || EXCLUDED.raw,
-    updated_at   = now();
-```
-
 An earlier draft of this section also promised
 `ix_vacancies_list (source, seen_at, last_seen_at DESC)`. It was never created,
 and on reflection it should not be: the list is ordered by
@@ -495,27 +222,6 @@ that matters.
 
 Canonical phase-2 list query — a LEFT JOIN, because a fetched-but-unmatched
 vacancy is a real state the UI shows rather than a row to drop:
-
-```sql
-SELECT v.id, v.title, v.company, v.country, v.work_formats, v.url, v.source,
-       v.seen_at, v.starred_at, v.delisted_at, v.last_seen_at,
-       m.overall_fit_label, m.overall_fit_score, m.overall_fit_confidence,
-       m.is_qualified, m.is_qualified_noul, m.top_gap, m.top_gap_confidence,
-       m.best_angle, m.best_angle_confidence,
-       m.answers -> 'overall_fit' -> 'probabilities' AS fit_probabilities
-FROM vacancies v
-LEFT JOIN match_results m ON m.vacancy_id = v.id AND m.superseded_at IS NULL
-WHERE v.hidden_at IS NULL
-  AND (:source IS NULL OR v.source = :source)
-  AND (:min_fit IS NULL OR m.overall_fit_score >= :min_fit)
-  AND (:best_angle IS NULL OR m.best_angle = ANY(:best_angle))
-  AND (:country IS NULL OR v.country = ANY(:country))
-  AND (:work_format IS NULL OR v.work_formats && :work_format)
-  AND (NOT :unseen_only OR v.seen_at IS NULL)
-  AND (NOT :qualified_only OR m.is_qualified)
-ORDER BY m.overall_fit_score DESC NULLS LAST, v.id
-LIMIT 50;
-```
 
 `min_fit` is a threshold on the **score**, never on the label: verified against
 the real corpus, the labels overlap (`weak` spans .13–.56, `good` .43–.62)
@@ -655,84 +361,14 @@ falls out of §4 with no extra mechanism.
 
 ## 7. Pipeline
 
-### Idempotency per stage
+Phase by phase, with what is on disk after each one and what a re-run
+can skip: `docs/pipeline.md`.
 
-| Stage | Guard | Cost of a no-op re-run |
-|---|---|---|
-| discover | none — always hits the source | 1 HTTP request per source |
-| persist listing | `ON CONFLICT (source, external_id) DO UPDATE` | 1 upsert per listing |
-| fetch | skipped when `fetched_at IS NOT NULL` | zero HTTP |
-| match | skipped when `(vacancy_id, inputs_fingerprint)` exists | zero API spend |
-
-A second `jobmatch run` five minutes later costs one RSS request and a handful
-of upserts. "Safe and cheap" is discharged by two unique constraints.
-
-### The loop
-
-```python
-# jobmatch/pipeline.py
-def run(settings: Settings, limit: int | None = None) -> RunReport:
-    """Two phases. Discovery and fetch walk today's search results; matching
-    walks the *table*, because the crawl only ever sees a slice and the corpus
-    outgrows it — a vacancy stored last week still needs an answer when the CV
-    changes."""
-    report = RunReport()
-    for entry in settings.sources:
-        source = SOURCES[entry.name]
-        for listing in _safe_discover(source, entry, settings.crawl, report):
-            _process_one(source, listing, settings, report)   # upsert + fetch
-    match_all(settings, report, limit=limit)                  # the paid phase
-    return report
-
-
-def _process_one(source, listing, settings, report) -> None:
-    """Upsert then fetch, each in its own short transaction."""
-    vacancy_id = _persist_listing(source, listing, report)
-    if vacancy_id is not None:
-        _fetch(source, vacancy_id, listing.url, settings, report)
-
-
-def _match(vacancy_id, cv, client, settings, report) -> None:
-    with SessionLocal.begin() as session:        # one transaction per vacancy
-        vacancy = session.get(Vacancy, vacancy_id)
-        job = matching.job_text(vacancy)
-        fp = matching.inputs_fingerprint(cv, job, QUESTIONS, settings.model)
-        if repository.make_current(session, vacancy_id, fp):
-            return                               # already answered — zero spend
-        outcome = matching.match_vacancy(
-            client, cv, vacancy, settings.model,
-            fingerprint=fp, cv_hash=matching.sha256(cv),
-            content_hash=matching.content_hash(job), job=job)
-        repository.save_match(session, vacancy_id, outcome)   # supersedes + inserts
-```
-
-The real module splits what an earlier draft of this section drew as one
-function: `_persist_listing`, `_fetch` and `_match` each own one transaction,
-and `match_all` is a public entry point of its own so `jobmatch match` can run
-the paid phase without crawling anything. Exception handling lives in each of
-them rather than in one wrapper — same failure isolation, one vacancy per
-transaction, but a fetch failure and a match failure are recorded differently
-(`fetch_attempts` versus an `llm_calls` row).
-
-`match_vacancy` writes the `llm_calls` row itself, in its own short-lived
-session, and returns it on the outcome. That is deliberate: the call log must
-survive the per-vacancy rollback above. If a Jev call fails, or succeeds and
-then the answer won't parse, the surrounding transaction rolls back the vacancy
-work — but the row saying "this was attempted, here is what it cost and how it
-failed" is already committed. A log that disappears when things go wrong is
-worse than no log.
-
-Failure isolation is structural, not defensive: **the transaction boundary is
-one vacancy.** A parse failure, a 403 or an API error rolls back that vacancy
-alone; everything committed before it stays committed, and the next run resumes
-exactly where it stopped because every guard is state-based, not
-position-based. `_safe_discover` wraps the generator so a source being down
-costs one warning, not the other sources' work.
-
-No retry library in phase 1: a transient failure is retried by the next run,
-for free, because the row exists with `fetched_at IS NULL`.
-
----
+The design property worth stating here is that failure isolation is
+*structural*, not policy. Each stage of each vacancy is its own
+transaction, so one bad page or one failed API call costs a warning
+rather than the run — and nothing records progress, because every guard
+is a condition on the rows.
 
 ## 8. Matcher integration
 
@@ -810,10 +446,8 @@ properties of the site, measured against it, and live beside the code that
 measured them — `CRAWL` and `RATE` in `sources/hh/__init__.py`, carried on
 `Source`. A `[crawl]` block or a `fetch_workers` line in config is an override
 for a deliberate experiment, never a requirement; omit them and the source's own
-values are used. The rule that produced this: a setting a config *must* restate
-is a setting a config can contradict, which is how `config.bg.toml` came to run
-`fetch_workers = 6` after `config.toml` had recorded 6 as the rate that made hh
-serve stripped pages.
+values are used. The rule: a setting a config *must* restate is a setting a
+config can contradict — see `docs/decisions.md`.
 
 ```toml
 model = "jev-1.13"       # pinned, never an alias — see §4
@@ -858,177 +492,7 @@ from `alembic.ini`, so pipeline, API and migrations share one connection string.
 
 ---
 
-## 10. SQLAlchemy models (sketch)
-
-`jobmatch/models.py` is the single source of truth; Alembic follows it.
-
-```python
-NAMING_CONVENTION = {   # deterministic names so autogenerate is stable
-    "ix": "ix_%(table_name)s_%(column_0_N_name)s",
-    "uq": "uq_%(table_name)s_%(column_0_N_name)s",
-    "ck": "ck_%(table_name)s_%(constraint_name)s",
-    "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
-    "pk": "pk_%(table_name)s",
-}
-
-
-class Base(DeclarativeBase):
-    metadata = MetaData(naming_convention=NAMING_CONVENTION)
-    # set once here rather than DateTime(timezone=True) on twelve columns
-    type_annotation_map = {dt.datetime: DateTime(timezone=True)}
-
-
-class Vacancy(Base):
-    __tablename__ = "vacancies"
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
-
-    # natural key & location
-    source: Mapped[str] = mapped_column(String(32))
-    external_id: Mapped[str] = mapped_column(String(128))
-    url: Mapped[str] = mapped_column(Text)
-
-    # scraped core (null until the detail fetch succeeds)
-    title: Mapped[str | None] = mapped_column(Text)
-    company: Mapped[str | None] = mapped_column(Text)
-    salary_raw: Mapped[str | None] = mapped_column(Text)
-    experience_raw: Mapped[str | None] = mapped_column(Text)
-    description: Mapped[str | None] = mapped_column(Text)
-    skills: Mapped[list[str]] = mapped_column(ARRAY(Text), server_default=text("'{}'::text[]"))
-    published_at: Mapped[dt.datetime | None] = mapped_column()
-    country: Mapped[str | None] = mapped_column(Text)
-    work_formats: Mapped[list[str]] = mapped_column(ARRAY(Text),
-                                                    server_default=text("'{}'::text[]"))
-
-    raw: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
-    content_hash: Mapped[str | None] = mapped_column(String(64))
-
-    # lifecycle
-    first_seen_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
-    last_seen_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
-    fetched_at: Mapped[dt.datetime | None] = mapped_column()
-    fetch_attempts: Mapped[int] = mapped_column(SmallInteger, server_default=text("0"))
-    fetch_error: Mapped[str | None] = mapped_column(Text)
-    delisted_at: Mapped[dt.datetime | None] = mapped_column()
-
-    # triage (single user: columns, not a table)
-    seen_at: Mapped[dt.datetime | None] = mapped_column()
-    starred_at: Mapped[dt.datetime | None] = mapped_column()
-    hidden_at: Mapped[dt.datetime | None] = mapped_column()
-
-    created_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
-    updated_at: Mapped[dt.datetime] = mapped_column(server_default=func.now(),
-                                                    onupdate=func.now())
-
-    matches: Mapped[list[MatchResult]] = relationship(
-        back_populates="vacancy", cascade="all, delete-orphan",
-        order_by="MatchResult.created_at.desc()",
-    )
-
-    __table_args__ = (
-        UniqueConstraint("source", "external_id", name="uq_vacancies_source_external_id"),
-        Index("ix_vacancies_url", "url"),
-        Index("ix_vacancies_fetch_queue", "first_seen_at",
-              postgresql_where=text(
-                  "fetched_at IS NULL AND delisted_at IS NULL AND fetch_attempts < 3")),
-    )
-
-
-class MatchResult(Base):
-    __tablename__ = "match_results"
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
-    vacancy_id: Mapped[int] = mapped_column(
-        ForeignKey("vacancies.id", ondelete="CASCADE"), index=True)
-    llm_call_id: Mapped[int] = mapped_column(ForeignKey("llm_calls.id"))
-
-    # idempotency
-    inputs_fingerprint: Mapped[str] = mapped_column(String(64))
-    vacancy_content_hash: Mapped[str] = mapped_column(String(64))
-    cv_hash: Mapped[str] = mapped_column(String(64))
-    questions_hash: Mapped[str] = mapped_column(String(64))
-
-    # promoted answers — only what the UI sorts, filters or lists by
-    is_qualified_noul: Mapped[float] = mapped_column(Double)
-    is_qualified: Mapped[bool] = mapped_column(
-        Boolean, Computed("is_qualified_noul >= 0.5", persisted=True))   # read-only in Python
-    overall_fit_score: Mapped[float] = mapped_column(Double)             # THE sort key
-    overall_fit_label: Mapped[str] = mapped_column(String(32))           # display only, never ORDER BY
-    overall_fit_confidence: Mapped[float] = mapped_column(Double)
-    top_gap: Mapped[str] = mapped_column(String(64))
-    top_gap_confidence: Mapped[float] = mapped_column(Double)
-    best_angle: Mapped[str] = mapped_column(String(32))                  # which CV angle to lead with
-    best_angle_confidence: Mapped[float] = mapped_column(Double)
-
-    answers: Mapped[dict[str, Any]] = mapped_column(JSONB)   # complete record
-
-    created_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
-    superseded_at: Mapped[dt.datetime | None] = mapped_column()
-
-    vacancy: Mapped[Vacancy] = relationship(back_populates="matches")
-    call: Mapped[LlmCall] = relationship()
-
-    __table_args__ = (
-        UniqueConstraint("vacancy_id", "inputs_fingerprint",
-                         name="uq_match_results_vacancy_fingerprint"),
-        Index("uq_match_results_current", "vacancy_id", unique=True,
-              postgresql_where=text("superseded_at IS NULL")),
-        Index("ix_match_results_current_rank", text("overall_fit_score DESC"), "vacancy_id",
-              postgresql_where=text("superseded_at IS NULL")),
-        CheckConstraint(
-            "overall_fit_score BETWEEN 0 AND 1 AND is_qualified_noul BETWEEN 0 AND 1 "
-            "AND overall_fit_confidence BETWEEN 0 AND 1 AND top_gap_confidence BETWEEN 0 AND 1 "
-            "AND best_angle_confidence BETWEEN 0 AND 1",
-            name="probabilities_in_range"),
-    )
-```
-
-```python
-class LlmCall(Base):
-    __tablename__ = "llm_calls"
-
-    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
-    # SET NULL, not CASCADE: deleting a vacancy must not erase what it cost
-    vacancy_id: Mapped[int | None] = mapped_column(
-        ForeignKey("vacancies.id", ondelete="SET NULL"), index=True)
-
-    inputs_fingerprint: Mapped[str] = mapped_column(String(64))
-    model_requested: Mapped[str] = mapped_column(String(64))
-    model_resolved: Mapped[str | None] = mapped_column(String(64))
-    provider: Mapped[str | None] = mapped_column(String(64))
-    response_id: Mapped[str | None] = mapped_column(String(128))
-
-    # outcome
-    status: Mapped[str] = mapped_column(String(16))          # "ok" | "error"
-    http_status: Mapped[int | None] = mapped_column(SmallInteger)
-    error_type: Mapped[str | None] = mapped_column(String(64))
-    error_message: Mapped[str | None] = mapped_column(Text)
-
-    # cost & timing
-    input_tokens: Mapped[int | None] = mapped_column(Integer)
-    output_tokens: Mapped[int | None] = mapped_column(Integer)
-    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(14, 9))   # never Float
-    duration_ms: Mapped[int | None] = mapped_column(Integer)
-
-    started_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
-    finished_at: Mapped[dt.datetime | None] = mapped_column()
-
-    __table_args__ = (
-        Index("ix_llm_calls_started_at", text("started_at DESC")),
-        Index("ix_llm_calls_errors", text("started_at DESC"),
-              postgresql_where=text("status = 'error'")),
-    )
-```
-
-The one range `CheckConstraint` is worth having: it's the only thing that
-catches an SDK shape change writing garbage into the sort key.
-
-`cost_usd` is `Numeric`, never `Double`: summing float money accumulates error,
-and this column exists to be summed.
-
----
-
-## 11. Alembic and enums
+## 10. Alembic and enums
 
 ```python
 # migrations/env.py
@@ -1081,7 +545,7 @@ SDK's typed answers give it for free at write time.
 
 ---
 
-## 12. The HTTP API (phase 2)
+## 11. The HTTP API
 
 FastAPI over the same `Session`, importing `jobmatch.models`. Four routes, all
 of them thin: every one is a `repository` call plus a response model.
@@ -1093,7 +557,7 @@ of them thin: every one is a `repository` call plus a response model.
 | `GET /api/vacancies/{id}` | one vacancy, plus the whole `answers` blob |
 | `PATCH /api/vacancies/{id}/triage` | set or clear `seen_at` / `starred_at` / `hidden_at` |
 
-**Response models are Pydantic, and they are not a second schema.** §12's
+**Response models are Pydantic, and they are not a second schema.** This section's
 rejection of "pydantic domain models mirroring the ORM models" stands: these
 are *projections shaped for one screen*, built with `from_attributes`, and they
 deliberately omit most columns (`raw`, every hash, `fetch_error`). A response
@@ -1128,24 +592,3 @@ No auth, no CORS in production: single user, and Vite proxies `/api` in dev.
 
 ---
 
-## 13. Considered and rejected
-
-| Rejected | Why |
-|---|---|
-| `SourcePlugin` ABC + `register_source()` + entry-point discovery | Solves third-party plugin distribution. One developer, sources in this repo: a dict literal and an import line do the job and read in five seconds. |
-| Repository/Unit-of-Work pattern, generic `Storage` interface | SQLAlchemy's `Session` *is* the unit of work. `repository.py` is a flat module of ~6 named functions to keep SQL out of `pipeline.py` — not a layer, never a class hierarchy. |
-| DI container / `Pipeline` class with injected collaborators | `run(settings)` takes its dependencies as arguments; tests pass a fake `Source` and a fake client. Nothing to wire. |
-| Celery / RQ / APScheduler | `cron` calls `jobmatch run`. Idempotency, not a broker, is what makes re-runs safe — and it's already required for correctness. |
-| Pydantic domain models mirroring the ORM models | Two declarations of one concept. Phase 2 derives FastAPI response models from the ORM classes, for the fields the UI shows. |
-| A `sources` table, a `crawl_log`/`search_runs` table, `skills`/`companies` tables | Sources are config. Nothing reads a crawl log. Skills are display strings; nothing joins on company. |
-| Per-source tables or a `vacancy_hh` detail table | One table plus a JSONB `raw` column absorbs source-specific fields with no migration per source. |
-| A separate `normalizer.py` / `parsers/` layer | Normalisation *is* the source's job — that's what `VacancyData` is for. A shared normaliser would grow hh-specific branches, which `initial_task.md` forbids. |
-| Caching raw HTML to disk or a `raw_html` column | "No per-vacancy files, ever"; and megabyte blobs bloat the DB for a re-parse that a re-fetch already covers. |
-| `Matcher` protocol / pluggable LLM providers | One matcher exists. `matching/jev.py` is already the containment point. |
-| Soft-delete flag on vacancies | `hidden_at` and `delisted_at` mean different things and the UI needs both. |
-| tenacity / backoff policy / dead-letter table | The next run retries everything unfinished for free; `fetch_attempts` caps the pathological case in two columns. `llm_calls` records failures but nothing branches on it. |
-| A `runs` table grouping each invocation | `llm_calls.started_at` already groups by time, and `RunReport` prints the summary at the end of the run. Add a run id only when you actually want to compare two runs. |
-| async / httpx / concurrent fetching | One user, one filter, tens of vacancies per run, plus a politeness delay. Sequential `requests` is simpler and kinder to the site. |
-| `logging.config` dict / structured logging module | `logging.basicConfig()` in `cli.py`, `log = logging.getLogger(__name__)` elsewhere. |
-| Named multi-search configs, per-source schedules, event hooks | Explicitly out of scope. |
-| A second project or read-only DB user for the web app | `initial_task.md`: that makes the schema an unenforced contract between two codebases. |

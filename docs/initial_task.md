@@ -1,3 +1,8 @@
+> **Historical.** The original brief, kept because the code cites it — the
+> "no per-vacancy files" and "no second codebase reading this schema" rules
+> come from here. Superseded wherever it conflicts with the code or with
+> `docs/decisions.md`; not edited to match.
+
 # Task: vacancy scraping + CV matching pipeline
 
 ## Goal
