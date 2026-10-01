@@ -37,6 +37,24 @@ def cmd_run(config_path: str, limit: int | None, match: bool = True,
     return 0
 
 
+def cmd_discover(config_path: str, only: str | None, limit: int | None) -> int:
+    """Crawl and store listings. No pages pulled, nothing spent."""
+    settings = load_settings(config_path)
+    if only:
+        settings = settings.only(only)
+    report = pipeline.discover_all(settings, limit=limit)
+    with SessionLocal() as session:
+        stored, fetched, matched = repository.count_vacancies(session)
+        queued = len(repository.fetch_queue(session, [e.name for e in settings.sources]))
+    print(f"\ndiscovered {report.discovered} listings, {report.added} new, "
+          f"failed {len(report.failures)}")
+    print(f"database now holds {stored} vacancies, {fetched} fetched; "
+          f"{queued} queued for `jobmatch fetch --pending`")
+    for url, exc in report.failures:
+        print(f"  ! {url}: {type(exc).__name__}: {exc}")
+    return 0
+
+
 def cmd_fetch(url: str) -> int:
     source = source_for_url(url)
     data = source.fetch(url)
@@ -177,6 +195,19 @@ def main(argv: list[str] | None = None) -> int:
         help="crawl only this sweep, e.g. --only bg; omit it to crawl them all",
     )
 
+    discover = sub.add_parser(
+        "discover", help="crawl and store listings only — no pages, no spending"
+    )
+    discover.add_argument("--config", default=str(DEFAULT_PATH))
+    discover.add_argument(
+        "--only", metavar="SWEEP", help="crawl only this sweep, e.g. --only bg"
+    )
+    discover.add_argument(
+        "--limit",
+        type=int,
+        help="stop after this many listings — try a search change for one page",
+    )
+
     fetch = sub.add_parser("fetch", help="scrape vacancy pages into the database")
     fetch.add_argument(
         "url",
@@ -211,6 +242,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "run":
         return cmd_run(args.config, args.limit, match=not args.no_match, only=args.only)
+    if args.command == "discover":
+        return cmd_discover(args.config, args.only, args.limit)
     if args.command == "fetch" and args.pending:
         return cmd_fetch_pending(args.config, args.limit)
     if args.command == "fetch":

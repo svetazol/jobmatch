@@ -35,6 +35,7 @@ class RunReport:
     """
 
     discovered: int = 0
+    added: int = 0            # rows the feed had not shown us before
     fetched: int = 0
     skipped: int = 0          # already fetched, delisted, or out of attempts
     delisted: int = 0
@@ -57,7 +58,8 @@ class RunReport:
 
     def summary(self) -> str:
         return (
-            f"discovered {self.discovered}, fetched {self.fetched}, "
+            f"discovered {self.discovered} ({self.added} new), "
+            f"fetched {self.fetched}, "
             f"skipped {self.skipped}, delisted {self.delisted}, "
             f"matched {self.matched} (${self.cost:.6f}), "
             f"already matched {self.already_matched}, failed {len(self.failures)}"
@@ -88,6 +90,31 @@ def run(settings: Settings, limit: int | None = None, *, match: bool = True) -> 
 
     if match:
         match_all(settings, report=report, limit=limit)
+    return report
+
+
+def discover_all(settings: Settings, *, limit: int | None = None) -> RunReport:
+    """Phase 1 alone: store what the sweeps find, fetch nothing.
+
+    The honest completion of the state-based design -- discovery already leaves
+    rows that are a valid state (`fetched_at IS NULL` *is* the fetch queue), so
+    stopping here loses nothing and `jobmatch fetch --pending` resumes.
+
+    What it is for: seeing what a changed search or a new country actually
+    yields, without then pulling thousands of pages. ``limit`` stops the walk
+    early, so that costs a page rather than a sweep.
+    """
+    report = RunReport()
+    for entry, sweep, countries in settings.crawls():
+        if limit is not None and report.discovered >= limit:
+            break
+        source = SOURCES[entry.name]
+        log.info("sweep %s: %s", sweep, ", ".join(countries))
+        remaining = None if limit is None else limit - report.discovered
+        listings = _safe_discover(source, entry, countries, settings, report, remaining)
+        report.discovered += len(listings)
+        for listing in listings:
+            _persist_listing(source, listing, report)
     return report
 
 
@@ -162,17 +189,24 @@ def _safe_discover(
     countries: tuple[str, ...],
     settings: Settings,
     report: RunReport,
+    limit: int | None = None,
 ) -> list[Listing]:
     """A source being down costs one warning, not the other sources' work.
 
     Consumed item by item rather than with ``list()`` so that a crawl which
     dies on page four keeps the three pages it already walked. The failure is
     still recorded — a partial crawl must not pass for a complete one.
+
+    ``limit`` stops the walk rather than trimming the result, so trying a config
+    change costs a page or two instead of the whole sweep.
     """
     listings: list[Listing] = []
     try:
         for listing in source.discover(entry.search, settings.crawl, countries):
             listings.append(listing)
+            if limit is not None and len(listings) >= limit:
+                log.info("stopping at --limit %d listings", limit)
+                break
     except Exception as exc:
         log.warning("discovery failed for %s after %d: %s", source.name, len(listings), exc)
         report.failures.append((f"discover:{source.name}:{','.join(countries)}", exc))
@@ -230,8 +264,12 @@ def _persist_listing(source: Source, listing: Listing, report: RunReport) -> int
     row to be recorded against. Returns None when there is nothing more to do."""
     with SessionLocal.begin() as session:
         vacancy = repository.upsert_listing(session, source.name, listing)
+        # one statement sets both from the same transaction clock on insert and
+        # only last_seen_at on conflict, so equal means this row is new
+        if vacancy.first_seen_at == vacancy.last_seen_at:
+            report.record("added")
         if vacancy.delisted_at is not None:
-            report.skipped += 1
+            report.record("skipped")
             return None
         return vacancy.id
 

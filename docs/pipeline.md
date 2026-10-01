@@ -47,6 +47,11 @@ A row with `fetched_at IS NULL` is a valid, first-class state — not a failure.
 **Re-running** is free and idempotent: a second discover of the same posting only
 moves `last_seen_at`. Nothing it wrote is ever lost by a later phase.
 
+`jobmatch discover` runs this phase alone and reports `discovered N (M new)`,
+which is what tells a config change apart from a re-crawl. `--limit` stops the
+walk rather than trimming the result, so trying a changed search costs a page
+instead of a sweep.
+
 ---
 
 ## 2 · Fetch
@@ -164,13 +169,19 @@ maintain it and would be wrong between runs.
 ```bash
 jobmatch run                   # all three
 jobmatch run --only bg         # one sweep
-jobmatch run --no-match        # crawl and fetch, spend nothing
+jobmatch run --no-match        # phases 1-2, spend nothing
 jobmatch run --limit 3         # pay for at most 3 matches
 
+jobmatch discover              # phase 1 alone, no pages pulled
+jobmatch discover --limit 20   # ...and stop the walk after 20 listings
 jobmatch fetch --pending       # phase 2 alone, over what is stored
 jobmatch match                 # phase 3 alone, no crawling
 jobmatch match --dry-run       # ask and print, write nothing
 ```
+
+Each phase leaves a state the next one reads, so you can stop after any of them
+and resume later. The three `--limit` flags cap different things, because the
+phases cost different things: listings walked, pages fetched, and money spent.
 
 `--no-match` loses nothing: the stored rows are the queue, and `jobmatch match`
 picks up exactly where it stopped. `--dry-run` is the exception to "the spend is

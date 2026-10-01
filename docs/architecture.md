@@ -86,7 +86,7 @@ cv/
 │  ├─ models.py           # SQLAlchemy 2.0 declarative — THE schema source of truth
 │  ├─ repository.py       # ~6 query/upsert functions; the only module writing SQL
 │  ├─ pipeline.py         # run(): discover -> fetch -> persist -> match -> persist
-│  ├─ cli.py              # argparse: run / fetch / match / cv-hash [--dry-run --country --cv --limit]
+│  ├─ cli.py              # argparse: run / discover / fetch / match / cv-hash
 │  ├─ sources/
 │  │  ├─ __init__.py      # Listing, VacancyData, Source, Crawl, VacancyGone, SOURCES
 │  │  └─ hh.py            # hh.ru: HTML search crawl + page parsing (data-qa + JSON-LD)

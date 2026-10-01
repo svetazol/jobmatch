@@ -397,3 +397,61 @@ def test_fetch_all_is_a_no_op_on_an_empty_queue(settings):
     report = pipeline.fetch_all(settings)
     assert report.fetched == 0
     assert report.failures == []
+
+
+def test_discover_stores_listings_and_fetches_nothing(settings, monkeypatch):
+    """Phase 1 alone leaves rows in the fetch queue and spends nothing."""
+    def explode(*a, **k):
+        raise AssertionError("discover must not fetch")
+
+    source = Source(
+        name=SOURCE_NAME,
+        hosts=("example.test",),
+        discover=lambda params, crawl, countries=(): [listing("1"), listing("2")],
+        fetch=explode,
+    )
+    monkeypatch.setitem(SOURCES, SOURCE_NAME, source)
+
+    report = pipeline.discover_all(settings)
+    assert (report.discovered, report.added, report.fetched) == (2, 2, 0)
+    with SessionLocal() as session:
+        rows = list(session.scalars(select(Vacancy).where(Vacancy.source == SOURCE_NAME)))
+        queued = repository.fetch_queue(session, [SOURCE_NAME])
+    assert len(rows) == 2
+    assert all(v.fetched_at is None and v.description is None for v in rows)
+    assert len(queued) == 2        # both are waiting for `fetch --pending`
+
+
+def test_a_second_discover_adds_nothing_new(settings, monkeypatch):
+    """`added` is what tells a config change apart from a re-crawl."""
+    source = Source(
+        name=SOURCE_NAME,
+        hosts=("example.test",),
+        discover=lambda params, crawl, countries=(): [listing("1")],
+        fetch=lambda url: None,
+    )
+    monkeypatch.setitem(SOURCES, SOURCE_NAME, source)
+
+    assert pipeline.discover_all(settings).added == 1
+    again = pipeline.discover_all(settings)
+    assert (again.discovered, again.added) == (1, 0)
+
+
+def test_discover_limit_stops_the_walk_rather_than_trimming(settings, monkeypatch):
+    """The point of --limit: a config change costs a page, not a sweep. If it
+    trimmed the result instead, the crawl would already have been paid for."""
+    yielded = []
+
+    def endless(params, crawl, countries=()):
+        for n in range(1, 500):
+            yielded.append(n)
+            yield listing(str(n))
+
+    monkeypatch.setitem(
+        SOURCES, SOURCE_NAME,
+        Source(name=SOURCE_NAME, hosts=("example.test",), discover=endless,
+               fetch=lambda url: None),
+    )
+    report = pipeline.discover_all(settings, limit=3)
+    assert report.discovered == 3
+    assert len(yielded) == 3        # the generator was abandoned, not drained
