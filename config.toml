@@ -3,10 +3,11 @@
 # `python -m jobmatch.sources.hh russia` prints what a country name expands to.
 
 model = "jev-1.13"        # pinned, never an alias: part of the match fingerprint
-cv_path = "data/cv3.md"   # the CV the next match run uses
+cv_path = "data/cv2.md"   # the CV the next match run uses
 
 # What the market view reports on: the CV *already* matched, not cv_path.
-# 2026-09-29: cv2 holds all 2 720 current matches, cv3 none. `jobmatch cv-hash`.
+# cv2, the same as cv_path; they diverge only while a new CV is being matched.
+# 2026-10-02: cv2 holds all 2 720 current matches. `jobmatch cv-hash`.
 stats_cv_hash = "9e5bbcb28e19493e48b23ef128359014dc4fbbc38153d6261693d76225e1f4a5"
 
 # Opaque, passed to hh verbatim. excluded_text is matched against search_field,

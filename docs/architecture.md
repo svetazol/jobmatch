@@ -451,7 +451,7 @@ config can contradict — see `docs/decisions.md`.
 
 ```toml
 model = "jev-1.13"       # pinned, never an alias — see §4
-cv_path = "data/cv3.md"  # what the *next* match run uses
+cv_path = "data/cv2.md"  # what the *next* match run uses
 stats_cv_hash = "9e5b…"  # what has *already* been matched — a different thing
 
 [sources."hh.ru".search]           # opaque: passed to the source verbatim
