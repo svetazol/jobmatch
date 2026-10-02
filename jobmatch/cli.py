@@ -1,32 +1,40 @@
-"""Command line entry point. A thin caller of pipeline + repository."""
+"""Command line entry point. A thin caller of pipeline + repository.
+
+Each command is a coroutine; ``main`` is the one place an event loop starts.
+Library code never calls ``asyncio.run`` itself, so the same functions serve
+the API's loop unchanged.
+"""
 from __future__ import annotations
 
 import argparse
+import asyncio
 import dataclasses
 import logging
 import sys
+from collections.abc import Coroutine
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import func, select
 
 from . import matching, pipeline, repository
 from .config import DEFAULT_PATH, Settings, load_settings
-from .db import SessionLocal
+from .db import SessionLocal, engine
 from .models import MatchResult, Vacancy
 from .sources import source_for_url
 
 log = logging.getLogger(__name__)
 
 
-def cmd_run(config_path: str, limit: int | None, match: bool = True,
+async def cmd_run(config_path: str, limit: int | None, match: bool = True,
             only: str | None = None) -> int:
     settings = load_settings(config_path)
     if only:
         settings = settings.only(only)
-    report = pipeline.run(settings, limit=limit, match=match)
-    with SessionLocal() as session:
-        stored, fetched, matched = repository.count_vacancies(session)
+    report = await pipeline.run(settings, limit=limit, match=match)
+    async with SessionLocal() as session:
+        stored, fetched, matched = await repository.count_vacancies(session)
     print(f"\n{report.summary()}")
     print(
         f"database now holds {stored} vacancies, {fetched} fetched, "
@@ -37,15 +45,15 @@ def cmd_run(config_path: str, limit: int | None, match: bool = True,
     return 0
 
 
-def cmd_discover(config_path: str, only: str | None, limit: int | None) -> int:
+async def cmd_discover(config_path: str, only: str | None, limit: int | None) -> int:
     """Crawl and store listings. No pages pulled, nothing spent."""
     settings = load_settings(config_path)
     if only:
         settings = settings.only(only)
-    report = pipeline.discover_all(settings, limit=limit)
-    with SessionLocal() as session:
-        stored, fetched, matched = repository.count_vacancies(session)
-        queued = len(repository.fetch_queue(session, [e.name for e in settings.sources]))
+    report = await pipeline.discover_all(settings, limit=limit)
+    async with SessionLocal() as session:
+        stored, fetched, matched = await repository.count_vacancies(session)
+        queued = len(await repository.fetch_queue(session, [e.name for e in settings.sources]))
     print(f"\ndiscovered {report.discovered} listings, {report.added} new, "
           f"failed {len(report.failures)}")
     print(f"database now holds {stored} vacancies, {fetched} fetched; "
@@ -55,11 +63,11 @@ def cmd_discover(config_path: str, only: str | None, limit: int | None) -> int:
     return 0
 
 
-def cmd_fetch(url: str) -> int:
+async def cmd_fetch(url: str) -> int:
     source = source_for_url(url)
-    data = source.fetch(url)
-    with SessionLocal.begin() as session:
-        vacancy = repository.store_fetched(session, source.name, data)
+    data = await source.fetch(url)
+    async with SessionLocal.begin() as session:
+        vacancy = await repository.store_fetched(session, source.name, data)
         print(
             f"#{vacancy.id}  {vacancy.source}:{vacancy.external_id}\n"
             f"  title       {data.title}\n"
@@ -74,15 +82,15 @@ def cmd_fetch(url: str) -> int:
     return 0
 
 
-def cmd_match(config_path: str, *, dry_run: bool, cv: str | None,
+async def cmd_match(config_path: str, *, dry_run: bool, cv: str | None,
               country: str | None, limit: int | None) -> int:
     settings = load_settings(config_path)
     if cv:
         settings = dataclasses.replace(settings, cv_path=Path(cv))
     if dry_run:
-        return _dry_run(settings, country, limit)
+        return await _dry_run(settings, country, limit)
 
-    report = pipeline.match_all(settings, limit=limit, country=country)
+    report = await pipeline.match_all(settings, limit=limit, country=country)
     print(f"\nmatched {report.matched} (${report.cost:.6f}), "
           f"already matched {report.already_matched}, failed {len(report.failures)}")
     for url, exc in report.failures:
@@ -90,21 +98,23 @@ def cmd_match(config_path: str, *, dry_run: bool, cv: str | None,
     return 0
 
 
-def _dry_run(settings: Settings, country: str | None, limit: int | None) -> int:
+async def _dry_run(settings: Settings, country: str | None, limit: int | None) -> int:
     """Ask Jev and print, writing nothing at all.
 
     No `llm_calls` row, no `match_results` row — which is the point, and also
     the catch: the spend is invisible to the ledger afterwards, so the total is
     printed here and nowhere else.
     """
-    with SessionLocal() as session:
-        vacancy_ids = repository.matchable_vacancy_ids(
+    async with SessionLocal() as session:
+        vacancy_ids = (await repository.matchable_vacancy_ids(
             session, [entry.name for entry in settings.sources], country
-        )[: limit or 10]
-        vacancies = list(session.scalars(select(Vacancy).where(Vacancy.id.in_(vacancy_ids))))
+        ))[: limit or 10]
+        vacancies = list(
+            await session.scalars(select(Vacancy).where(Vacancy.id.in_(vacancy_ids)))
+        )
         stored = {
             m.vacancy_id: m
-            for m in session.scalars(
+            for m in await session.scalars(
                 select(MatchResult).where(
                     MatchResult.vacancy_id.in_(vacancy_ids),
                     MatchResult.superseded_at.is_(None),
@@ -117,9 +127,9 @@ def _dry_run(settings: Settings, country: str | None, limit: int | None) -> int:
           f"{len(vacancies)} vacancies. Nothing will be written.\n")
 
     total = Decimal(0)
-    with matching.open_client() as client:
-        for vacancy in vacancies:
-            preview = matching.preview_vacancy(
+    async with matching.open_client() as client:
+        for vacancy in vacancies:          # one at a time: the output is read in order
+            preview = await matching.preview_vacancy(
                 client, cv, vacancy, settings.model, job=matching.job_text(vacancy)
             )
             total += preview.cost_usd or Decimal(0)
@@ -139,15 +149,15 @@ def _dry_run(settings: Settings, country: str | None, limit: int | None) -> int:
     return 0
 
 
-def cmd_cv_hash(config_path: str, cv: str | None) -> int:
+async def cmd_cv_hash(config_path: str, cv: str | None) -> int:
     """Print the hash a CV's answers are stored under — what `stats_cv_hash`
     wants, and the only way to tell which of several CVs a stored match
     belongs to. Hashed after sanitising, exactly as matching does it."""
     settings = load_settings(config_path)
     path = Path(cv) if cv else settings.cv_path
     digest = matching.sha256(matching.load_cv(path))
-    with SessionLocal() as session:
-        current = session.scalar(
+    async with SessionLocal() as session:
+        current = await session.scalar(
             select(func.count())
             .select_from(MatchResult)
             .where(MatchResult.cv_hash == digest, MatchResult.superseded_at.is_(None))
@@ -156,13 +166,13 @@ def cmd_cv_hash(config_path: str, cv: str | None) -> int:
     return 0
 
 
-def cmd_fetch_pending(config_path: str, limit: int | None) -> int:
+async def cmd_fetch_pending(config_path: str, limit: int | None) -> int:
     """Drain the fetch queue. No crawling, no spending."""
     settings = load_settings(config_path)
-    report = pipeline.fetch_all(settings, limit=limit)
-    with SessionLocal() as session:
-        stored, fetched, matched = repository.count_vacancies(session)
-        remaining = len(repository.fetch_queue(session, [e.name for e in settings.sources]))
+    report = await pipeline.fetch_all(settings, limit=limit)
+    async with SessionLocal() as session:
+        stored, fetched, matched = await repository.count_vacancies(session)
+        remaining = len(await repository.fetch_queue(session, [e.name for e in settings.sources]))
     print(f"\n{report.summary()}")
     print(f"database now holds {stored} vacancies, {fetched} fetched; {remaining} still queued")
     for url, exc in report.failures[:10]:
@@ -241,19 +251,30 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.command == "run":
-        return cmd_run(args.config, args.limit, match=not args.no_match, only=args.only)
-    if args.command == "discover":
-        return cmd_discover(args.config, args.only, args.limit)
-    if args.command == "fetch" and args.pending:
-        return cmd_fetch_pending(args.config, args.limit)
-    if args.command == "fetch":
-        return cmd_fetch(args.url)
-    if args.command == "cv-hash":
-        return cmd_cv_hash(args.config, args.cv)
-    if args.command == "match":
-        return cmd_match(args.config, dry_run=args.dry_run, cv=args.cv,
-                         country=args.country, limit=args.limit)
-    parser.error(f"unknown command {args.command}")  # unreachable
+        command = cmd_run(args.config, args.limit, match=not args.no_match, only=args.only)
+    elif args.command == "discover":
+        command = cmd_discover(args.config, args.only, args.limit)
+    elif args.command == "fetch" and args.pending:
+        command = cmd_fetch_pending(args.config, args.limit)
+    elif args.command == "fetch":
+        command = cmd_fetch(args.url)
+    elif args.command == "cv-hash":
+        command = cmd_cv_hash(args.config, args.cv)
+    elif args.command == "match":
+        command = cmd_match(args.config, dry_run=args.dry_run, cv=args.cv,
+                            country=args.country, limit=args.limit)
+    else:
+        parser.error(f"unknown command {args.command}")  # unreachable
+    return asyncio.run(_run(command))
+
+
+async def _run(command: Coroutine[Any, Any, int]) -> int:
+    """Await one command, then close the pool on the loop that opened it --
+    left to GC, its connections are closed after the loop is gone."""
+    try:
+        return await command
+    finally:
+        await engine.dispose()
 
 
 if __name__ == "__main__":

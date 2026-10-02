@@ -3,7 +3,8 @@
     python -m jobmatch.sources.hh._refresh
 
 Run it when hh adds or renames an area. Separate from ``areas.py`` so that
-importing the source never reaches the network.
+importing the source never reaches the network. Synchronous on purpose: a
+one-off script with one request has nothing to overlap.
 """
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ import datetime as dt
 import json
 from pathlib import Path
 
-import requests
+import httpx2
 
 from . import HEADERS, TIMEOUT
 from .areas import AREAS_PATH
@@ -21,7 +22,7 @@ API = "https://api.hh.ru/areas"
 
 def fetch() -> dict:
     """The nine top-level areas and their children, flattened to what we use."""
-    resp = requests.get(API, headers=HEADERS, timeout=TIMEOUT)
+    resp = httpx2.get(API, headers=HEADERS, timeout=TIMEOUT)
     resp.raise_for_status()
     return {
         "fetched": dt.date.today().isoformat(),

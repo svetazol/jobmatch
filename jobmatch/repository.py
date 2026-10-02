@@ -14,14 +14,14 @@ from typing import Any
 
 from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from .matching import MatchOutcome
 from .models import MAX_FETCH_ATTEMPTS, LlmCall, MatchResult, Vacancy
 from .sources import Listing, VacancyData
 
 
-def upsert_listing(session: Session, source: str, listing: Listing) -> Vacancy:
+async def upsert_listing(session: AsyncSession, source: str, listing: Listing) -> Vacancy:
     """Record that the feed just showed us this vacancy.
 
     One statement, so there is no read-modify-write race. Anything the fetch
@@ -46,12 +46,12 @@ def upsert_listing(session: Session, source: str, listing: Listing) -> Vacancy:
             "updated_at": func.now(),
         },
     ).returning(Vacancy)
-    return session.scalars(stmt).one()
+    return (await session.scalars(stmt)).one()
 
 
-def apply_fetched(session: Session, vacancy_id: int, data: VacancyData) -> Vacancy:
+async def apply_fetched(session: AsyncSession, vacancy_id: int, data: VacancyData) -> Vacancy:
     """Fill in everything the detail page knows. Clears any earlier failure."""
-    vacancy = session.get_one(Vacancy, vacancy_id)
+    vacancy = await session.get_one(Vacancy, vacancy_id)
     vacancy.url = data.url
     vacancy.title = data.title
     vacancy.company = data.company
@@ -71,9 +71,9 @@ def apply_fetched(session: Session, vacancy_id: int, data: VacancyData) -> Vacan
     return vacancy
 
 
-def store_fetched(session: Session, source: str, data: VacancyData) -> Vacancy:
+async def store_fetched(session: AsyncSession, source: str, data: VacancyData) -> Vacancy:
     """Both phases at once, for `jobmatch fetch <url>` — no feed involved."""
-    vacancy = upsert_listing(
+    vacancy = await upsert_listing(
         session,
         source,
         Listing(
@@ -83,26 +83,26 @@ def store_fetched(session: Session, source: str, data: VacancyData) -> Vacancy:
             published_at=data.published_at,
         ),
     )
-    session.flush()
-    return apply_fetched(session, vacancy.id, data)
+    await session.flush()
+    return await apply_fetched(session, vacancy.id, data)
 
 
-def record_fetch_failure(session: Session, vacancy_id: int, error: Exception) -> None:
+async def record_fetch_failure(session: AsyncSession, vacancy_id: int, error: Exception) -> None:
     """Count the failure so a permanently broken page stops being retried."""
-    vacancy = session.get_one(Vacancy, vacancy_id)
+    vacancy = await session.get_one(Vacancy, vacancy_id)
     vacancy.fetch_attempts += 1
     vacancy.fetch_error = f"{type(error).__name__}: {error}"[:2000]
 
 
-def mark_delisted(session: Session, vacancy_id: int) -> None:
+async def mark_delisted(session: AsyncSession, vacancy_id: int) -> None:
     """Only ever called on a positive signal — a 404, not an absence."""
-    vacancy = session.get_one(Vacancy, vacancy_id)
+    vacancy = await session.get_one(Vacancy, vacancy_id)
     vacancy.delisted_at = func.now()
     vacancy.fetch_error = None
 
 
-def matchable_vacancy_ids(
-    session: Session, sources: Sequence[str], country: str | None = None
+async def matchable_vacancy_ids(
+    session: AsyncSession, sources: Sequence[str], country: str | None = None
 ) -> list[int]:
     """Every vacancy worth asking about — *not* only the ones in today's feed.
 
@@ -126,15 +126,15 @@ def matchable_vacancy_ids(
     if country:
         query = query.where(Vacancy.country == country)
     return list(
-        session.scalars(
+        await session.scalars(
             query
             .order_by(Vacancy.published_at.desc().nullslast(), Vacancy.id)
         )
     )
 
 
-def fetch_queue(
-    session: Session, sources: Sequence[str], limit: int | None = None
+async def fetch_queue(
+    session: AsyncSession, sources: Sequence[str], limit: int | None = None
 ) -> list[tuple[int, str]]:
     """Every vacancy still waiting for its detail page, as (id, url).
 
@@ -158,10 +158,10 @@ def fetch_queue(
     )
     if limit is not None:
         query = query.limit(limit)
-    return [(row.id, row.url) for row in session.execute(query)]
+    return [(row.id, row.url) for row in await session.execute(query)]
 
 
-def make_current(session: Session, vacancy_id: int, fingerprint: str) -> bool:
+async def make_current(session: AsyncSession, vacancy_id: int, fingerprint: str) -> bool:
     """Is this exact request already answered? If so, make that answer current.
 
     The whole of "never pay twice", and a little more: an answer is looked up
@@ -170,7 +170,7 @@ def make_current(session: Session, vacancy_id: int, fingerprint: str) -> bool:
     again. Without the revival the old answer would be found and skipped while
     a row computed from a different CV stayed flagged as current.
     """
-    existing = session.scalar(
+    existing = await session.scalar(
         select(MatchResult).where(
             MatchResult.vacancy_id == vacancy_id,
             MatchResult.inputs_fingerprint == fingerprint,
@@ -181,21 +181,21 @@ def make_current(session: Session, vacancy_id: int, fingerprint: str) -> bool:
     if existing.superseded_at is None:
         return True                      # already current: no writes at all
 
-    _supersede_current(session, vacancy_id)
+    await _supersede_current(session, vacancy_id)
     existing.superseded_at = None
     return True
 
 
-def _supersede_current(session: Session, vacancy_id: int) -> None:
-    session.execute(
+async def _supersede_current(session: AsyncSession, vacancy_id: int) -> None:
+    await session.execute(
         update(MatchResult)
         .where(MatchResult.vacancy_id == vacancy_id, MatchResult.superseded_at.is_(None))
         .values(superseded_at=func.now())
     )
-    session.flush()
+    await session.flush()
 
 
-def save_match(session: Session, vacancy_id: int, outcome: MatchOutcome) -> MatchResult:
+async def save_match(session: AsyncSession, vacancy_id: int, outcome: MatchOutcome) -> MatchResult:
     """Supersede whatever was current, then insert. Append-only otherwise.
 
     Only ever called after a paid call — an answer that already exists is
@@ -203,7 +203,7 @@ def save_match(session: Session, vacancy_id: int, outcome: MatchOutcome) -> Matc
     per vacancy" the database's problem, so two concurrent runs cannot both
     leave a current row; the loser gets an IntegrityError.
     """
-    _supersede_current(session, vacancy_id)
+    await _supersede_current(session, vacancy_id)
     result = MatchResult(
         vacancy_id=vacancy_id,
         llm_call_id=outcome.call_id,
@@ -223,21 +223,21 @@ def save_match(session: Session, vacancy_id: int, outcome: MatchOutcome) -> Matc
     )
     session.add(result)
     # the cheap pre-check for "the employer edited the posting"
-    session.get_one(Vacancy, vacancy_id).content_hash = outcome.vacancy_content_hash
+    (await session.get_one(Vacancy, vacancy_id)).content_hash = outcome.vacancy_content_hash
     return result
 
 
-def count_vacancies(session: Session) -> tuple[int, int, int]:
+async def count_vacancies(session: AsyncSession) -> tuple[int, int, int]:
     """(stored, fetched, matched) — what `run` prints at the end."""
-    stored = session.scalar(select(func.count()).select_from(Vacancy)) or 0
+    stored = await session.scalar(select(func.count()).select_from(Vacancy)) or 0
     fetched = (
-        session.scalar(
+        await session.scalar(
             select(func.count()).select_from(Vacancy).where(Vacancy.fetched_at.is_not(None))
         )
         or 0
     )
     matched = (
-        session.scalar(
+        await session.scalar(
             select(func.count())
             .select_from(MatchResult)
             .where(MatchResult.superseded_at.is_(None))
@@ -262,8 +262,8 @@ _CURRENT = MatchResult.superseded_at.is_(None)
 STALE_AFTER = dt.timedelta(days=14)
 
 
-def list_vacancies(
-    session: Session,
+async def list_vacancies(
+    session: AsyncSession,
     *,
     source: str | None = None,
     min_fit: float | None = None,
@@ -318,7 +318,7 @@ def list_vacancies(
             )
         )
 
-    total = session.scalar(
+    total = await session.scalar(
         select(func.count()).select_from(stmt.order_by(None).subquery())
     ) or 0
 
@@ -347,27 +347,27 @@ def list_vacancies(
         MatchResult.overall_fit_score.desc().nullslast(), Vacancy.id
     ).limit(limit)
 
-    return list(session.execute(stmt).all()), total
+    return list((await session.execute(stmt)).all()), total
 
 
-def get_vacancy(session: Session, vacancy_id: int) -> tuple[Vacancy, MatchResult | None] | None:
+async def get_vacancy(session: AsyncSession, vacancy_id: int) -> tuple[Vacancy, MatchResult | None] | None:
     """One vacancy and its current match, or None when the id is unknown."""
-    row = session.execute(
+    row = (await session.execute(
         select(Vacancy, MatchResult)
         .outerjoin(MatchResult, and_(MatchResult.vacancy_id == Vacancy.id, _CURRENT))
         .where(Vacancy.id == vacancy_id)
-    ).first()
+    )).first()
     return (row[0], row[1]) if row else None
 
 
-def call_cost(session: Session, match: MatchResult | None) -> Decimal | None:
+async def call_cost(session: AsyncSession, match: MatchResult | None) -> Decimal | None:
     """What the current match cost. Lives on llm_calls, not match_results."""
     if match is None:
         return None
-    return session.scalar(select(LlmCall.cost_usd).where(LlmCall.id == match.llm_call_id))
+    return await session.scalar(select(LlmCall.cost_usd).where(LlmCall.id == match.llm_call_id))
 
 
-def set_triage(session: Session, vacancy_id: int, field: str, on: bool) -> bool:
+async def set_triage(session: AsyncSession, vacancy_id: int, field: str, on: bool) -> bool:
     """Set or clear one triage timestamp. False when the id is unknown.
 
     Clearing is a first-class operation, not an afterthought: it is what the
@@ -375,7 +375,7 @@ def set_triage(session: Session, vacancy_id: int, field: str, on: bool) -> bool:
     """
     column = {"seen": Vacancy.seen_at, "starred": Vacancy.starred_at,
               "hidden": Vacancy.hidden_at}[field]
-    result = session.execute(
+    result = await session.execute(
         update(Vacancy)
         .where(Vacancy.id == vacancy_id)
         .values({column: func.now() if on else None})
@@ -403,8 +403,8 @@ def _cv_scope(cv_hash: str):
     )
 
 
-def stats(
-    session: Session,
+async def stats(
+    session: AsyncSession,
     *,
     country: Sequence[str] | None = None,
     cv_hash: str | None = None,
@@ -439,7 +439,7 @@ def stats(
             .where(and_(*where))
         )
 
-    headline = session.execute(
+    headline = (await session.execute(
         matched(
             func.count(),
             func.count().filter(MatchResult.is_qualified),
@@ -449,16 +449,16 @@ def stats(
             func.percentile_cont(0.5).within_group(MatchResult.overall_fit_score),
             func.avg(MatchResult.overall_fit_score),
         )
-    ).one()
+    )).one()
 
-    fit_rows = session.execute(
+    fit_rows = (await session.execute(
         matched(MatchResult.overall_fit_label, func.count())
         .group_by(MatchResult.overall_fit_label)
-    ).all()
+    )).all()
 
     # One pass for both the per-pitch totals and their fit breakdown: the
     # counts have to agree, and two queries are two chances to disagree.
-    pitch_rows = session.execute(
+    pitch_rows = (await session.execute(
         matched(
             MatchResult.best_angle,
             MatchResult.overall_fit_label,
@@ -467,7 +467,7 @@ def stats(
             func.count().filter(MatchResult.is_qualified),
         )
         .group_by(MatchResult.best_angle, MatchResult.overall_fit_label)
-    ).all()
+    )).all()
 
     spend_stmt = select(
         func.count(), func.coalesce(func.sum(LlmCall.cost_usd), 0), func.avg(LlmCall.duration_ms)
@@ -487,7 +487,7 @@ def stats(
         spend_stmt = spend_stmt.join(Vacancy, Vacancy.id == LlmCall.vacancy_id).where(
             Vacancy.country.in_(list(country))
         )
-    spend = session.execute(spend_stmt).one()
+    spend = (await session.execute(spend_stmt)).one()
 
     # Deliberately unfiltered by country — see the docstring — but still over
     # this CV's current matches, so these counts add up to `total` instead of
@@ -497,13 +497,13 @@ def stats(
         _cv_scope(cv_hash) if cv_hash else _CURRENT,
         Vacancy.country.is_not(None),
     ]
-    countries = session.execute(
+    countries = (await session.execute(
         select(Vacancy.country, func.count())
         .join(MatchResult, MatchResult.vacancy_id == Vacancy.id)
         .where(and_(*country_where))
         .group_by(Vacancy.country)
         .order_by(func.count().desc())
-    ).all()
+    )).all()
 
     formats_stmt = (
         select(func.unnest(Vacancy.work_formats).label("fmt"), func.count())
@@ -516,7 +516,7 @@ def stats(
         ).where(_cv_scope(cv_hash))
     if country:
         formats_stmt = formats_stmt.where(Vacancy.country.in_(list(country)))
-    formats = session.execute(formats_stmt).all()
+    formats = (await session.execute(formats_stmt)).all()
 
     return {
         "headline": headline,
@@ -528,7 +528,7 @@ def stats(
     }
 
 
-def cv_hashes(session: Session) -> list[tuple[str, int, dt.datetime]]:
+async def cv_hashes(session: AsyncSession) -> list[tuple[str, int, dt.datetime]]:
     """Every CV the stored corpus has been matched against: (hash, vacancies
     answered, when it was last matched).
 
@@ -545,7 +545,7 @@ def cv_hashes(session: Session) -> list[tuple[str, int, dt.datetime]]:
     """
     return [
         (cv_hash, count, last)
-        for cv_hash, count, last in session.execute(
+        for cv_hash, count, last in (await session.execute(
             select(
                 MatchResult.cv_hash,
                 func.count(func.distinct(MatchResult.vacancy_id)),
@@ -553,5 +553,5 @@ def cv_hashes(session: Session) -> list[tuple[str, int, dt.datetime]]:
             )
             .group_by(MatchResult.cv_hash)
             .order_by(func.max(MatchResult.created_at).desc())
-        ).all()
+        )).all()
     ]

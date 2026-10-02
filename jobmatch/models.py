@@ -143,6 +143,7 @@ class Vacancy(Base):
     matches: Mapped[list[MatchResult]] = relationship(
         back_populates="vacancy",
         cascade="all, delete-orphan",
+        lazy="raise",   # async: an unloaded relationship must fail loudly, not await
         order_by="MatchResult.created_at.desc()",
     )
 
@@ -195,8 +196,8 @@ class MatchResult(Base):
     created_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
     superseded_at: Mapped[dt.datetime | None] = mapped_column()
 
-    vacancy: Mapped[Vacancy] = relationship(back_populates="matches")
-    call: Mapped[LlmCall] = relationship()
+    vacancy: Mapped[Vacancy] = relationship(back_populates="matches", lazy="raise")
+    call: Mapped[LlmCall] = relationship(lazy="raise")
 
     __table_args__ = (
         UniqueConstraint(

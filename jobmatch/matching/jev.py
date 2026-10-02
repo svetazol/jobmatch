@@ -10,12 +10,13 @@ import datetime as dt
 import logging
 import os
 import time
-from contextlib import contextmanager
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
-from typesafe_sdk import TypeSafeAPIError, TypeSafeClient
+from typesafe_sdk import AsyncTypeSafeClient
 
 from ..db import SessionLocal
 from ..models import LlmCall, Vacancy
@@ -25,6 +26,9 @@ log = logging.getLogger(__name__)
 
 API_KEY_ENV = "OPENROUTER_API_KEY"
 BASE_URL = "https://openrouter.ai/api"  # the SDK appends /v1/systemone itself
+# Calls in flight at once. The SDK retries a 429 itself, honouring
+# Retry-After, so too high costs latency rather than answers.
+CONCURRENCY = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,13 +74,13 @@ class MatchOutcome:
     call_id: int  # the already-committed llm_calls row
 
 
-@contextmanager
-def open_client(api_key: str | None = None):
-    """One client per run — it holds an HTTP session."""
+@asynccontextmanager
+async def open_client(api_key: str | None = None) -> AsyncIterator[AsyncTypeSafeClient]:
+    """One client per run — it holds an HTTP session, shared by every call."""
     key = api_key or os.environ.get(API_KEY_ENV)
     if not key:
         raise ValueError(f"Set {API_KEY_ENV} in .env before matching.")
-    with TypeSafeClient(api_key=key, base_url=BASE_URL) as client:
+    async with AsyncTypeSafeClient(api_key=key, base_url=BASE_URL) as client:
         yield client
 
 
@@ -154,16 +158,18 @@ def _flatten(response: Any, cost: Decimal | None, duration_ms: int) -> Preview:
     )
 
 
-def _ask(client: TypeSafeClient, cv: str, job: str, model: str) -> tuple[Any, dict, int]:
+async def _ask(
+    client: AsyncTypeSafeClient, cv: str, job: str, model: str
+) -> tuple[Any, dict, int]:
     clock = time.monotonic()
-    response = client.system_one(
+    response = await client.system_one(
         state={"cv": cv, "job_description": job}, questions=QUESTIONS, model=model
     )
     return response, _usage(response), int((time.monotonic() - clock) * 1000)
 
 
-def preview_vacancy(
-    client: TypeSafeClient, cv: str, vacancy: Vacancy, model: str, *, job: str
+async def preview_vacancy(
+    client: AsyncTypeSafeClient, cv: str, vacancy: Vacancy, model: str, *, job: str
 ) -> Preview:
     """Ask Jev and return the answer without recording anything.
 
@@ -172,23 +178,23 @@ def preview_vacancy(
     ledger, which is the price of a dry run — `Preview.cost_usd` is the only
     record of it, and it dies with the process.
     """
-    response, meta, duration_ms = _ask(client, cv, job, model)
+    response, meta, duration_ms = await _ask(client, cv, job, model)
     cost = Decimal(str(meta["cost"])) if meta.get("cost") is not None else None
     return _flatten(response, cost, duration_ms)
 
 
-def _record_call(**values: Any) -> int:
+async def _record_call(**values: Any) -> int:
     """Write the ledger row in its *own* session, so it survives the caller's
     rollback. A log that disappears when things go wrong is worse than none."""
-    with SessionLocal.begin() as session:
+    async with SessionLocal.begin() as session:
         call = LlmCall(**values)
         session.add(call)
-        session.flush()
+        await session.flush()
         return call.id
 
 
-def match_vacancy(
-    client: TypeSafeClient,
+async def match_vacancy(
+    client: AsyncTypeSafeClient,
     cv: str,
     vacancy: Vacancy,
     model: str,
@@ -209,9 +215,9 @@ def match_vacancy(
         "started_at": started,
     }
     try:
-        response, meta, duration_ms = _ask(client, cv, job, model)
+        response, meta, duration_ms = await _ask(client, cv, job, model)
     except Exception as exc:
-        _record_call(
+        await _record_call(
             **common,
             status="error",
             http_status=getattr(exc, "status", None),
@@ -223,7 +229,7 @@ def match_vacancy(
         raise
 
     cost = Decimal(str(meta["cost"])) if meta.get("cost") is not None else None
-    call_id = _record_call(
+    call_id = await _record_call(
         **common,
         status="ok",
         model_resolved=response.model,

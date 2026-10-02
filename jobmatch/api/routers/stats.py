@@ -1,10 +1,11 @@
 """The market view: aggregates over the current matches only."""
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ... import matching, repository
 from ...config import DEFAULT_PATH, Settings, load_settings
@@ -13,7 +14,7 @@ from ..schemas import CvOption, NameCount, PitchStat, Search, Stats
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])
 
-SessionDep = Annotated[Session, Depends(get_session)]
+SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 # The ladder, in order. Not sorted alphabetically anywhere, ever — that is the
 # enum trap §5 avoids by never making the label a sort key.
@@ -118,14 +119,14 @@ def _disk_names(settings: Settings | None) -> dict[str, str]:
     return found
 
 
-def _catalogue(session: Session, settings: Settings | None) -> list[CvOption]:
+async def _catalogue(session: AsyncSession, settings: Settings | None) -> list[CvOption]:
     """Every CV with current answers, newest run first.
 
     Driven by the database, named from the disk — never the other way round.
     A CV file with no matches is not an option (there is nothing to show), and
     a hash whose file is gone still is (its answers are still the corpus).
     """
-    names = _disk_names(settings)
+    names = await asyncio.to_thread(_disk_names, settings)
     return [
         CvOption(
             name=names.get(cv_hash, cv_hash[:12]),
@@ -134,7 +135,7 @@ def _catalogue(session: Session, settings: Settings | None) -> list[CvOption]:
             last_matched=last,
             on_disk=cv_hash in names,
         )
-        for cv_hash, count, last in repository.cv_hashes(session)
+        for cv_hash, count, last in await repository.cv_hashes(session)
     ]
 
 
@@ -161,7 +162,7 @@ def _select(catalogue: list[CvOption], requested: str | None,
 
 
 @router.get("", response_model=Stats)
-def get_stats(
+async def get_stats(
     session: SessionDep,
     country: Annotated[list[str] | None, Query()] = None,
     cv: Annotated[str | None, Query(description="CV file name, or its hash")] = None,
@@ -169,11 +170,14 @@ def get_stats(
     """Every number here answers for one CV — `?cv=` by file name, or
     `stats_cv_hash` from config.toml when the request names none — and for the
     countries asked for, except the `countries` breakdown, which ignores the
-    country filter so it keeps its own options."""
-    settings = _settings()
-    catalogue = _catalogue(session, settings)
+    country filter so it keeps its own options.
+
+    The config and the CV directory are disk reads, so they run in a thread:
+    on the event loop they would stall every other request while they ran."""
+    settings = await asyncio.to_thread(_settings)
+    catalogue = await _catalogue(session, settings)
     selected = _select(catalogue, cv, settings.stats_cv_hash if settings else None)
-    raw = repository.stats(
+    raw = await repository.stats(
         session, country=country, cv_hash=selected.cv_hash if selected else None
     )
     total, qualified, worth, median, mean = raw["headline"]
@@ -228,5 +232,5 @@ def get_stats(
         pitches=pitch_stats,
         countries=[NameCount(name=name, n=n) for name, n in raw["countries"]],
         work_formats=[NameCount(name=name, n=n) for name, n in raw["formats"]],
-        search=_search(),
+        search=await asyncio.to_thread(_search),
     )

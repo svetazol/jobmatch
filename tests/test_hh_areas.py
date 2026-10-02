@@ -85,44 +85,62 @@ def test_hh_states_the_limits_it_measured_for_itself():
     assert hh.SOURCE.rate is hh.RATE
 
 
-def test_discover_falls_back_to_the_sources_own_crawl(monkeypatch):
+def recorder(seen, pick=lambda params, crawl: params):
+    """A `_walk` that records what it was asked and yields nothing."""
+    async def walk(client, params, crawl):
+        seen.append(pick(params, crawl))
+        return
+        yield
+    return walk
+
+
+async def drain(*args, **kwargs):
+    return [listing async for listing in hh.discover(*args, **kwargs)]
+
+
+@pytest.mark.anyio
+async def test_discover_falls_back_to_the_sources_own_crawl(monkeypatch):
     seen = []
-    monkeypatch.setattr(hh, "_walk", lambda params, crawl: seen.append(crawl) or [])
-    list(hh.discover({"text": "python", "area": [28]}))
+    monkeypatch.setattr(hh, "_walk", recorder(seen, lambda params, crawl: crawl))
+    await drain({"text": "python", "area": [28]})
     assert seen == [hh.CRAWL]
 
 
-def test_discover_still_honours_an_explicit_crawl(monkeypatch):
+@pytest.mark.anyio
+async def test_discover_still_honours_an_explicit_crawl(monkeypatch):
     seen = []
-    monkeypatch.setattr(hh, "_walk", lambda params, crawl: seen.append(crawl) or [])
+    monkeypatch.setattr(hh, "_walk", recorder(seen, lambda params, crawl: crawl))
     smoke = hh.Crawl(max_pages=2, delay=0.0)
-    list(hh.discover({"text": "python", "area": [28]}, smoke))
+    await drain({"text": "python", "area": [28]}, smoke)
     assert seen == [smoke]
 
 
-def test_discover_expands_a_country_into_one_walk_per_query(monkeypatch):
+@pytest.mark.anyio
+async def test_discover_expands_a_country_into_one_walk_per_query(monkeypatch):
     walked = []
-    monkeypatch.setattr(hh, "_walk", lambda params, crawl: walked.append(params) or [])
-    list(hh.discover({"text": "python"}, countries=["russia"]))
+    monkeypatch.setattr(hh, "_walk", recorder(walked))
+    await drain({"text": "python"}, countries=["russia"])
     assert len(walked) == 92
     assert sum("experience" in q for q in walked) == 4
     assert all(q["text"] == "python" for q in walked)        # search is carried
     assert all(q["order_by"] == hh.ORDER_BY for q in walked)  # and hh's ordering
 
 
-def test_discover_applies_hh_ordering_but_lets_a_caller_override(monkeypatch):
+@pytest.mark.anyio
+async def test_discover_applies_hh_ordering_but_lets_a_caller_override(monkeypatch):
     """Ordering decides *which* 2 000 results a capped query returns, so it is
     hh's -- but not immovably."""
     walked = []
-    monkeypatch.setattr(hh, "_walk", lambda params, crawl: walked.append(params) or [])
-    list(hh.discover({"text": "python"}, countries=["georgia"]))
-    list(hh.discover({"text": "python", "order_by": "relevance"}, countries=["georgia"]))
+    monkeypatch.setattr(hh, "_walk", recorder(walked))
+    await drain({"text": "python"}, countries=["georgia"])
+    await drain({"text": "python", "order_by": "relevance"}, countries=["georgia"])
     assert [q["order_by"] for q in walked] == [hh.ORDER_BY, "relevance"]
 
 
-def test_discover_without_countries_still_walks_a_bare_area(monkeypatch):
+@pytest.mark.anyio
+async def test_discover_without_countries_still_walks_a_bare_area(monkeypatch):
     """The path the parser tests use: areas passed directly, no config involved."""
     walked = []
-    monkeypatch.setattr(hh, "_walk", lambda params, crawl: walked.append(params.get("area")) or [])
-    list(hh.discover({"text": "python", "area": [28, 16]}))
+    monkeypatch.setattr(hh, "_walk", recorder(walked, lambda params, crawl: params.get("area")))
+    await drain({"text": "python", "area": [28, 16]})
     assert walked == [28, 16]

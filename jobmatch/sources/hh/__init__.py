@@ -7,16 +7,16 @@ whole in ``VacancyData.raw``.
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 import logging
 import re
-import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-import requests
+import httpx2
 from bs4 import BeautifulSoup
 
 from .. import Crawl, Listing, Rate, Source, VacancyData, VacancyGone
@@ -105,6 +105,17 @@ _BLANK_LINES = re.compile(r"\n{3,}")
 
 class ParseError(RuntimeError):
     """The page loaded but doesn't look like a vacancy any more."""
+
+
+def _client() -> httpx2.AsyncClient:
+    """One HTTP client per walk or per page; the only place they are made.
+
+    ``follow_redirects`` keeps what ``requests`` did by default. A function
+    rather than a module-level client, because a client belongs to the event
+    loop it was opened on -- and so tests can hand back one on a
+    ``MockTransport``.
+    """
+    return httpx2.AsyncClient(headers=HEADERS, timeout=TIMEOUT, follow_redirects=True)
 
 
 def canonical_url(url: str) -> str:
@@ -245,11 +256,11 @@ class Throttled(RuntimeError):
 SearchThrottled = Throttled
 
 
-def discover(
+async def discover(
     params: Mapping[str, Any],
     crawl: Crawl | None = None,
     countries: Sequence[str] = (),
-) -> Iterator[Listing]:
+) -> AsyncIterator[Listing]:
     """Walk the search results, one query at a time.
 
     ``countries`` holds plain names like ``russia``, each expanded by
@@ -270,17 +281,20 @@ def discover(
         queries = [{} if area is None else {"area": area} for area in listed]
 
     seen: set[str] = set()
-    for query in queries:
-        for listing in _walk({**base, **query}, crawl):
-            if listing.external_id not in seen:
-                seen.add(listing.external_id)
-                yield listing
+    async with _client() as client:     # one connection pool for the whole sweep
+        for query in queries:
+            async for listing in _walk(client, {**base, **query}, crawl):
+                if listing.external_id not in seen:
+                    seen.add(listing.external_id)
+                    yield listing
 
 
-def _walk(params: Mapping[str, Any], crawl: Crawl) -> Iterator[Listing]:
+async def _walk(
+    client: httpx2.AsyncClient, params: Mapping[str, Any], crawl: Crawl
+) -> AsyncIterator[Listing]:
     total = 0
     for page in range(crawl.max_pages):
-        listings = _search_page({**params, "page": page}, crawl)
+        listings = await _search_page(client, {**params, "page": page}, crawl)
         if not listings:
             return                      # a real page with no results: past the end
         total += len(listings)
@@ -289,7 +303,8 @@ def _walk(params: Mapping[str, Any], crawl: Crawl) -> Iterator[Listing]:
         # discovery is collected in full before fetching starts.
         log.info("area=%s page %d/%d: %d listings (%d so far)",
                  params.get("area"), page + 1, crawl.max_pages, len(listings), total)
-        yield from listings
+        for listing in listings:
+            yield listing
     log.info(
         "stopped at max_pages=%d for area=%s; there may be more",
         crawl.max_pages,
@@ -297,7 +312,9 @@ def _walk(params: Mapping[str, Any], crawl: Crawl) -> Iterator[Listing]:
     )
 
 
-def _search_page(params: Mapping[str, Any], crawl: Crawl) -> list[Listing]:
+async def _search_page(
+    client: httpx2.AsyncClient, params: Mapping[str, Any], crawl: Crawl
+) -> list[Listing]:
     """One page of results, or an empty list once past the last one.
 
     The whole reason this is its own function: **an exhausted search and a
@@ -310,8 +327,8 @@ def _search_page(params: Mapping[str, Any], crawl: Crawl) -> list[Listing]:
     items means the end; no header means try again.
     """
     for attempt in range(1, SEARCH_ATTEMPTS + 1):
-        time.sleep(crawl.delay * attempt)      # also the politeness delay
-        resp = requests.get(SEARCH_URL, params=dict(params), headers=HEADERS, timeout=TIMEOUT)
+        await asyncio.sleep(crawl.delay * attempt)      # also the politeness delay
+        resp = await client.get(SEARCH_URL, params=dict(params))
         # Verified 2026-09-24, re-checked 2026-09-29: hh serves pages 0-39 and
         # answers 404 from page 40 on -- and page 39 is a *full* 50, so the cap
         # is 2 000 results per query, not a page count that runs out.
@@ -321,15 +338,25 @@ def _search_page(params: Mapping[str, Any], crawl: Crawl) -> list[Listing]:
         if resp.status_code == 404:
             return []
         resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "lxml")
-        if soup.find(attrs={"data-qa": SEARCH_HEADER}) is not None:
-            return _listings(soup)
+        # ~1.2MB of HTML: parsed off the event loop, or every other coroutine
+        # waits for BeautifulSoup
+        listings = await asyncio.to_thread(_results, resp.text)
+        if listings is not None:
+            return listings
         log.warning(
             "throttled on page %s (attempt %d/%d)", params.get("page"), attempt, SEARCH_ATTEMPTS
         )
     raise SearchThrottled(
         f"no search header after {SEARCH_ATTEMPTS} attempts at page {params.get('page')}"
     )
+
+
+def _results(html: str) -> list[Listing] | None:
+    """The page's listings, or None when it is the throttling stub."""
+    soup = BeautifulSoup(html, "lxml")
+    if soup.find(attrs={"data-qa": SEARCH_HEADER}) is None:
+        return None
+    return _listings(soup)
 
 
 def _listings(soup: BeautifulSoup) -> list[Listing]:
@@ -415,7 +442,14 @@ def _is_real_page(soup: BeautifulSoup) -> bool:
     )
 
 
-def fetch(url: str) -> VacancyData:
+def _vacancy(html: str, url: str) -> VacancyData | None:
+    """The parsed page, or None when it is the throttling stub."""
+    if not _is_real_page(BeautifulSoup(html, "lxml")):
+        return None
+    return parse(html, url)
+
+
+async def fetch(url: str) -> VacancyData:
     """One vacancy page, retried past the throttling stub.
 
     The retry is the same shape as `_search_page`'s: a stub is not a failure of
@@ -423,16 +457,17 @@ def fetch(url: str) -> VacancyData:
     than spending one of the vacancy's three attempts on it.
     """
     url = canonical_url(url)
-    for attempt in range(1, FETCH_ATTEMPTS + 1):
-        resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
-        if resp.status_code in (404, 410):
-            raise VacancyGone(f"{resp.status_code} for {url}")
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "lxml")
-        if _is_real_page(soup):
-            return parse(resp.text, url)
-        log.warning("throttled on %s (attempt %d/%d)", url, attempt, FETCH_ATTEMPTS)
-        time.sleep(THROTTLE_BACKOFF * attempt)
+    async with _client() as client:
+        for attempt in range(1, FETCH_ATTEMPTS + 1):
+            resp = await client.get(url)
+            if resp.status_code in (404, 410):
+                raise VacancyGone(f"{resp.status_code} for {url}")
+            resp.raise_for_status()
+            data = await asyncio.to_thread(_vacancy, resp.text, url)   # ~700KB
+            if data is not None:
+                return data
+            log.warning("throttled on %s (attempt %d/%d)", url, attempt, FETCH_ATTEMPTS)
+            await asyncio.sleep(THROTTLE_BACKOFF * attempt)
     raise Throttled(f"only the stripped page after {FETCH_ATTEMPTS} attempts: {url}")
 
 

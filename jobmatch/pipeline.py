@@ -5,14 +5,16 @@ Failure isolation is structural: each stage of each vacancy is its own
 transaction, and one bad page or one failed API call costs a warning, not the
 run. Nothing here remembers where it got to, because every guard is
 state-based — the next run resumes by looking at the rows, not at a cursor.
+
+Async throughout, on one event loop: the overlap that matters — pages in
+flight, Jev calls in flight — is waiting, and coroutines wait for free.
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock
-
+import asyncio
 import logging
-import time
+from collections.abc import Awaitable, Callable, Iterable
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from decimal import Decimal
 
@@ -29,9 +31,9 @@ log = logging.getLogger(__name__)
 class RunReport:
     """Counters for one run.
 
-    `record()` exists because the fetch phase is threaded: `self.fetched += 1`
-    is load-add-store, not an atomic operation, so concurrent workers can lose
-    an increment and the run would under-report what it actually did.
+    Bumped directly from concurrent workers, with no lock: they are coroutines
+    on one thread, and `self.fetched += 1` holds no `await`, so nothing can
+    interleave inside it.
     """
 
     discovered: int = 0
@@ -43,18 +45,6 @@ class RunReport:
     already_matched: int = 0  # the free case; the point of the fingerprint
     cost: Decimal = Decimal(0)
     failures: list[tuple[str, Exception]] = field(default_factory=list)
-    _lock: Lock = field(default_factory=Lock, repr=False, compare=False)
-
-    def record(self, counter: str) -> None:
-        """Bump one counter under the lock."""
-        with self._lock:
-            setattr(self, counter, getattr(self, counter) + 1)
-
-    def record_failure(self, url: str, exc: Exception) -> None:
-        """`list.append` is atomic today, but that is a CPython implementation
-        detail, not a promise. Take the lock."""
-        with self._lock:
-            self.failures.append((url, exc))
 
     def summary(self) -> str:
         return (
@@ -66,7 +56,9 @@ class RunReport:
         )
 
 
-def run(settings: Settings, limit: int | None = None, *, match: bool = True) -> RunReport:
+async def run(
+    settings: Settings, limit: int | None = None, *, match: bool = True
+) -> RunReport:
     """Two phases, deliberately separate.
 
     Discovery and fetching walk today's feed. Matching walks the *table*,
@@ -84,16 +76,16 @@ def run(settings: Settings, limit: int | None = None, *, match: bool = True) -> 
     for entry, sweep, countries in settings.crawls():
         source = SOURCES[entry.name]     # validated at load
         log.info("sweep %s: %s", sweep, ", ".join(countries))
-        listings = _safe_discover(source, entry, countries, settings, report)
+        listings = await _safe_discover(source, entry, countries, settings, report)
         report.discovered += len(listings)
-        _process_all(source, listings, settings, report)
+        await _process_all(source, listings, settings, report)
 
     if match:
-        match_all(settings, report=report, limit=limit)
+        await match_all(settings, report=report, limit=limit)
     return report
 
 
-def discover_all(settings: Settings, *, limit: int | None = None) -> RunReport:
+async def discover_all(settings: Settings, *, limit: int | None = None) -> RunReport:
     """Phase 1 alone: store what the sweeps find, fetch nothing.
 
     The honest completion of the state-based design -- discovery already leaves
@@ -111,14 +103,14 @@ def discover_all(settings: Settings, *, limit: int | None = None) -> RunReport:
         source = SOURCES[entry.name]
         log.info("sweep %s: %s", sweep, ", ".join(countries))
         remaining = None if limit is None else limit - report.discovered
-        listings = _safe_discover(source, entry, countries, settings, report, remaining)
+        listings = await _safe_discover(source, entry, countries, settings, report, remaining)
         report.discovered += len(listings)
         for listing in listings:
-            _persist_listing(source, listing, report)
+            await _persist_listing(source, listing, report)
     return report
 
 
-def match_all(
+async def match_all(
     settings: Settings,
     *,
     report: RunReport | None = None,
@@ -130,26 +122,97 @@ def match_all(
     `run()` calls this after crawling; `jobmatch match` calls it without
     crawling at all, which is how you re-match after editing the CV or the
     questions without touching the site.
+
+    `matching.CONCURRENCY` calls are in flight at once. ``limit`` is still
+    exact under that: a slot is taken *before* a call goes out, not counted
+    after it lands, so N workers cannot all see "one left" and spend N.
     """
     report = report if report is not None else RunReport()
-    with SessionLocal() as session:
-        candidates = repository.matchable_vacancy_ids(
+    async with SessionLocal() as session:
+        candidates = await repository.matchable_vacancy_ids(
             session, [entry.name for entry in settings.sources], country
         )
     if not candidates:
         return report
 
     cv = matching.load_cv(settings.cv_path)   # read and sanitized once per run
-    with matching.open_client() as client:    # one HTTP session per run
-        for vacancy_id in candidates:
-            if limit is not None and report.matched >= limit:
-                log.info("stopping at --limit %d matches", limit)
-                break
-            _match(vacancy_id, cv, client, settings, report)
+    budget = _Budget(limit)
+    async with matching.open_client() as client:    # one HTTP session per run
+        async def match_one(vacancy_id: int) -> None:
+            await _match(vacancy_id, cv, client, settings, report, budget)
+
+        await _drain(
+            candidates, match_one, matching.CONCURRENCY,
+            failed=lambda vacancy_id, exc: report.failures.append((f"match:{vacancy_id}", exc)),
+            stop=budget.spent,
+        )
+    if budget.spent():
+        log.info("stopped at --limit %d matches", limit)
     return report
 
 
-def fetch_all(
+class _Budget:
+    """How many paid calls are left. ``take`` and ``give_back`` hold no
+    ``await``, so a check and its reservation cannot be split by another
+    worker."""
+
+    def __init__(self, limit: int | None) -> None:
+        self.left = limit
+
+    def spent(self) -> bool:
+        return self.left is not None and self.left <= 0
+
+    def take(self) -> bool:
+        if self.left is None:
+            return True
+        if self.left <= 0:
+            return False
+        self.left -= 1
+        return True
+
+    def give_back(self) -> None:
+        """A failed call does not count against ``--limit``, as before."""
+        if self.left is not None:
+            self.left += 1
+
+
+async def _drain[T](
+    work: Iterable[T],
+    handle: Callable[[T], Awaitable[None]],
+    workers: int,
+    *,
+    failed: Callable[[T, Exception], None],
+    stop: Callable[[], bool] = lambda: False,
+) -> None:
+    """Run ``handle`` over ``work`` with at most ``workers`` in flight.
+
+    Workers share one iterator, so each item is taken exactly once; ``next()``
+    holds no ``await``, which is what makes sharing it safe.
+
+    An error ``handle`` did not catch costs that item, never its neighbours.
+    Left to reach the TaskGroup it would cancel every other worker, and a
+    cancelled Jev call is billed yet never reaches `llm_calls` --
+    ``CancelledError`` is not an ``Exception``, so the ledger write is skipped.
+    Two concurrent runs make this real: the loser's `save_match` raises.
+    """
+    items = iter(work)
+
+    async def worker() -> None:
+        for item in items:
+            if stop():
+                return
+            try:
+                await handle(item)
+            except Exception as exc:
+                log.warning("%r failed: %s", item, exc)
+                failed(item, exc)
+
+    async with asyncio.TaskGroup() as group:
+        for _ in range(max(1, workers)):
+            group.create_task(worker())
+
+
+async def fetch_all(
     settings: Settings,
     *,
     report: RunReport | None = None,
@@ -164,8 +227,8 @@ def fetch_all(
     `MAX_FETCH_ATTEMPTS` times has left it for good.
     """
     report = report if report is not None else RunReport()
-    with SessionLocal() as session:
-        pending = repository.fetch_queue(
+    async with SessionLocal() as session:
+        pending = await repository.fetch_queue(
             session, [entry.name for entry in settings.sources], limit
         )
     if not pending:
@@ -179,11 +242,11 @@ def fetch_all(
         (vacancy_id, Listing(external_id=str(vacancy_id), url=url))
         for vacancy_id, url in pending
     ]
-    _fetch_concurrently(source, work, settings, report)
+    await _fetch_concurrently(source, work, settings, report)
     return report
 
 
-def _safe_discover(
+async def _safe_discover(
     source: Source,
     entry: SourceConfig,
     countries: tuple[str, ...],
@@ -202,18 +265,23 @@ def _safe_discover(
     """
     listings: list[Listing] = []
     try:
-        for listing in source.discover(entry.search, settings.crawl, countries):
-            listings.append(listing)
-            if limit is not None and len(listings) >= limit:
-                log.info("stopping at --limit %d listings", limit)
-                break
+        # aclosing: breaking out of an async generator does not close it, and
+        # an unclosed walk would hold its HTTP client open until GC
+        async with aclosing(
+            source.discover(entry.search, settings.crawl, countries)
+        ) as walk:
+            async for listing in walk:
+                listings.append(listing)
+                if limit is not None and len(listings) >= limit:
+                    log.info("stopping at --limit %d listings", limit)
+                    break
     except Exception as exc:
         log.warning("discovery failed for %s after %d: %s", source.name, len(listings), exc)
         report.failures.append((f"discover:{source.name}:{','.join(countries)}", exc))
     return listings
 
 
-def _process_all(
+async def _process_all(
     source: Source, listings: list[Listing], settings: Settings, report: RunReport
 ) -> None:
     """Upsert every listing, then fetch the outstanding ones concurrently.
@@ -222,108 +290,106 @@ def _process_all(
     overlapping: `rate.workers` pages are in flight at once, each worker still
     sleeping `rate.delay` after its own page, so the rate is `workers / delay`
     per second. The source states its own measured value (`sources/hh` RATE).
-
-    Threads rather than asyncio: the work is `requests` + BeautifulSoup, both
-    synchronous, and a thread pool buys the same overlap without an async
-    rewrite of the source seam. `Source.fetch` stays a plain callable.
     """
     pending: list[tuple[int, Listing]] = []
     for listing in listings:                       # upserts stay sequential:
-        vacancy_id = _persist_listing(source, listing, report)   # one row each,
-        if vacancy_id is not None:                 # and they are cheap
+        vacancy_id = await _persist_listing(source, listing, report)   # one row
+        if vacancy_id is not None:                 # each, and they are cheap
             pending.append((vacancy_id, listing))
 
-    _fetch_concurrently(source, pending, settings, report)
+    await _fetch_concurrently(source, pending, settings, report)
 
 
-def _fetch_concurrently(
+async def _fetch_concurrently(
     source: Source,
     work: list[tuple[int, Listing]],
     settings: Settings,
     report: RunReport,
 ) -> None:
     rate = settings.rate_for(source.rate)
-    workers = rate.workers
-    if workers == 1 or len(work) <= 1:
-        for vacancy_id, listing in work:
-            _fetch(source, listing, vacancy_id, rate, report)
-        return
 
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="fetch") as pool:
-        futures = [
-            pool.submit(_fetch, source, listing, vacancy_id, rate, report)
-            for vacancy_id, listing in work
-        ]
-        for future in as_completed(futures):
-            future.result()          # _fetch swallows its own errors; this
-                                     # surfaces anything it could not
+    async def fetch_one(item: tuple[int, Listing]) -> None:
+        vacancy_id, listing = item
+        await _fetch(source, listing, vacancy_id, rate, report)
+
+    await _drain(
+        work, fetch_one, rate.workers,
+        failed=lambda item, exc: report.failures.append((item[1].url, exc)),
+    )
 
 
-def _persist_listing(source: Source, listing: Listing, report: RunReport) -> int | None:
+async def _persist_listing(source: Source, listing: Listing, report: RunReport) -> int | None:
     """Committed before any network call, so a failure downstream still has a
     row to be recorded against. Returns None when there is nothing more to do."""
-    with SessionLocal.begin() as session:
-        vacancy = repository.upsert_listing(session, source.name, listing)
+    async with SessionLocal.begin() as session:
+        vacancy = await repository.upsert_listing(session, source.name, listing)
         # one statement sets both from the same transaction clock on insert and
         # only last_seen_at on conflict, so equal means this row is new
         if vacancy.first_seen_at == vacancy.last_seen_at:
-            report.record("added")
+            report.added += 1
         if vacancy.delisted_at is not None:
-            report.record("skipped")
+            report.skipped += 1
             return None
         return vacancy.id
 
 
-def _fetch(
+async def _fetch(
     source: Source, listing: Listing, vacancy_id: int, rate: Rate, report: RunReport
 ) -> None:
-    with SessionLocal() as session:
-        vacancy = session.get_one(Vacancy, vacancy_id)
+    # No session is held across the page fetch: under AsyncSession an open
+    # session pins a pooled connection, and the pool would have to be as wide
+    # as the number of pages in flight.
+    async with SessionLocal() as session:
+        vacancy = await session.get_one(Vacancy, vacancy_id)
         if (
             vacancy.fetched_at is not None
             or vacancy.fetch_attempts >= MAX_FETCH_ATTEMPTS
         ):
-            report.record("skipped")
+            report.skipped += 1
             return
 
     try:
-        data = source.fetch(listing.url)
+        data = await source.fetch(listing.url)
     except VacancyGone:
-        with SessionLocal.begin() as session:
-            repository.mark_delisted(session, vacancy_id)
-        report.record("delisted")
+        async with SessionLocal.begin() as session:
+            await repository.mark_delisted(session, vacancy_id)
+        report.delisted += 1
         log.info("delisted %s", listing.url)
     except Exception as exc:
-        with SessionLocal.begin() as session:
-            repository.record_fetch_failure(session, vacancy_id, exc)
-        report.record_failure(listing.url, exc)
+        async with SessionLocal.begin() as session:
+            await repository.record_fetch_failure(session, vacancy_id, exc)
+        report.failures.append((listing.url, exc))
         log.warning("fetch failed for %s: %s", listing.url, exc)
     else:
-        with SessionLocal.begin() as session:
-            repository.apply_fetched(session, vacancy_id, data)
-        report.record("fetched")
+        async with SessionLocal.begin() as session:
+            await repository.apply_fetched(session, vacancy_id, data)
+        report.fetched += 1
         log.info("fetched %s — %s", listing.url, data.title)
     finally:
         # per worker: with N workers the rate is N/delay per second. Pages are
         # ~700KB. The number is the source's own -- see sources/hh RATE.
-        time.sleep(rate.delay)
+        await asyncio.sleep(rate.delay)
 
 
-def _match(vacancy_id: int, cv: str, client, settings: Settings, report: RunReport) -> None:
+async def _match(
+    vacancy_id: int, cv: str, client, settings: Settings, report: RunReport, budget: _Budget
+) -> None:
     # one transaction: make_current may revive a superseded row, which is a
     # write, and the commonest case (already current) writes nothing at all
-    with SessionLocal.begin() as session:
-        vacancy = session.get_one(Vacancy, vacancy_id)
+    async with SessionLocal.begin() as session:
+        vacancy = await session.get_one(Vacancy, vacancy_id)
         if not vacancy.description:
             return
         job = matching.job_text(vacancy)
         fingerprint = matching.inputs_fingerprint(cv, job, matching.QUESTIONS, settings.model)
-        if repository.make_current(session, vacancy_id, fingerprint):
+        if await repository.make_current(session, vacancy_id, fingerprint):
             report.already_matched += 1   # free, whether found current or revived
             return
 
+    if not budget.take():
+        return
     try:
-        outcome = matching.match_vacancy(
+        outcome = await matching.match_vacancy(
             client,
             cv,
             vacancy,
@@ -336,13 +402,14 @@ def _match(vacancy_id: int, cv: str, client, settings: Settings, report: RunRepo
     except Exception as exc:
         # the llm_calls row is already committed, in its own session, so the
         # spend and the reason are on record even though this raised
+        budget.give_back()
         report.failures.append((vacancy.url, exc))
         log.warning("match failed for %s: %s", vacancy.url, exc)
         return
 
-    with SessionLocal.begin() as session:
-        repository.save_match(session, vacancy_id, outcome)
-        cost = session.get_one(LlmCall, outcome.call_id).cost_usd
+    async with SessionLocal.begin() as session:
+        await repository.save_match(session, vacancy_id, outcome)
+        cost = (await session.get_one(LlmCall, outcome.call_id)).cost_usd
     report.matched += 1
     report.cost += cost or Decimal(0)
     log.info(

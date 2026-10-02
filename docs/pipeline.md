@@ -12,7 +12,7 @@ looking at the data.
 ```mermaid
 flowchart LR
     cfg["config.toml<br/>search + sweeps"] --> disc
-    disc["1 · discover<br/>free"] --> fet["2 · fetch<br/>free, threaded"]
+    disc["1 · discover<br/>free"] --> fet["2 · fetch<br/>free, concurrent"]
     fet --> mat["3 · match<br/>spends money"]
     disc -.->|"rows"| db[("vacancies<br/>match_results<br/>llm_calls")]
     fet -.->|"rows"| db
@@ -60,9 +60,11 @@ instead of a sweep.
 fetch_attempts < MAX_FETCH_ATTEMPTS`, oldest first. The partial index
 `ix_vacancies_fetch_queue` has exactly that predicate.
 
-**Threaded** — `rate.workers` pages in flight, each worker sleeping `rate.delay`
+**Concurrent** — `rate.workers` pages in flight, each worker sleeping `rate.delay`
 after its own page, so the request rate is `workers / delay` per second. The
-source states its own measured value (`sources/hh` RATE).
+source states its own measured value (`sources/hh` RATE). Workers are
+coroutines, so the rate holds per process: two processes crawling hh at once
+double it.
 
 Three outcomes, each its own transaction, so one bad page costs a warning:
 
@@ -101,6 +103,10 @@ still matched when the CV changes.
 
 **Reads** every vacancy with `fetched_at IS NOT NULL AND description IS NOT
 NULL`, scoped to the configured sources.
+
+`matching.CONCURRENCY` calls are in flight at once. `--limit` stays exact under
+that: a slot is reserved before a call goes out and handed back if it fails, so
+a failed call does not count against the limit.
 
 **The fingerprint is the whole idempotency rule:**
 

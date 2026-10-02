@@ -8,7 +8,7 @@ extraction, normalisation. Outside this package only ``Listing`` and
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
@@ -33,7 +33,8 @@ class Rate:
 
     Per source, not global: throttling tolerance belongs to the site. The rate
     is ``workers / delay`` a second -- each worker sleeps ``delay`` after its own
-    page, so raising workers alone raises the rate.
+    page, so raising workers alone raises the rate. Workers are coroutines, so
+    this is a per-process limit: two processes crawling one site double it.
     """
 
     workers: int = 1
@@ -87,8 +88,8 @@ class Source:
 
     name: str
     hosts: tuple[str, ...]                 # which URLs this source owns
-    discover: Callable[..., Iterable[Listing]]
-    fetch: Callable[[str], VacancyData]    # a URL, not a Listing: `fetch <url>` has no feed
+    discover: Callable[..., AsyncIterator[Listing]]
+    fetch: Callable[[str], Awaitable[VacancyData]]  # a URL, not a Listing: `fetch <url>` has no feed
     crawl: Crawl = Crawl()                 # how far its listing may be walked
     rate: Rate = Rate()                    # how fast its pages may be fetched
 

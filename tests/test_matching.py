@@ -14,6 +14,8 @@ from jobmatch.matching import jev
 from jobmatch.models import LlmCall, MatchResult, Vacancy
 
 FINGERPRINT = "f" * 64
+
+pytestmark = pytest.mark.anyio
 LEGEND = {
     0: {"label": "poor", "description": "Major mismatch."},
     1: {"label": "weak", "description": "Significant gaps."},
@@ -74,7 +76,7 @@ class FakeClient:
         self.response, self.error = response, error
         self.calls = 0
 
-    def system_one(self, **kwargs):
+    async def system_one(self, **kwargs):
         self.calls += 1
         if self.error:
             raise self.error
@@ -82,8 +84,8 @@ class FakeClient:
 
 
 @pytest.fixture
-def vacancy():
-    with SessionLocal.begin() as session:
+async def vacancy():
+    async with SessionLocal.begin() as session:
         v = Vacancy(
             source="test-matching",
             external_id="1",
@@ -93,22 +95,24 @@ def vacancy():
             skills=["Python"],
         )
         session.add(v)
-        session.flush()
+        await session.flush()
         vacancy_id = v.id
     yield vacancy_id
-    with SessionLocal.begin() as session:
-        session.execute(delete(LlmCall).where(LlmCall.vacancy_id == vacancy_id))
-        session.execute(delete(Vacancy).where(Vacancy.id == vacancy_id))
+    async with SessionLocal.begin() as session:
+        await session.execute(delete(LlmCall).where(LlmCall.vacancy_id == vacancy_id))
+        await session.execute(delete(Vacancy).where(Vacancy.id == vacancy_id))
 
 
-def load(vacancy_id):
-    with SessionLocal() as session:
-        return session.get_one(Vacancy, vacancy_id)
+async def load(vacancy_id):
+    async with SessionLocal() as session:
+        return await session.get_one(Vacancy, vacancy_id)
 
 
-def calls_for(vacancy_id):
-    with SessionLocal() as session:
-        return list(session.scalars(select(LlmCall).where(LlmCall.vacancy_id == vacancy_id)))
+async def calls_for(vacancy_id):
+    async with SessionLocal() as session:
+        return list(
+            await session.scalars(select(LlmCall).where(LlmCall.vacancy_id == vacancy_id))
+        )
 
 
 # --- the fingerprint ------------------------------------------------------
@@ -159,13 +163,13 @@ def test_a_single_level_rubric_does_not_divide_by_zero():
 # --- the ledger -----------------------------------------------------------
 
 
-def test_a_successful_call_is_flattened_and_costed(vacancy):
+async def test_a_successful_call_is_flattened_and_costed(vacancy):
     client = FakeClient(response=FakeResponse())
 
-    outcome = jev.match_vacancy(
+    outcome = await jev.match_vacancy(
         client,
         "cv",
-        load(vacancy),
+        await load(vacancy),
         "jev-1.13",
         fingerprint=FINGERPRINT,
         cv_hash="a" * 64,
@@ -181,7 +185,7 @@ def test_a_successful_call_is_flattened_and_costed(vacancy):
     assert outcome.best_angle_confidence == 0.72
     assert outcome.answers["overall_fit"]["score"] == 2.4  # the raw value is kept
 
-    (call,) = calls_for(vacancy)
+    (call,) = await calls_for(vacancy)
     assert call.status == "ok"
     assert call.model_requested == "jev-1.13"
     assert call.model_resolved == "typesafe/jev-1.13-20260917"  # differs; worth storing
@@ -191,16 +195,16 @@ def test_a_successful_call_is_flattened_and_costed(vacancy):
     assert call.input_tokens == 9848
 
 
-def test_a_failed_call_is_recorded_and_re_raised(vacancy):
+async def test_a_failed_call_is_recorded_and_re_raised(vacancy):
     error = RuntimeError("boom")
     error.status = 429
     client = FakeClient(error=error)
 
     with pytest.raises(RuntimeError):
-        jev.match_vacancy(
+        await jev.match_vacancy(
             client,
             "cv",
-            load(vacancy),
+            await load(vacancy),
             "jev-1.13",
             fingerprint=FINGERPRINT,
             cv_hash="a" * 64,
@@ -208,7 +212,7 @@ def test_a_failed_call_is_recorded_and_re_raised(vacancy):
             job="job text",
         )
 
-    (call,) = calls_for(vacancy)
+    (call,) = await calls_for(vacancy)
     assert call.status == "error"
     assert call.http_status == 429
     assert call.error_type == "RuntimeError"
@@ -216,8 +220,8 @@ def test_a_failed_call_is_recorded_and_re_raised(vacancy):
     assert call.cost_usd is None
 
 
-def test_the_job_text_leaves_out_what_the_posting_doesnt_have(vacancy):
-    v = load(vacancy)
+async def test_the_job_text_leaves_out_what_the_posting_doesnt_have(vacancy):
+    v = await load(vacancy)
     text = matching.job_text(v)
 
     assert "Salary" not in text  # this posting has none; an empty line is noise
@@ -228,12 +232,12 @@ def test_the_job_text_leaves_out_what_the_posting_doesnt_have(vacancy):
 # --- the dry run -----------------------------------------------------------
 
 
-def test_preview_returns_the_same_answers_but_records_nothing(vacancy):
+async def test_preview_returns_the_same_answers_but_records_nothing(vacancy):
     """The whole contract of --dry-run: identical flattening, zero rows."""
     client = FakeClient(response=FakeResponse())
 
-    preview = jev.preview_vacancy(
-        client, "cv", load(vacancy), "jev-1.13", job="job text"
+    preview = await jev.preview_vacancy(
+        client, "cv", await load(vacancy), "jev-1.13", job="job text"
     )
 
     assert preview.overall_fit_score == pytest.approx(0.6)
@@ -243,22 +247,22 @@ def test_preview_returns_the_same_answers_but_records_nothing(vacancy):
     assert float(preview.cost_usd) == pytest.approx(0.000413616)
     assert preview.answers["overall_fit"]["score"] == 2.4
 
-    assert calls_for(vacancy) == []          # no llm_calls row
-    with SessionLocal() as session:
-        assert session.scalars(
+    assert await calls_for(vacancy) == []          # no llm_calls row
+    async with SessionLocal() as session:
+        assert (await session.scalars(
             select(MatchResult).where(MatchResult.vacancy_id == vacancy)
-        ).all() == []                        # and no match_results row
+        )).all() == []                       # and no match_results row
 
 
-def test_preview_and_match_agree_on_every_promoted_field(vacancy):
+async def test_preview_and_match_agree_on_every_promoted_field(vacancy):
     """A dry run that disagreed with the real thing would be worse than none."""
-    preview = jev.preview_vacancy(
-        FakeClient(response=FakeResponse()), "cv", load(vacancy), "jev-1.13", job="job"
+    preview = await jev.preview_vacancy(
+        FakeClient(response=FakeResponse()), "cv", await load(vacancy), "jev-1.13", job="job"
     )
-    outcome = jev.match_vacancy(
+    outcome = await jev.match_vacancy(
         FakeClient(response=FakeResponse()),
         "cv",
-        load(vacancy),
+        await load(vacancy),
         "jev-1.13",
         fingerprint=FINGERPRINT,
         cv_hash="a" * 64,

@@ -47,7 +47,7 @@ upsert.
 
 Params go from config to the source **verbatim** and are never inspected in
 between. hh.ru's repeated keys (`search_field=name&search_field=description`)
-are a TOML list that `requests` expands; a JSON-API source would read the same
+are a TOML list that `httpx2` expands; a JSON-API source would read the same
 dict as a POST body. The pipeline cannot tell the difference.
 
 `Source` is a three-field frozen dataclass rather than an ABC — it exists only

@@ -1,6 +1,7 @@
 """Parsing is pure and offline: a handful of tags stand in for a 700KB page."""
 import datetime as dt
 
+import httpx2
 import pytest
 
 from jobmatch.sources import hh
@@ -131,6 +132,21 @@ SEARCH_THROTTLED = """
 FAST = hh.Crawl(max_pages=5, delay=0.0)
 
 
+@pytest.fixture
+def serve(monkeypatch):
+    """Point hh's HTTP client at a handler instead of the network."""
+    def install(handler):
+        monkeypatch.setattr(
+            hh, "_client", lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+        )
+        return handler
+    return install
+
+
+async def walk(*args, **kwargs):
+    return [listing async for listing in hh.discover(*args, **kwargs)]
+
+
 class FakeGet:
     """Serves a scripted page per request and records the params it saw."""
 
@@ -141,98 +157,90 @@ class FakeGet:
         # page index where this fake starts doing the same.
         self.not_found_from = not_found_from
 
-    def __call__(self, url, params, headers, timeout):
+    def __call__(self, request):
+        # query values arrive as strings; numbers are compared as numbers
+        params = {k: int(v) if v.isdigit() else v for k, v in request.url.params.items()}
         self.seen.append(params)
         page = params.get("page", 0)
         if self.not_found_from is not None and page >= self.not_found_from:
-            body, status = "", 404
-        else:
-            body, status = (self.pages.pop(0) if self.pages else SEARCH_END), 200
-
-        class Response:
-            text = body
-            status_code = status
-
-            @staticmethod
-            def raise_for_status():
-                if status >= 400:
-                    raise AssertionError(
-                        f"raise_for_status() called on {status}; the walk should "
-                        "have treated it as the end of the results"
-                    )
-
-        return Response()
+            return httpx2.Response(404, text="")
+        return httpx2.Response(200, text=self.pages.pop(0) if self.pages else SEARCH_END)
 
 
-def test_a_page_of_results_becomes_listings(monkeypatch):
-    monkeypatch.setattr(hh.requests, "get", FakeGet(SEARCH_PAGE, SEARCH_END))
+@pytest.mark.anyio
+async def test_a_page_of_results_becomes_listings(serve):
+    serve(FakeGet(SEARCH_PAGE, SEARCH_END))
 
-    listings = list(hh.discover({"text": "python"}, FAST))
+    listings = await walk({"text": "python"}, FAST)
 
     assert [l.external_id for l in listings] == ["1", "2"]     # the employer link is skipped
     assert listings[0].url == "https://hh.ru/vacancy/1"        # tracking params stripped
     assert listings[1].title == "Second job"                   # nbsp normalised
 
 
-def test_the_walk_stops_at_a_real_empty_page(monkeypatch):
+@pytest.mark.anyio
+async def test_the_walk_stops_at_a_real_empty_page(serve):
     get = FakeGet(SEARCH_PAGE, SEARCH_PAGE, SEARCH_END, SEARCH_PAGE)
-    monkeypatch.setattr(hh.requests, "get", get)
+    serve(get)
 
-    list(hh.discover({"text": "python"}, FAST))
+    await walk({"text": "python"}, FAST)
 
     assert [p["page"] for p in get.seen] == [0, 1, 2]  # never asked for page 3
 
 
-def test_a_throttled_page_is_retried_not_mistaken_for_the_end(monkeypatch):
+@pytest.mark.anyio
+async def test_a_throttled_page_is_retried_not_mistaken_for_the_end(serve):
     """The bug this guards: both look like HTTP 200 with no vacancies."""
     get = FakeGet(SEARCH_PAGE, SEARCH_THROTTLED, SEARCH_PAGE, SEARCH_END)
-    monkeypatch.setattr(hh.requests, "get", get)
+    serve(get)
 
-    listings = list(hh.discover({"text": "python"}, FAST))
+    listings = await walk({"text": "python"}, FAST)
 
     assert len(get.seen) == 4                       # the throttled page 1 was re-requested
     assert [p["page"] for p in get.seen] == [0, 1, 1, 2]
     assert len(listings) == 2                       # same two ids, deduplicated
 
 
-def test_persistent_throttling_raises_rather_than_truncating(monkeypatch):
-    monkeypatch.setattr(
-        hh.requests, "get", FakeGet(SEARCH_PAGE, *[SEARCH_THROTTLED] * hh.SEARCH_ATTEMPTS)
-    )
+@pytest.mark.anyio
+async def test_persistent_throttling_raises_rather_than_truncating(serve):
+    serve(FakeGet(SEARCH_PAGE, *[SEARCH_THROTTLED] * hh.SEARCH_ATTEMPTS))
 
     with pytest.raises(hh.SearchThrottled):
-        list(hh.discover({"text": "python"}, FAST))
+        await walk({"text": "python"}, FAST)
 
 
-def test_max_pages_caps_the_walk(monkeypatch):
+@pytest.mark.anyio
+async def test_max_pages_caps_the_walk(serve):
     get = FakeGet(*[SEARCH_PAGE] * 10)
-    monkeypatch.setattr(hh.requests, "get", get)
+    serve(get)
 
-    list(hh.discover({"text": "python"}, hh.Crawl(max_pages=3, delay=0.0)))
+    await walk({"text": "python"}, hh.Crawl(max_pages=3, delay=0.0))
 
     assert [p["page"] for p in get.seen] == [0, 1, 2]
 
 
-def test_each_area_is_walked_separately_and_ids_are_not_repeated(monkeypatch):
+@pytest.mark.anyio
+async def test_each_area_is_walked_separately_and_ids_are_not_repeated(serve):
     get = FakeGet(SEARCH_PAGE, SEARCH_END, SEARCH_PAGE, SEARCH_END)
-    monkeypatch.setattr(hh.requests, "get", get)
+    serve(get)
 
-    listings = list(hh.discover({"text": "python", "area": [28, 16]}, FAST))
+    listings = await walk({"text": "python", "area": [28, 16]}, FAST)
 
     assert [p.get("area") for p in get.seen] == [28, 28, 16, 16]
     assert [l.external_id for l in listings] == ["1", "2"]  # both areas returned the same two
 
 
-def test_a_404_ends_the_walk_instead_of_raising(monkeypatch):
+@pytest.mark.anyio
+async def test_a_404_ends_the_walk_instead_of_raising(serve):
     """hh answers 404 from page 40 on — the end of the results, not an error.
 
     Raising there would abort the walk, and since `discover` is one generator
     across every configured area, it would take the remaining areas with it.
     """
     get = FakeGet(SEARCH_PAGE, SEARCH_PAGE, not_found_from=2)
-    monkeypatch.setattr(hh.requests, "get", get)
+    serve(get)
 
-    listings = list(hh.discover({"text": "python", "area": [1, 2]}, FAST))
+    listings = await walk({"text": "python", "area": [1, 2]}, FAST)
 
     # area 1 walked two full pages then met the 404 and stopped there;
     # crucially area 2 was still reached, which a raised error would have
@@ -254,22 +262,13 @@ class FakeFetch:
         self.bodies = list(bodies)
         self.calls = 0
 
-    def __call__(self, url, headers, timeout):
+    def __call__(self, request):
         self.calls += 1
-        body = self.bodies.pop(0) if self.bodies else STRIPPED
-
-        class Response:
-            status_code = 200
-            text = body
-
-            @staticmethod
-            def raise_for_status():
-                pass
-
-        return Response()
+        return httpx2.Response(200, text=self.bodies.pop(0) if self.bodies else STRIPPED)
 
 
-def test_the_throttling_stub_is_retried_not_reported_as_a_layout_change(monkeypatch):
+@pytest.mark.anyio
+async def test_the_throttling_stub_is_retried_not_reported_as_a_layout_change(monkeypatch, serve):
     """hh answers 200 with a stripped page when we push too hard.
 
     Parsing it raises "No description found", which reads like the site
@@ -277,21 +276,22 @@ def test_the_throttling_stub_is_retried_not_reported_as_a_layout_change(monkeypa
     vacancy's three fetch attempts on a problem that is ours, not the page's.
     """
     get = FakeFetch(STRIPPED, STRIPPED, PAGE)
-    monkeypatch.setattr(hh.requests, "get", get)
-    monkeypatch.setattr(hh.time, "sleep", lambda _: None)
+    serve(get)
+    monkeypatch.setattr(hh, "THROTTLE_BACKOFF", 0.0)
 
-    data = hh.fetch("https://hh.ru/vacancy/1")
+    data = await hh.fetch("https://hh.ru/vacancy/1")
 
     assert get.calls == 3, "should have retried past both stubs"
     assert data.description, "the third, real page should have parsed"
 
 
-def test_a_page_that_is_only_ever_stripped_raises_throttled(monkeypatch):
+@pytest.mark.anyio
+async def test_a_page_that_is_only_ever_stripped_raises_throttled(monkeypatch, serve):
     """Distinct from ParseError: this one says 'slow down', not 'page changed'."""
     get = FakeFetch()          # every body is the stub
-    monkeypatch.setattr(hh.requests, "get", get)
-    monkeypatch.setattr(hh.time, "sleep", lambda _: None)
+    serve(get)
+    monkeypatch.setattr(hh, "THROTTLE_BACKOFF", 0.0)
 
     with pytest.raises(hh.Throttled):
-        hh.fetch("https://hh.ru/vacancy/1")
+        await hh.fetch("https://hh.ru/vacancy/1")
     assert get.calls == hh.FETCH_ATTEMPTS

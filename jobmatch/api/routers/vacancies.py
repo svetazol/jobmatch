@@ -5,7 +5,7 @@ import datetime as dt
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ... import repository
 from ...models import MatchResult, Vacancy
@@ -14,7 +14,7 @@ from ..schemas import MatchSummary, VacancyDetail, VacancyPage, VacancyRow
 
 router = APIRouter(prefix="/api/vacancies", tags=["vacancies"])
 
-SessionDep = Annotated[Session, Depends(get_session)]
+SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
 def _fit_probabilities(match: MatchResult | None) -> dict[str, float]:
@@ -82,7 +82,7 @@ def _row(vacancy: Vacancy, match: MatchResult | None) -> VacancyRow:
 
 
 @router.get("", response_model=VacancyPage)
-def list_vacancies(
+async def list_vacancies(
     session: SessionDep,
     source: str | None = None,
     min_fit: Annotated[float | None, Query(ge=0, le=1)] = None,
@@ -101,7 +101,7 @@ def list_vacancies(
     this is the only place the two meet.
     """
     parsed_cursor = _parse_cursor(cursor)
-    rows, total = repository.list_vacancies(
+    rows, total = await repository.list_vacancies(
         session,
         source=source,
         min_fit=min_fit,
@@ -137,8 +137,8 @@ def _parse_cursor(cursor: str | None) -> tuple[float | None, int] | None:
 
 
 @router.get("/{vacancy_id}", response_model=VacancyDetail)
-def get_vacancy(vacancy_id: int, session: SessionDep) -> VacancyDetail:
-    found = repository.get_vacancy(session, vacancy_id)
+async def get_vacancy(vacancy_id: int, session: SessionDep) -> VacancyDetail:
+    found = await repository.get_vacancy(session, vacancy_id)
     if found is None:
         raise HTTPException(404, f"no vacancy {vacancy_id}")
     vacancy, match = found
@@ -153,5 +153,5 @@ def get_vacancy(vacancy_id: int, session: SessionDep) -> VacancyDetail:
         # the complete record, so the client reads level descriptions from the
         # stored legend rather than hardcoding questions.py
         answers=match.answers if match else None,
-        cost_usd=repository.call_cost(session, match),
+        cost_usd=await repository.call_cost(session, match),
     )
