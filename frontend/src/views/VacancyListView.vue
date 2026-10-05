@@ -115,7 +115,10 @@ onMounted(() => { load(); loadCountries() })
 
 const visible = computed(() => rows.value.filter((r) => !r.hidden_at))
 
-function open(row: VacancyRow) { router.push({ name: 'vacancy', params: { id: row.id } }) }
+/** In a new tab, so the list keeps its filters, loaded pages and scroll. */
+function open(row: VacancyRow) {
+  window.open(router.resolve({ name: 'vacancy', params: { id: row.id } }).href, '_blank')
+}
 
 async function star(row: VacancyRow, event: Event) {
   event.stopPropagation()
