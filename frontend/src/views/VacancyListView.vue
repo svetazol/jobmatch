@@ -118,6 +118,13 @@ onMounted(() => { load(); loadCountries() })
 const visible = computed(() => rows.value.filter((r) => !r.hidden_at))
 
 /** In a new tab, so the list keeps its filters, loaded pages and scroll. */
+/** "3 Oct", with the year only when it is not this one; hover shows the full time. */
+function fmtPosted(iso: string): string {
+  const d = new Date(iso)
+  const sameYear = d.getFullYear() === new Date().getFullYear()
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', ...(sameYear ? {} : { year: 'numeric' }) })
+}
+
 function open(row: VacancyRow) {
   window.open(router.resolve({ name: 'vacancy', params: { id: row.id } }).href, '_blank')
 }
@@ -201,6 +208,15 @@ async function hide(row: VacancyRow, event: Event) {
         </template>
       </Column>
 
+      <Column header="Posted" :style="{ width: '7rem' }">
+        <template #body="{ data }">
+          <span v-if="data.published_at" class="date" :title="new Date(data.published_at).toLocaleString()">
+            {{ fmtPosted(data.published_at) }}
+          </span>
+          <span v-else class="muted">—</span>
+        </template>
+      </Column>
+
       <Column header="Pitch" :style="{ width: '13rem' }">
         <template #body="{ data }">
           <Tag v-if="data.match" :value="PITCH_LABEL[data.match.best_angle as Pitch]"
@@ -262,6 +278,7 @@ h1 { margin: 0; font-size: 1.375rem; font-weight: 600; letter-spacing: -0.02em; 
 .title.seen { font-weight: 500; color: var(--p-text-muted-color); }
 .meta { font-size: 0.75rem; color: var(--p-text-muted-color); margin-top: 0.15rem; }
 .muted { font-size: 0.78rem; color: var(--p-text-muted-color); }
+.date { font-size: 0.8125rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .acts { display: flex; gap: 0.15rem; }
 .applied { margin-left: 0.4rem; font-size: 0.68rem; padding: 0.05rem 0.4rem; vertical-align: 1px; }
 .empty { padding: 3rem 1rem; text-align: center; }
