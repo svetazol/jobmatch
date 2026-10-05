@@ -1,5 +1,5 @@
 import type {
-  Stats, TriageField, VacancyDetail, VacancyPage, VacancyQuery,
+  CoverNote, Stats, TriageField, VacancyDetail, VacancyPage, VacancyQuery,
 } from './types'
 import { MOCK_STATS, mockDetail, mockPage } from './mock'
 
@@ -56,5 +56,20 @@ export const api = {
       body: JSON.stringify({ [field]: on }),
     })
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  },
+  /**
+   * POST /api/vacancies/:id/cover-note — 10-30 s, since it runs `claude -p`.
+   * A 502 carries claude's own error in `detail`, which is worth showing.
+   */
+  async coverNote(id: number): Promise<CoverNote> {
+    if (USE_MOCK) {
+      return delay({ text: 'Mock cover note: the backend would ask claude here.', language: 'English' }, 800)
+    }
+    const res = await fetch(`${BASE}/vacancies/${id}/cover-note`, { method: 'POST' })
+    if (!res.ok) {
+      const body = await res.json().catch(() => null)
+      throw new Error(body?.detail ?? `${res.status} ${res.statusText}`)
+    }
+    return res.json() as Promise<CoverNote>
   },
 }

@@ -14,6 +14,7 @@ import httpx2
 import pytest
 from sqlalchemy import delete, func, select
 
+from jobmatch import cover_note
 from jobmatch.api.app import app
 from jobmatch.api.routers.stats import _cv_hash
 from jobmatch.db import SessionLocal
@@ -399,3 +400,26 @@ async def test_stats_refuses_an_unknown_cv(client, rows):
     response = (await client.get("/api/stats", params={"cv": "nope.md"}))
     assert response.status_code == 404
     assert "nope.md" in response.json()["detail"]
+
+
+async def test_cover_note_returns_what_claude_wrote(client, rows, monkeypatch):
+    async def fake_write(vacancy, match, cv):
+        assert match is not None and cv
+        return "I fit because."
+    monkeypatch.setattr(cover_note, "write", fake_write)
+    response = await client.post(f"/api/vacancies/{rows[0]}/cover-note")
+    assert response.status_code == 200
+    assert response.json() == {"text": "I fit because.", "language": "English"}
+
+
+async def test_cover_note_passes_claudes_failure_through(client, rows, monkeypatch):
+    async def failing_write(vacancy, match, cv):
+        raise cover_note.CoverNoteError("`claude` failed: not logged in")
+    monkeypatch.setattr(cover_note, "write", failing_write)
+    response = await client.post(f"/api/vacancies/{rows[0]}/cover-note")
+    assert response.status_code == 502
+    assert "not logged in" in response.json()["detail"]
+
+
+async def test_cover_note_404(client):
+    assert (await client.post("/api/vacancies/0/cover-note")).status_code == 404

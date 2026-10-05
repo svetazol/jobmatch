@@ -1,4 +1,4 @@
-"""The ranked list and one vacancy. Read-only."""
+"""The ranked list and one vacancy. Read-only, apart from drafting a cover note."""
 from __future__ import annotations
 
 import datetime as dt
@@ -7,10 +7,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ... import repository
+from ... import cover_note, repository
+from ...config import DEFAULT_PATH, load_settings
 from ...models import MatchResult, Vacancy
 from ..deps import get_session
-from ..schemas import MatchSummary, VacancyDetail, VacancyPage, VacancyRow
+from ..schemas import CoverNote, MatchSummary, VacancyDetail, VacancyPage, VacancyRow
 
 router = APIRouter(prefix="/api/vacancies", tags=["vacancies"])
 
@@ -155,3 +156,22 @@ async def get_vacancy(vacancy_id: int, session: SessionDep) -> VacancyDetail:
         answers=match.answers if match else None,
         cost_usd=await repository.call_cost(session, match),
     )
+
+
+@router.post("/{vacancy_id}/cover-note", response_model=CoverNote)
+async def write_cover_note(vacancy_id: int, session: SessionDep) -> CoverNote:
+    """Why the CV at `cv_path` suits this vacancy, drafted by `claude -p`.
+
+    Takes 10-30 s. A 502 means `claude` itself failed (not installed, not
+    signed in, timed out); its message is passed through so the UI can show it.
+    """
+    found = await repository.get_vacancy(session, vacancy_id)
+    if found is None:
+        raise HTTPException(404, f"no vacancy {vacancy_id}")
+    vacancy, match = found
+    cv = load_settings(DEFAULT_PATH).cv_path.read_text(encoding="utf-8")
+    try:
+        text = await cover_note.write(vacancy, match, cv)
+    except cover_note.CoverNoteError as e:
+        raise HTTPException(502, str(e)) from None
+    return CoverNote(text=text, language=cover_note.language_of(vacancy))

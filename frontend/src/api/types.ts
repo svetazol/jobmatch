@@ -73,6 +73,12 @@ export interface Answers {
   best_angle: { type: 'choice'; choice: Pitch; confidence: number; probabilities: Record<string, number> }
 }
 
+/** POST /api/vacancies/:id/cover-note — drafted by `claude -p`, never stored. */
+export interface CoverNote {
+  text: string
+  language: 'English' | 'Russian'
+}
+
 export interface VacancyPage {
   items: VacancyRow[]
   total: number

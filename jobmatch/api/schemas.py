@@ -149,3 +149,8 @@ class TriagePatch(BaseModel):
     seen: bool | None = None
     starred: bool | None = None
     hidden: bool | None = None
+
+
+class CoverNote(BaseModel):
+    text: str
+    language: str

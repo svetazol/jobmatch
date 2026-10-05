@@ -9,7 +9,7 @@ import Panel from 'primevue/panel'
 import Message from 'primevue/message'
 import Skeleton from 'primevue/skeleton'
 import { api } from '@/api/client'
-import type { Gap, Pitch, VacancyDetail } from '@/api/types'
+import type { CoverNote, Gap, Pitch, VacancyDetail } from '@/api/types'
 import ChoiceDistribution from '@/components/ChoiceDistribution.vue'
 import FitHistogram from '@/components/FitHistogram.vue'
 import { GAP_LABEL, PITCH_LABEL, fmtScore, isVague, legendOf } from '@/composables/useFit'
@@ -22,6 +22,8 @@ const error = ref<string | null>(null)
 async function load(id: number) {
   error.value = null
   v.value = null
+  note.value = null
+  noteError.value = null
   try { v.value = await api.vacancy(id) }
   catch (e) { error.value = (e as Error).message }
   if (v.value) markSeen(v.value)
@@ -42,6 +44,37 @@ function markSeen(row: VacancyDetail) {
   row.seen_at = new Date().toISOString()
   api.triage(row.id, 'seen', true).catch(() => { /* a read, not a promise */ })
 }
+/**
+ * Drafted on demand by `claude -p` on the API's machine and never stored:
+ * leaving the page drops it, and the button writes a fresh one.
+ */
+const note = ref<CoverNote | null>(null)
+const noteError = ref<string | null>(null)
+const noteBusy = ref(false)
+const copied = ref(false)
+
+async function writeNote() {
+  if (!v.value || noteBusy.value) return
+  const id = v.value.id
+  noteBusy.value = true
+  noteError.value = null
+  try {
+    const result = await api.coverNote(id)
+    if (v.value?.id === id) note.value = result   // ignore a late answer for a page already left
+  } catch (e) {
+    if (v.value?.id === id) noteError.value = (e as Error).message
+  } finally {
+    noteBusy.value = false
+  }
+}
+
+async function copyNote() {
+  if (!note.value) return
+  await navigator.clipboard.writeText(note.value.text)
+  copied.value = true
+  setTimeout(() => { copied.value = false }, 1500)
+}
+
 onMounted(() => load(Number(route.params.id)))
 watch(() => route.params.id, (id) => load(Number(id)))
 
@@ -181,6 +214,31 @@ const gapLabel = (key: string) => GAP_LABEL[key as Gap] ?? key
         </template>
       </Card>
 
+      <Card>
+        <template #title>
+          <div class="cardtop">
+            <span>Cover letter</span>
+            <div class="noteactions">
+              <Button v-if="note" :label="copied ? 'Copied' : 'Copy'" :icon="copied ? 'pi pi-check' : 'pi pi-copy'"
+                      text size="small" @click="copyNote" />
+              <Button :label="note ? 'Rewrite' : 'Write cover letter'" icon="pi pi-sparkles" size="small"
+                      :loading="noteBusy" @click="writeNote" />
+            </div>
+          </div>
+        </template>
+        <template #content>
+          <Message v-if="noteError" severity="error" :closable="false">{{ noteError }}</Message>
+          <p v-if="noteBusy && !note" class="note">Asking Claude — this takes 10–30 seconds.</p>
+          <p v-if="note" class="covernote" :class="{ busy: noteBusy }">{{ note.text }}</p>
+          <p v-if="note" class="note">
+            In {{ note.language }}, from the CV in config.toml. A draft: check every claim before sending.
+          </p>
+          <p v-if="!note && !noteBusy && !noteError" class="note">
+            A short cover letter built from the CV, in the posting's language.
+          </p>
+        </template>
+      </Card>
+
       <Panel header="Description" toggleable :collapsed="true">
         <!-- plain text with list bullets already lost in scraping -->
         <pre class="desc">{{ v.description }}</pre>
@@ -221,6 +279,9 @@ h1 { margin: 0; font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; li
   font-size: 0.7rem; color: var(--p-text-muted-color); }
 .skills { display: flex; flex-wrap: wrap; gap: 0.45rem; }
 .desc { margin: 0; font-family: inherit; font-size: 0.85rem; line-height: 1.65; white-space: pre-wrap; }
+.noteactions { display: flex; gap: 0.25rem; align-items: center; }
+.covernote { margin: 0; font-size: 0.95rem; line-height: 1.65; white-space: pre-wrap; }
+.covernote.busy { opacity: 0.5; }
 .prov { margin: 0; font-size: 0.72rem; color: var(--p-text-muted-color); font-variant-numeric: tabular-nums; }
 @media (max-width: 900px) { .verdict { grid-template-columns: minmax(0, 1fr); } }
 </style>

@@ -372,7 +372,8 @@ is a condition on the rows.
 
 ## 8. Matcher integration
 
-Importable as a plain function; no subprocess anywhere. `cv_match/` is absorbed
+Importable as a plain function; no subprocess anywhere. (The cover note's
+`claude -p` is not the matcher and stores nothing; see `cover_note.py`.) `cv_match/` is absorbed
 into `jobmatch/matching/` and deleted:
 
 - `questions.py` → moved unchanged, plus a module-level `QUESTIONS_HASH`.
@@ -547,8 +548,9 @@ SDK's typed answers give it for free at write time.
 
 ## 11. The HTTP API
 
-FastAPI over the same `Session`, importing `jobmatch.models`. Four routes, all
-of them thin: every one is a `repository` call plus a response model.
+FastAPI over the same `Session`, importing `jobmatch.models`. Five routes, all
+of them thin: every one is a `repository` call plus a response model (the
+cover note adds one `claude -p` call).
 
 | Route | Purpose |
 |---|---|
@@ -556,6 +558,7 @@ of them thin: every one is a `repository` call plus a response model.
 | `GET /api/vacancies` | the ranked list — the §3.4 query, filters applied |
 | `GET /api/vacancies/{id}` | one vacancy, plus the whole `answers` blob |
 | `PATCH /api/vacancies/{id}/triage` | set or clear `seen_at` / `starred_at` / `hidden_at` |
+| `POST /api/vacancies/{id}/cover-note` | a draft cover letter from `claude -p`, in the posting's language; never stored (`jobmatch/cover_note.py`) |
 
 **Response models are Pydantic, and they are not a second schema.** This section's
 rejection of "pydantic domain models mirroring the ORM models" stands: these
