@@ -1,4 +1,4 @@
-"""The only write path in the API: three nullable timestamps."""
+"""The only write path in the API: four nullable timestamps."""
 from __future__ import annotations
 
 from typing import Annotated
@@ -17,7 +17,7 @@ SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 @router.patch("/{vacancy_id}/triage", status_code=204)
 async def set_triage(vacancy_id: int, patch: TriagePatch, session: SessionDep) -> None:
-    """Set or clear one of seen / starred / hidden.
+    """Set or clear one of seen / starred / hidden / applied.
 
     `false` clears the timestamp rather than storing a false — that is what
     Undo sends after a hide, and it is why these are nullable timestamps
@@ -26,7 +26,7 @@ async def set_triage(vacancy_id: int, patch: TriagePatch, session: SessionDep) -
     """
     fields = {k: v for k, v in patch.model_dump().items() if v is not None}
     if len(fields) != 1:
-        raise HTTPException(422, "set exactly one of seen, starred, hidden")
+        raise HTTPException(422, "set exactly one of seen, starred, hidden, applied")
 
     field, on = next(iter(fields.items()))
     if not await repository.set_triage(session, vacancy_id, field, on):

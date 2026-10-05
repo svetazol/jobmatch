@@ -269,6 +269,7 @@ async def list_vacancies(
     min_fit: float | None = None,
     qualified_only: bool = False,
     unseen_only: bool = False,
+    unapplied_only: bool = False,
     best_angle: Sequence[str] | None = None,
     country: Sequence[str] | None = None,
     work_format: Sequence[str] | None = None,
@@ -300,6 +301,8 @@ async def list_vacancies(
         stmt = stmt.where(MatchResult.is_qualified.is_(True))
     if unseen_only:
         stmt = stmt.where(Vacancy.seen_at.is_(None))
+    if unapplied_only:
+        stmt = stmt.where(Vacancy.applied_at.is_(None))
     if best_angle:
         stmt = stmt.where(MatchResult.best_angle.in_(list(best_angle)))
     if country:
@@ -374,7 +377,7 @@ async def set_triage(session: AsyncSession, vacancy_id: int, field: str, on: boo
     UI's Undo sends after a hide.
     """
     column = {"seen": Vacancy.seen_at, "starred": Vacancy.starred_at,
-              "hidden": Vacancy.hidden_at}[field]
+              "hidden": Vacancy.hidden_at, "applied": Vacancy.applied_at}[field]
     result = await session.execute(
         update(Vacancy)
         .where(Vacancy.id == vacancy_id)

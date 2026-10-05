@@ -29,6 +29,7 @@ const error = ref<string | null>(null)
 
 const q = ref('')
 const unseenOnly = ref(false)
+const unappliedOnly = ref(false)
 const qualifiedOnly = ref(false)
 const minFit = ref(0)
 const pitches = ref<Pitch[]>([])
@@ -60,6 +61,7 @@ function filters(): VacancyQuery {
   return {
     q: q.value || undefined,
     unseen: unseenOnly.value || undefined,
+    unapplied: unappliedOnly.value || undefined,
     qualified: qualifiedOnly.value || undefined,
     min_fit: minFit.value || undefined,
     pitch: pitches.value.length ? pitches.value : undefined,
@@ -127,6 +129,13 @@ async function star(row: VacancyRow, event: Event) {
   await api.triage(row.id, 'starred', on)
 }
 
+async function toggleApplied(row: VacancyRow, event: Event) {
+  event.stopPropagation()
+  const on = !row.applied_at
+  row.applied_at = on ? new Date().toISOString() : null
+  await api.triage(row.id, 'applied', on)
+}
+
 async function hide(row: VacancyRow, event: Event) {
   event.stopPropagation()
   row.hidden_at = new Date().toISOString()
@@ -162,6 +171,7 @@ async function hide(row: VacancyRow, event: Event) {
       <SelectButton v-model="minFit" :options="fitSteps" option-label="label" option-value="value"
                     :allow-empty="false" @change="load" />
       <ToggleButton v-model="unseenOnly" on-label="Unseen only" off-label="Unseen only" @change="load" />
+      <ToggleButton v-model="unappliedOnly" on-label="Not applied" off-label="Not applied" @change="load" />
       <ToggleButton v-model="qualifiedOnly" on-label="Qualified only" off-label="Qualified only" @change="load" />
     </div>
 
@@ -183,7 +193,10 @@ async function hide(row: VacancyRow, event: Event) {
 
       <Column header="Vacancy">
         <template #body="{ data }">
-          <div class="title" :class="{ seen: data.seen_at }">{{ data.title }}</div>
+          <div class="title" :class="{ seen: data.seen_at }">
+            {{ data.title }}
+            <Tag v-if="data.applied_at" value="applied" severity="success" class="applied" />
+          </div>
           <div class="meta">{{ data.company }} · {{ data.country }} · {{ data.work_formats.join(', ') }}</div>
         </template>
       </Column>
@@ -204,11 +217,16 @@ async function hide(row: VacancyRow, event: Event) {
         </template>
       </Column>
 
-      <Column :style="{ width: '6rem' }">
+      <Column :style="{ width: '8.5rem' }">
         <template #body="{ data }">
           <div class="acts">
             <Button :icon="data.starred_at ? 'pi pi-star-fill' : 'pi pi-star'" text rounded
                     :aria-label="data.starred_at ? 'Unstar' : 'Star'" @click="star(data, $event)" />
+            <Button :icon="data.applied_at ? 'pi pi-check-circle' : 'pi pi-send'" text rounded
+                    :severity="data.applied_at ? 'success' : undefined"
+                    :title="data.applied_at ? 'Applied — click to undo' : 'Mark as applied'"
+                    :aria-label="data.applied_at ? 'Mark as not applied' : 'Mark as applied'"
+                    @click="toggleApplied(data, $event)" />
             <Button icon="pi pi-times" text rounded aria-label="Hide" @click="hide(data, $event)" />
           </div>
         </template>
@@ -245,6 +263,7 @@ h1 { margin: 0; font-size: 1.375rem; font-weight: 600; letter-spacing: -0.02em; 
 .meta { font-size: 0.75rem; color: var(--p-text-muted-color); margin-top: 0.15rem; }
 .muted { font-size: 0.78rem; color: var(--p-text-muted-color); }
 .acts { display: flex; gap: 0.15rem; }
+.applied { margin-left: 0.4rem; font-size: 0.68rem; padding: 0.05rem 0.4rem; vertical-align: 1px; }
 .empty { padding: 3rem 1rem; text-align: center; }
 .more { display: flex; justify-content: center; padding: 0.75rem 0; }
 :deep(.vague) { opacity: 0.55; }

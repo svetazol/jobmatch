@@ -53,6 +53,7 @@ class VacancyRow(BaseModel):
     seen_at: dt.datetime | None
     starred_at: dt.datetime | None
     hidden_at: dt.datetime | None
+    applied_at: dt.datetime | None
     delisted_at: dt.datetime | None
     stale: bool
     # None when the vacancy is fetched but not matched yet — a first-class
@@ -149,6 +150,7 @@ class TriagePatch(BaseModel):
     seen: bool | None = None
     starred: bool | None = None
     hidden: bool | None = None
+    applied: bool | None = None
 
 
 class CoverNote(BaseModel):

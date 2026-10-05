@@ -95,6 +95,7 @@ erDiagram
         timestamptz seen_at "triage"
         timestamptz starred_at "triage"
         timestamptz hidden_at "triage"
+        timestamptz applied_at "triage, set by hand"
         timestamptz created_at
         timestamptz updated_at
     }
@@ -150,7 +151,7 @@ partially-filled row is a first-class, indexable state — not a second table.
 Columns, types and the reason for each: `jobmatch/models.py`, which is the
 schema's source of truth and carries that reasoning as comments.
 
-Triage is three nullable timestamps rather than booleans: same filter cost
+Triage is four nullable timestamps rather than booleans: same filter cost
 (`seen_at IS NULL`), "when" for free, one consistent style, and no left join on
 the hottest query. `fetch_attempts`/`fetch_error` earn their place because
 without them every run re-fetches the same broken page forever — which is the
@@ -557,7 +558,7 @@ cover note adds one `claude -p` call).
 | `GET /api/stats` | headline figures, the fit distribution, the per-pitch breakdown — for one CV (`?cv=` by file name, else `stats_cv_hash`) and narrowed by `?country=` (repeatable), except the country breakdown itself, which ignores the country filter so it keeps its options |
 | `GET /api/vacancies` | the ranked list — the §3.4 query, filters applied |
 | `GET /api/vacancies/{id}` | one vacancy, plus the whole `answers` blob |
-| `PATCH /api/vacancies/{id}/triage` | set or clear `seen_at` / `starred_at` / `hidden_at` |
+| `PATCH /api/vacancies/{id}/triage` | set or clear `seen_at` / `starred_at` / `hidden_at` / `applied_at` |
 | `POST /api/vacancies/{id}/cover-note` | a draft cover letter from `claude -p`, in the posting's language; never stored (`jobmatch/cover_note.py`) |
 
 **Response models are Pydantic, and they are not a second schema.** This section's

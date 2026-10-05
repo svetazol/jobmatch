@@ -39,6 +39,21 @@ async function load(id: number) {
  * that loaded fine. The list picks the change up on its own — it is not kept
  * alive, so going back re-mounts it and refetches.
  */
+const fmtDate = (iso: string) =>
+  new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+
+/** Set by hand: nothing here can see your hh.ru account. */
+async function toggleApplied() {
+  if (!v.value) return
+  const on = !v.value.applied_at
+  v.value.applied_at = on ? new Date().toISOString() : null
+  try { await api.triage(v.value.id, 'applied', on) }
+  catch (e) {
+    if (v.value) v.value.applied_at = on ? null : new Date().toISOString()
+    error.value = (e as Error).message
+  }
+}
+
 function markSeen(row: VacancyDetail) {
   if (row.seen_at) return
   row.seen_at = new Date().toISOString()
@@ -116,9 +131,15 @@ const gapLabel = (key: string) => GAP_LABEL[key as Gap] ?? key
               <h1>{{ v.title }}</h1>
               <p class="org">{{ v.company }} · {{ v.country }} · {{ v.work_formats.join(', ') }}</p>
             </div>
-            <a :href="v.url" target="_blank" rel="noopener">
-              <Button label="Open on hh.ru" icon="pi pi-external-link" icon-pos="right" />
-            </a>
+            <div class="topacts">
+              <Button :label="v.applied_at ? `Applied ${fmtDate(v.applied_at)}` : 'Mark as applied'"
+                      :icon="v.applied_at ? 'pi pi-check-circle' : 'pi pi-send'"
+                      :severity="v.applied_at ? 'success' : 'secondary'" :outlined="!v.applied_at"
+                      :title="v.applied_at ? 'Click to undo' : undefined" @click="toggleApplied" />
+              <a :href="v.url" target="_blank" rel="noopener">
+                <Button label="Open on hh.ru" icon="pi pi-external-link" icon-pos="right" />
+              </a>
+            </div>
           </div>
           <div class="facts">
             <Tag v-if="v.experience_raw" :value="v.experience_raw" severity="secondary" />
@@ -254,6 +275,7 @@ const gapLabel = (key: string) => GAP_LABEL[key as Gap] ?? key
 <style scoped>
 .page { display: flex; flex-direction: column; gap: 0.875rem; }
 .crumb { margin-bottom: -0.25rem; }
+.topacts { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 .topline { display: flex; gap: 1.25rem; align-items: flex-start; flex-wrap: wrap; }
 .titlebox { flex: 1 1 20rem; min-width: 0; }
 h1 { margin: 0; font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; line-height: 1.25; }

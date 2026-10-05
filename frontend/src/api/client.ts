@@ -46,7 +46,7 @@ export const api = {
 
   /**
    * PATCH /api/vacancies/:id/triage — sets or clears one of seen_at /
-   * starred_at / hidden_at. `on: false` clears it, which is what Undo sends.
+   * starred_at / hidden_at / applied_at. `on: false` clears it, which is what Undo sends.
    */
   async triage(id: number, field: TriageField, on: boolean): Promise<void> {
     if (USE_MOCK) { await delay(null, 120); return }

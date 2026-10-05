@@ -198,6 +198,18 @@ async def test_triage_sets_and_clears(client, rows):
     assert (await client.get(f"/api/vacancies/{vacancy_id}")).json()["starred_at"] is None
 
 
+async def test_applied_is_triage_and_unapplied_filters_it_out(client, rows):
+    params = {"unapplied": True, "limit": 200, "source": SOURCE_NAME}
+    assert (await client.patch(f"/api/vacancies/{rows[0]}/triage", json={"applied": True})).status_code == 204
+    assert (await client.get(f"/api/vacancies/{rows[0]}")).json()["applied_at"] is not None
+    ids = {i["id"] for i in (await client.get("/api/vacancies", params=params)).json()["items"]}
+    assert rows[0] not in ids and rows[1] in ids
+
+    assert (await client.patch(f"/api/vacancies/{rows[0]}/triage", json={"applied": False})).status_code == 204
+    ids = {i["id"] for i in (await client.get("/api/vacancies", params=params)).json()["items"]}
+    assert rows[0] in ids
+
+
 async def test_hidden_leaves_the_list_but_not_the_database(client, rows):
     vacancy_id = rows[0]
     (await client.patch(f"/api/vacancies/{vacancy_id}/triage", json={"hidden": True}))

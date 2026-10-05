@@ -69,7 +69,7 @@ const row = (
   url: `https://hh.ru/vacancy/${id}`,
   source: 'hh.ru',
   published_at: '2026-09-24T00:00:00Z',
-  seen_at: null, starred_at: null, hidden_at: null, delisted_at: null, stale: false,
+  seen_at: null, starred_at: null, hidden_at: null, applied_at: null, delisted_at: null, stale: false,
   match: {
     overall_fit_score: score,
     overall_fit_label: label as FitLevel,

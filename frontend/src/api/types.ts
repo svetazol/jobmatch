@@ -22,6 +22,7 @@ export interface VacancyRow {
   seen_at: string | null
   starred_at: string | null
   hidden_at: string | null
+  applied_at: string | null
   delisted_at: string | null
   stale: boolean
   /** null when the vacancy is fetched but not matched yet — a real state, not a zero. */
@@ -91,6 +92,7 @@ export interface VacancyQuery {
   min_fit?: number
   qualified?: boolean
   unseen?: boolean
+  unapplied?: boolean
   country?: string[]
   work_format?: string[]
   q?: string
@@ -146,4 +148,4 @@ export interface PitchStat {
   distribution: [number, number, number, number, number]
 }
 
-export type TriageField = 'seen' | 'starred' | 'hidden'
+export type TriageField = 'seen' | 'starred' | 'hidden' | 'applied'

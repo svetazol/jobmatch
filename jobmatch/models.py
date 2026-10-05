@@ -119,6 +119,7 @@ class Vacancy(Base):
     seen_at: Mapped[dt.datetime | None] = mapped_column()
     starred_at: Mapped[dt.datetime | None] = mapped_column()
     hidden_at: Mapped[dt.datetime | None] = mapped_column()
+    applied_at: Mapped[dt.datetime | None] = mapped_column()  # set by hand: hh is not asked
 
     created_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[dt.datetime] = mapped_column(
