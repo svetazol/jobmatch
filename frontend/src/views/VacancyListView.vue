@@ -32,6 +32,18 @@ const unseenOnly = ref(false)
 const qualifiedOnly = ref(false)
 const minFit = ref(0)
 const pitches = ref<Pitch[]>([])
+const countries = ref<string[]>([])
+
+/**
+ * Borrowed from the market view's breakdown rather than a route of its own.
+ * Fetched once: that breakdown ignores the country filter, so the options
+ * never shrink to what is already picked.
+ */
+const countryOptions = ref<string[]>([])
+async function loadCountries() {
+  try { countryOptions.value = (await api.stats()).countries.map((c) => c.name) }
+  catch { /* the filter stays empty; the list itself still loads */ }
+}
 
 const pitchOptions = (Object.keys(PITCH_LABEL) as Pitch[])
   .map((p) => ({ label: PITCH_LABEL[p], value: p }))
@@ -51,6 +63,7 @@ function filters(): VacancyQuery {
     qualified: qualifiedOnly.value || undefined,
     min_fit: minFit.value || undefined,
     pitch: pitches.value.length ? pitches.value : undefined,
+    country: countries.value.length ? countries.value : undefined,
   }
 }
 
@@ -98,7 +111,7 @@ async function loadMore() {
     loadingMore.value = false
   }
 }
-onMounted(load)
+onMounted(() => { load(); loadCountries() })
 
 const visible = computed(() => rows.value.filter((r) => !r.hidden_at))
 
@@ -141,6 +154,8 @@ async function hide(row: VacancyRow, event: Event) {
       <InputText v-model="q" placeholder="Title, company, skill…" @keyup.enter="load" class="q" />
       <MultiSelect v-model="pitches" :options="pitchOptions" option-label="label" option-value="value"
                    placeholder="Any pitch" display="chip" @change="load" class="pitch" />
+      <MultiSelect v-model="countries" :options="countryOptions" placeholder="Any country"
+                   display="chip" show-clear aria-label="Filter by country" @change="load" class="country" />
       <SelectButton v-model="minFit" :options="fitSteps" option-label="label" option-value="value"
                     :allow-empty="false" @change="load" />
       <ToggleButton v-model="unseenOnly" on-label="Unseen only" off-label="Unseen only" @change="load" />
@@ -219,7 +234,7 @@ h1 { margin: 0; font-size: 1.375rem; font-weight: 600; letter-spacing: -0.02em; 
 .sub { margin: 0.3rem 0 0; font-size: 0.8125rem; color: var(--p-text-muted-color); }
 .filters { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
 .q { width: 16rem; }
-.pitch { min-width: 13rem; }
+.pitch, .country { min-width: 13rem; }
 .fitcell { display: flex; align-items: center; gap: 0.625rem; }
 .score { font-size: 0.95rem; font-weight: 600; font-variant-numeric: tabular-nums; }
 .title { font-size: 0.875rem; font-weight: 600; }
