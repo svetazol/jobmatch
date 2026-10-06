@@ -270,6 +270,7 @@ async def list_vacancies(
     qualified_only: bool = False,
     unseen_only: bool = False,
     unapplied_only: bool = False,
+    posted_days: int | None = None,
     best_angle: Sequence[str] | None = None,
     country: Sequence[str] | None = None,
     work_format: Sequence[str] | None = None,
@@ -303,6 +304,12 @@ async def list_vacancies(
         stmt = stmt.where(Vacancy.seen_at.is_(None))
     if unapplied_only:
         stmt = stmt.where(Vacancy.applied_at.is_(None))
+    if posted_days:
+        # the DB clock, like every other timestamp here (§6); an undated
+        # posting cannot be shown to be recent, so it drops out
+        stmt = stmt.where(
+            Vacancy.published_at >= func.now() - dt.timedelta(days=posted_days)
+        )
     if best_angle:
         stmt = stmt.where(MatchResult.best_angle.in_(list(best_angle)))
     if country:

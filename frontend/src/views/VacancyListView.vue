@@ -6,6 +6,7 @@ import Column from 'primevue/column'
 import Tag from 'primevue/tag'
 import Button from 'primevue/button'
 import MultiSelect from 'primevue/multiselect'
+import Select from 'primevue/select'
 import SelectButton from 'primevue/selectbutton'
 import ToggleButton from 'primevue/togglebutton'
 import InputText from 'primevue/inputtext'
@@ -30,6 +31,16 @@ const error = ref<string | null>(null)
 const q = ref('')
 const unseenOnly = ref(false)
 const unappliedOnly = ref(false)
+const postedDays = ref(0)
+
+const postedOptions = [
+  { label: 'Posted any time', value: 0 },
+  { label: 'Last 3 days', value: 3 },
+  { label: 'Last week', value: 7 },
+  { label: 'Last 2 weeks', value: 14 },
+  { label: 'Last month', value: 30 },
+  { label: 'Last 3 months', value: 90 },
+]
 const qualifiedOnly = ref(false)
 const minFit = ref(0)
 const pitches = ref<Pitch[]>([])
@@ -62,6 +73,7 @@ function filters(): VacancyQuery {
     q: q.value || undefined,
     unseen: unseenOnly.value || undefined,
     unapplied: unappliedOnly.value || undefined,
+    posted_days: postedDays.value || undefined,
     qualified: qualifiedOnly.value || undefined,
     min_fit: minFit.value || undefined,
     pitch: pitches.value.length ? pitches.value : undefined,
@@ -175,6 +187,8 @@ async function hide(row: VacancyRow, event: Event) {
                    placeholder="Any pitch" display="chip" @change="load" class="pitch" />
       <MultiSelect v-model="countries" :options="countryOptions" placeholder="Any country"
                    display="chip" show-clear aria-label="Filter by country" @change="load" class="country" />
+      <Select v-model="postedDays" :options="postedOptions" option-label="label" option-value="value"
+              aria-label="Posted within" @change="load" class="posted" />
       <SelectButton v-model="minFit" :options="fitSteps" option-label="label" option-value="value"
                     :allow-empty="false" @change="load" />
       <ToggleButton v-model="unseenOnly" on-label="Unseen only" off-label="Unseen only" @change="load" />
@@ -271,6 +285,7 @@ h1 { margin: 0; font-size: 1.375rem; font-weight: 600; letter-spacing: -0.02em; 
 .sub { margin: 0.3rem 0 0; font-size: 0.8125rem; color: var(--p-text-muted-color); }
 .filters { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
 .q { width: 16rem; }
+.posted { min-width: 11rem; }
 .pitch, .country { min-width: 13rem; }
 .fitcell { display: flex; align-items: center; gap: 0.625rem; }
 .score { font-size: 0.95rem; font-weight: 600; font-variant-numeric: tabular-nums; }

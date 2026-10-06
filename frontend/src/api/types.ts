@@ -93,6 +93,7 @@ export interface VacancyQuery {
   qualified?: boolean
   unseen?: boolean
   unapplied?: boolean
+  posted_days?: number
   country?: string[]
   work_format?: string[]
   q?: string

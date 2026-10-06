@@ -198,6 +198,18 @@ async def test_triage_sets_and_clears(client, rows):
     assert (await client.get(f"/api/vacancies/{vacancy_id}")).json()["starred_at"] is None
 
 
+async def test_posted_days_keeps_recent_postings_only(client, rows):
+    now = dt.datetime.now(dt.UTC)
+    async with SessionLocal.begin() as session:
+        (await session.get(Vacancy, rows[0])).published_at = now - dt.timedelta(days=2)
+        (await session.get(Vacancy, rows[1])).published_at = now - dt.timedelta(days=20)
+    ids = {i["id"] for i in (await client.get(
+        "/api/vacancies", params={"posted_days": 7, "limit": 200, "source": SOURCE_NAME})).json()["items"]}
+    assert rows[0] in ids
+    assert rows[1] not in ids   # older than the window
+    assert rows[2] not in ids   # undated: cannot be shown to be recent
+
+
 async def test_applied_is_triage_and_unapplied_filters_it_out(client, rows):
     params = {"unapplied": True, "limit": 200, "source": SOURCE_NAME}
     assert (await client.patch(f"/api/vacancies/{rows[0]}/triage", json={"applied": True})).status_code == 204
