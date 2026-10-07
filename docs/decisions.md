@@ -21,6 +21,7 @@ one, check the measurement still holds first.
 | A separate `normalizer.py` or `parsers/` layer | Normalisation *is* the source's job; that is what `VacancyData` is for. A shared normaliser grows site-specific branches. |
 | `Matcher` protocol, pluggable LLM providers | One matcher exists. `matching/jev.py` is already the containment point. |
 | `Source.describe()` returning a search description | Would amend the documented two-question contract and add a type, to move 28 lines out of one router. `stats.py::_search()` declares itself the sanctioned exception instead. |
+| ~~A source answers exactly two questions~~ — **amended 2026-10-07** | `Source.fetch_employer`, optional, is a third. Unlike `describe()` it fetches a page from the site rather than describing the source, and fetching pages is exactly what the seam exists to hide: pipeline calling `hh.fetch_employer` directly would put hh's URLs and stub detection outside `sources/`. See `docs/company-research.md`. |
 | `logging.config` dict, structured logging | `basicConfig()` in `cli.py`, `getLogger(__name__)` elsewhere. |
 
 ## Storage
@@ -30,7 +31,8 @@ one, check the measurement still holds first.
 | Per-vacancy files, anywhere, for anything | The database is the only store. This is the one rule with no exceptions. |
 | Caching raw HTML to disk or in a `raw_html` column | Megabyte blobs for a re-parse that a re-fetch already covers. |
 | Per-source tables, or a `vacancy_hh` detail table | One table plus a JSONB `raw` column absorbs source-specific fields with no migration per source. |
-| `sources`, `crawl_log`, `search_runs`, `skills`, `companies` tables | Sources are config. Nothing reads a crawl log. Skills are display strings; nothing joins on company. |
+| `sources`, `crawl_log`, `search_runs`, `skills` tables | Sources are config. Nothing reads a crawl log. Skills are display strings. |
+| ~~A `companies` table~~ — **reversed 2026-10-07** | Refused while nothing joined on company. The "look up company" button made something: an employer's page (and, next, the people found there) belongs to the company, which has ~2.2 postings on average, so storing it per vacancy would fetch and keep each company twice over. Kept small: `employers` rows exist only for companies someone clicked on; the crawl writes only `vacancies.employer_external_id`, a plain string with no FK, so it cannot race on an employer row. See `docs/company-research.md`. |
 | A `runs` table grouping each invocation | `llm_calls.started_at` groups by time and `RunReport` prints the summary. Add a run id when you actually want to compare two runs. |
 | Pydantic domain models mirroring the ORM models | Two declarations of one concept. `api/schemas.py` derives from the ORM classes. |
 | A soft-delete flag on vacancies | `hidden_at` and `delisted_at` mean different things and the UI needs both. |

@@ -8,7 +8,7 @@
  * real shape creates.
  */
 import type {
-  Answers, FitLevel, Gap, Pitch, Stats, VacancyDetail, VacancyPage, VacancyRow,
+  Answers, Company, FitLevel, Gap, Pitch, Stats, VacancyDetail, VacancyPage, VacancyRow,
 } from './types'
 
 const MOCK_CV = {
@@ -161,4 +161,14 @@ export function mockDetail(id: number): VacancyDetail {
 
 export function mockPage(): VacancyPage {
   return { items: MOCK_ROWS, total: 188, next_cursor: null }
+}
+
+/** Real too: Okko's hh page as read on 2026-10-07. */
+export function mockCompany(): Company {
+  return {
+    name: 'Okko',
+    url: 'https://hh.ru/employer/1375441',
+    site_url: 'http://okko.tv/',
+    looked_up_at: new Date().toISOString(),
+  }
 }

@@ -17,8 +17,8 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .matching import MatchOutcome
-from .models import MAX_FETCH_ATTEMPTS, LlmCall, MatchResult, Vacancy
-from .sources import Listing, VacancyData
+from .models import MAX_FETCH_ATTEMPTS, Employer, LlmCall, MatchResult, Vacancy
+from .sources import EmployerData, Listing, VacancyData
 
 
 async def upsert_listing(session: AsyncSession, source: str, listing: Listing) -> Vacancy:
@@ -61,6 +61,7 @@ async def apply_fetched(session: AsyncSession, vacancy_id: int, data: VacancyDat
     vacancy.skills = data.skills
     vacancy.country = data.country
     vacancy.work_formats = data.work_formats
+    vacancy.employer_external_id = data.employer_id
     vacancy.raw = {**vacancy.raw, **data.raw}
     if data.published_at:  # the page's date beats the feed's
         vacancy.published_at = data.published_at
@@ -99,6 +100,58 @@ async def mark_delisted(session: AsyncSession, vacancy_id: int) -> None:
     vacancy = await session.get_one(Vacancy, vacancy_id)
     vacancy.delisted_at = func.now()
     vacancy.fetch_error = None
+
+
+async def set_employer_external_id(
+    session: AsyncSession, vacancy_id: int, employer_id: str
+) -> None:
+    """The employer id alone, for a vacancy fetched before the column existed.
+
+    Deliberately not `apply_fetched`: that rewrites the whole row from the
+    fresh page, so an edited posting would change `content_hash` and a
+    "look up company" click would make the next match run pay again.
+    """
+    vacancy = await session.get_one(Vacancy, vacancy_id)
+    vacancy.employer_external_id = employer_id
+
+
+async def upsert_employer(session: AsyncSession, source: str, data: EmployerData) -> Employer:
+    """Record what the employer page says now. A repeat lookup refreshes it."""
+    stmt = insert(Employer).values(
+        source=source,
+        external_id=data.external_id,
+        url=data.url,
+        name=data.name,
+        site_url=data.site_url,
+        raw=data.raw,
+    )
+    stmt = stmt.on_conflict_do_update(
+        constraint="uq_employers_source_external_id",
+        set_={
+            "url": stmt.excluded.url,
+            "name": stmt.excluded.name,
+            "site_url": stmt.excluded.site_url,
+            "raw": stmt.excluded.raw,
+            "looked_up_at": func.now(),
+            "updated_at": func.now(),
+        },
+    ).returning(Employer)
+    return (await session.scalars(stmt)).one()
+
+
+async def employer_of(session: AsyncSession, vacancy_id: int) -> Employer | None:
+    """The looked-up employer behind a vacancy, or None if nobody asked yet."""
+    return await session.scalar(
+        select(Employer)
+        .join(
+            Vacancy,
+            and_(
+                Vacancy.source == Employer.source,
+                Vacancy.employer_external_id == Employer.external_id,
+            ),
+        )
+        .where(Vacancy.id == vacancy_id)
+    )
 
 
 async def matchable_vacancy_ids(

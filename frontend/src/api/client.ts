@@ -1,7 +1,7 @@
 import type {
-  CoverNote, Stats, TriageField, VacancyDetail, VacancyPage, VacancyQuery,
+  Company, CoverNote, Stats, TriageField, VacancyDetail, VacancyPage, VacancyQuery,
 } from './types'
-import { MOCK_STATS, mockDetail, mockPage } from './mock'
+import { MOCK_STATS, mockCompany, mockDetail, mockPage } from './mock'
 
 /**
  * Opt-in, not opt-out: with no .env.local the app talks to the real API.
@@ -71,5 +71,25 @@ export const api = {
       throw new Error(body?.detail ?? `${res.status} ${res.statusText}`)
     }
     return res.json() as Promise<CoverNote>
+  },
+
+  /** GET /api/vacancies/:id/company — what is stored; null until looked up. */
+  company(id: number): Promise<Company | null> {
+    return USE_MOCK ? delay(null) : get<Company | null>(`/vacancies/${id}/company`)
+  },
+
+  /**
+   * POST /api/vacancies/:id/company — fetches the employer page, ~2 s. A 404
+   * says why there is no employer to find (anonymous, removed); a 502 is hh
+   * failing. Both carry the reason in `detail`.
+   */
+  async lookUpCompany(id: number): Promise<Company> {
+    if (USE_MOCK) return delay(mockCompany(), 600)
+    const res = await fetch(`${BASE}/vacancies/${id}/company`, { method: 'POST' })
+    if (!res.ok) {
+      const body = await res.json().catch(() => null)
+      throw new Error(body?.detail ?? `${res.status} ${res.statusText}`)
+    }
+    return res.json() as Promise<Company>
   },
 }

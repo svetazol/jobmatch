@@ -6,6 +6,10 @@ transaction, and one bad page or one failed API call costs a warning, not the
 run. Nothing here remembers where it got to, because every guard is
 state-based — the next run resumes by looking at the rows, not at a cursor.
 
+Two operations here are not phases of a run but answers to a click:
+`lookup_employer` (and, later, the people search). They live here for the same
+reason the phases do -- they need a source and the database at once.
+
 Async throughout, on one event loop: the overlap that matters — pages in
 flight, Jev calls in flight — is waiting, and coroutines wait for free.
 """
@@ -21,8 +25,10 @@ from decimal import Decimal
 from . import matching, repository
 from .config import Settings, SourceConfig
 from .db import SessionLocal
-from .models import MAX_FETCH_ATTEMPTS, LlmCall, Vacancy
-from .sources import SOURCES, Listing, Rate, Source, VacancyGone, source_for_url
+from .models import MAX_FETCH_ATTEMPTS, Employer, LlmCall, Vacancy
+from .sources import (
+    SOURCES, EmployerGone, Listing, Rate, Source, VacancyGone, source_for_url,
+)
 
 log = logging.getLogger(__name__)
 
@@ -420,3 +426,58 @@ async def _match(
         outcome.best_angle,
         outcome.top_gap,
     )
+
+
+class EmployerUnknown(LookupError):
+    """There is no employer to look up for this vacancy; the message says why.
+
+    A dead end, not a failure: the posting is anonymous, gone, or from a site
+    without employer pages. The API answers 404 with the message.
+    """
+
+
+async def lookup_employer(vacancy_id: int) -> Employer:
+    """Fetch the employer page behind a vacancy and store what it says.
+
+    On demand from the UI, never from a run. A repeat call refreshes the row.
+    Like `_fetch`, no session is held across a page fetch. Anything other than
+    `EmployerUnknown` (throttled, a 5xx, a layout change) propagates.
+    """
+    async with SessionLocal() as session:
+        vacancy = await session.get(Vacancy, vacancy_id)
+    if vacancy is None:
+        raise EmployerUnknown(f"no vacancy {vacancy_id}")
+    source = SOURCES.get(vacancy.source)
+    if source is None or source.fetch_employer is None:
+        raise EmployerUnknown(f"{vacancy.source} has no employer pages")
+
+    employer_id = vacancy.employer_external_id or await _employer_id_from_page(source, vacancy)
+    try:
+        data = await source.fetch_employer(employer_id)
+    except EmployerGone:
+        raise EmployerUnknown(f"{source.name} has no page for employer {employer_id}") from None
+    async with SessionLocal.begin() as session:
+        employer = await repository.upsert_employer(session, source.name, data)
+    log.info("looked up employer %s for vacancy %d: %s", employer_id, vacancy_id, data.name)
+    return employer
+
+
+async def _employer_id_from_page(source: Source, vacancy: Vacancy) -> str:
+    """Re-read the vacancy page for the one thing a row fetched before
+    `employer_external_id` existed is missing, and store only that.
+
+    An anonymous posting also lands here on every click, since its NULL looks
+    the same as an old row's -- one page per click, on a vacancy someone chose
+    to open.
+    """
+    try:
+        data = await source.fetch(vacancy.url)
+    except VacancyGone:
+        async with SessionLocal.begin() as session:
+            await repository.mark_delisted(session, vacancy.id)   # a positive signal, as in _fetch
+        raise EmployerUnknown("the posting has been removed, so its employer is unknown") from None
+    if data.employer_id is None:
+        raise EmployerUnknown("this posting does not name its employer")
+    async with SessionLocal.begin() as session:
+        await repository.set_employer_external_id(session, vacancy.id, data.employer_id)
+    return data.employer_id

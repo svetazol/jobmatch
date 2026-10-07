@@ -4,7 +4,7 @@ import datetime as dt
 import httpx2
 import pytest
 
-from jobmatch.sources import hh
+from jobmatch.sources import EmployerGone, hh
 
 URL = "https://hh.ru/vacancy/137615828"
 
@@ -60,6 +60,22 @@ def test_falls_back_to_json_ld_on_branded_pages():
     v = hh.parse(BRANDED, URL)
 
     assert (v.title, v.company, v.description) == ("Branded role", "Acme", "Only in JSON-LD")
+
+
+def test_the_employer_id_comes_from_the_company_link():
+    page = PAGE.replace(
+        '<span data-qa="vacancy-company-name">',
+        '<a data-qa="vacancy-company-name" href="/employer/1375441?hhtmFrom=vacancy">',
+    ).replace("Тензор\n </span>", "Тензор\n </a>")
+
+    v = hh.parse(page, URL)
+
+    assert (v.company, v.employer_id) == ("Тензор", "1375441")
+
+
+def test_an_anonymous_posting_has_no_employer_id():
+    """The fixture's company name is a plain span: no link, no id."""
+    assert hh.parse(PAGE, URL).employer_id is None
 
 
 def test_raises_when_the_layout_stops_matching():
@@ -295,3 +311,66 @@ async def test_a_page_that_is_only_ever_stripped_raises_throttled(monkeypatch, s
     with pytest.raises(hh.Throttled):
         await hh.fetch("https://hh.ru/vacancy/1")
     assert get.calls == hh.FETCH_ATTEMPTS
+
+
+# --- employer pages ----------------------------------------------------------
+
+EMPLOYER = """
+<html><body>
+<h1 data-qa="company-header-title"><span data-qa="company-header-title-name">Okko
+  <span class="trusted-employer-check-icon">✓</span></span></h1>
+<div data-qa="company-info-address"><span>Санкт-Петербург</span><span>Город</span></div>
+<div data-qa="company-info-industries"><span>Информационные технологии</span><span>Сферы</span></div>
+<a data-qa="sidebar-company-site" href="http://okko.tv/"><span>http://okko.tv/</span></a>
+</body></html>
+"""
+
+
+def test_parses_an_employer_page():
+    e = hh.parse_employer(EMPLOYER, "1375441")
+
+    assert e.external_id == "1375441"
+    assert e.url == "https://hh.ru/employer/1375441"
+    assert e.name == "Okko"                  # not the trusted-employer badge after it
+    assert e.site_url == "http://okko.tv/"
+    assert e.raw == {"city": "Санкт-Петербург", "industries": "Информационные технологии"}
+
+
+def test_an_employer_without_a_site_has_none():
+    page = EMPLOYER.replace('data-qa="sidebar-company-site" href="http://okko.tv/"', "")
+
+    assert hh.parse_employer(page, "1").site_url is None
+
+
+def test_a_site_that_is_not_http_is_dropped():
+    """The UI renders it as a link, and Vue would run a `javascript:` one."""
+    page = EMPLOYER.replace("http://okko.tv/", "javascript:alert(1)")
+
+    assert hh.parse_employer(page, "1").site_url is None
+
+
+def test_the_employer_stub_is_none_and_a_changed_layout_raises():
+    """The stub is retried; a real page without the name is not, or a layout
+    change would cost 18 s of backoff and then be reported as throttling."""
+    assert hh.parse_employer(STRIPPED, "1") is None
+    with pytest.raises(hh.ParseError):
+        hh.parse_employer('<html><body><div data-qa="something">x</div></body></html>', "1")
+
+
+@pytest.mark.anyio
+async def test_fetch_employer_retries_past_the_stub(monkeypatch, serve):
+    get = FakeFetch(STRIPPED, EMPLOYER)
+    serve(get)
+    monkeypatch.setattr(hh, "THROTTLE_BACKOFF", 0.0)
+
+    e = await hh.fetch_employer("1375441")
+
+    assert (get.calls, e.name) == (2, "Okko")
+
+
+@pytest.mark.anyio
+async def test_a_missing_employer_raises_gone(serve):
+    serve(lambda request: httpx2.Response(404, text=""))
+
+    with pytest.raises(EmployerGone):
+        await hh.fetch_employer("1")

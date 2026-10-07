@@ -19,7 +19,9 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx2
 from bs4 import BeautifulSoup
 
-from .. import Crawl, Listing, Rate, Source, VacancyData, VacancyGone
+from .. import (
+    Crawl, EmployerData, EmployerGone, Listing, Rate, Source, VacancyData, VacancyGone,
+)
 from . import areas
 
 log = logging.getLogger(__name__)
@@ -69,6 +71,10 @@ HEADERS = {
 }
 
 _VACANCY_ID = re.compile(r"/vacancy/(\d+)")
+# The company name on a vacancy page links to `/employer/<id>?hhtmFrom=vacancy`;
+# an anonymous posting has the name without the link.
+_EMPLOYER_ID = re.compile(r"/employer/(\d+)")
+EMPLOYER_URL = "https://hh.ru/employer/{}"
 # The site prints work formats as one comma-and-"or" separated line, which can
 # name up to three at once. The keys below are the site's own wording and must
 # stay spelled as it spells them; an unrecognised phrase is kept verbatim
@@ -224,6 +230,9 @@ def parse(html: str, url: str) -> VacancyData:
     if not description or not title:
         raise ParseError(f"No description found at {url}; the layout may have changed")
 
+    company_link = soup.find(attrs={"data-qa": "vacancy-company-name"}, href=True)
+    employer = _EMPLOYER_ID.search(company_link["href"]) if company_link else None
+
     return VacancyData(
         external_id=vacancy_id(url),
         url=url,
@@ -240,7 +249,66 @@ def parse(html: str, url: str) -> VacancyData:
             for s in soup.find_all(attrs={"data-qa": re.compile(r"^skills-element")})
             if (text := _clean(s.get_text(strip=True), inline=True))
         ],
+        employer_id=employer.group(1) if employer else None,
         raw={"json_ld": ld} if ld else {},
+    )
+
+
+def _info(soup: BeautifulSoup, qa: str) -> str | None:
+    """A `company-info-*` block: the value first, then its label ("Город")."""
+    el = soup.find(attrs={"data-qa": qa})
+    first = next(iter(el.stripped_strings), None) if el else None
+    return _clean(first, inline=True)
+
+
+def _web_url(href: str | None) -> str | None:
+    """`href` when it is an http(s) URL, else None.
+
+    The employer types this link into hh, and the UI renders it as a link: a
+    `javascript:` URL would run on click, and Vue does not block it.
+    """
+    if href and urlsplit(href).scheme in ("http", "https"):
+        return href
+    return None
+
+
+def parse_employer(html: str, employer_id: str) -> EmployerData | None:
+    """An employer page, or None when it is the throttling stub.
+
+    Verified 2026-10-07 on three employers (Okko, Яндекс, СБЕР): the name is
+    `company-header-title-name`, the site is the `href` of
+    `sidebar-company-site`, and that site is whatever the employer chose to
+    link -- for Яндекс and СБЕР a careers site, not the homepage.
+
+    The stub is told apart the way `_is_real_page` does it, by having no
+    `data-qa` markers at all. A real page without the name is a layout change
+    and raises, rather than being retried as throttling.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    if soup.find(attrs={"data-qa": True}) is None:
+        return None
+    name_el = soup.find(attrs={"data-qa": "company-header-title-name"})
+    if name_el is None:
+        raise ParseError(
+            f"No employer name on employer {employer_id}; the layout may have changed"
+        )
+    site = soup.find(attrs={"data-qa": "sidebar-company-site"}, href=True)
+    raw = {
+        key: value
+        for key, qa in (
+            ("city", "company-info-address"),
+            ("industries", "company-info-industries"),
+            ("category", "company-info-category"),
+        )
+        if (value := _info(soup, qa))
+    }
+    return EmployerData(
+        external_id=employer_id,
+        url=EMPLOYER_URL.format(employer_id),
+        # the first string only: a trusted employer's name is followed by a badge
+        name=_clean(next(iter(name_el.stripped_strings), None), inline=True),
+        site_url=_web_url(site["href"] if site else None),
+        raw=raw,
     )
 
 
@@ -471,6 +539,28 @@ async def fetch(url: str) -> VacancyData:
     raise Throttled(f"only the stripped page after {FETCH_ATTEMPTS} attempts: {url}")
 
 
+async def fetch_employer(employer_id: str) -> EmployerData:
+    """One employer page, retried past the throttling stub like `fetch`.
+
+    Asked for on demand from the UI, one page at a time, so it needs no rate of
+    its own. Employer pages are 1-3MB.
+    """
+    url = EMPLOYER_URL.format(employer_id)
+    async with _client() as client:
+        for attempt in range(1, FETCH_ATTEMPTS + 1):
+            resp = await client.get(url)
+            if resp.status_code == 404:
+                raise EmployerGone(f"404 for {url}")
+            resp.raise_for_status()
+            data = await asyncio.to_thread(parse_employer, resp.text, employer_id)
+            if data is not None:
+                return data
+            log.warning("throttled on %s (attempt %d/%d)", url, attempt, FETCH_ATTEMPTS)
+            await asyncio.sleep(THROTTLE_BACKOFF * attempt)
+    raise Throttled(f"only the stripped page after {FETCH_ATTEMPTS} attempts: {url}")
+
+
 SOURCE = Source(
-    name=NAME, hosts=HOSTS, discover=discover, fetch=fetch, crawl=CRAWL, rate=RATE
+    name=NAME, hosts=HOSTS, discover=discover, fetch=fetch, crawl=CRAWL, rate=RATE,
+    fetch_employer=fetch_employer,
 )

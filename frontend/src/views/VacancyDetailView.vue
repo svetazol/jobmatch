@@ -11,6 +11,7 @@ import Skeleton from 'primevue/skeleton'
 import { api } from '@/api/client'
 import type { CoverNote, Gap, Pitch, VacancyDetail } from '@/api/types'
 import ChoiceDistribution from '@/components/ChoiceDistribution.vue'
+import CompanyPanel from '@/components/CompanyPanel.vue'
 import FitHistogram from '@/components/FitHistogram.vue'
 import { GAP_LABEL, PITCH_LABEL, fmtScore, isVague, legendOf } from '@/composables/useFit'
 
@@ -234,6 +235,8 @@ const gapLabel = (key: string) => GAP_LABEL[key as Gap] ?? key
           </p>
         </template>
       </Card>
+
+      <CompanyPanel :vacancy-id="v.id" :company-name="v.company" />
 
       <Card>
         <template #title>

@@ -32,8 +32,11 @@ re-declaring anything. Nothing in phase 1 moves when it appears, because
 
 ## 2. The source seam
 
-A source answers exactly two questions and owns everything else — base URL,
-RSS-vs-JSON-vs-HTML, pagination, headers, parsing, id extraction:
+A source answers two questions — `discover` and `fetch` — and owns everything
+else: base URL, RSS-vs-JSON-vs-HTML, pagination, headers, parsing, id
+extraction. A third, `fetch_employer`, is optional and asked only when the UI
+looks a company up; a site without employer pages leaves it `None`
+(`docs/decisions.md` records why it is not `describe()` over again).
 
 `country` and `work_formats` are columns rather than `raw` lookups because the
 UI filters on both. `work_formats` is a list, not one value: a real posting can
@@ -59,13 +62,16 @@ string to code, and with 1–4 sources an import line is the whole mechanism.
 
 ## 3. Database
 
-Three tables: what was scraped, what the AI concluded, and what each AI call
-cost. Single user kills `users`, `user_vacancy_state`, roles. Also deliberately
-absent: a `sources` table (sources are config), a `crawl_log` of discovery runs
-(nothing reads it), `skills`/`companies` tables (nothing joins on them).
+Three tables for the pipeline: what was scraped, what the AI concluded, and
+what each AI call cost. A fourth, `employers`, holds only the companies someone
+looked up from the UI (§3.5). Single user kills `users`, `user_vacancy_state`,
+roles. Also deliberately absent: a `sources` table (sources are config), a
+`crawl_log` of discovery runs (nothing reads it), a `skills` table (nothing
+joins on it).
 
 ```mermaid
 erDiagram
+    EMPLOYERS ||--o{ VACANCIES : "on (source, external_id), no FK"
     VACANCIES ||--o{ LLM_CALLS : "was asked about"
     VACANCIES ||--o{ MATCH_RESULTS : "has"
     LLM_CALLS ||--o| MATCH_RESULTS : "produced"
@@ -77,6 +83,7 @@ erDiagram
         text url
         text title "null until fetched"
         text company
+        text employer_external_id "the site's employer id; no FK"
         text salary_raw "unparsed, as shown"
         text experience_raw "unparsed, as shown"
         text description "null until fetched"
@@ -238,6 +245,18 @@ regardless and finish in under a millisecond. The three **unique** indexes are
 what matter; the rest are cheap insurance. No GIN on `skills` or `raw` — nothing
 filters by skill or queries inside `raw`.
 
+### 3.5 `employers`
+
+One row per employer **someone looked up** — never written by the crawl. The
+crawl keeps only `vacancies.employer_external_id`, the id the posting links to,
+and the two join on `(source, external_id)` with no FK: the crawl's three
+concurrent workers never touch an employer row, so there is nothing to race on,
+and nothing deletes rows for an FK to protect. A "look up company" click
+(`pipeline.lookup_employer`) fetches the employer page and upserts the row; a
+second click refreshes it. Columns and the reason for each:
+`jobmatch/models.py`. The design, and what comes next on top of it:
+`docs/company-research.md`.
+
 ---
 
 ## 4. Never pay for the same match twice
@@ -370,6 +389,10 @@ The design property worth stating here is that failure isolation is
 transaction, so one bad page or one failed API call costs a warning
 rather than the run — and nothing records progress, because every guard
 is a condition on the rows.
+
+`pipeline.py` also answers one click: `lookup_employer`. It is not a phase
+and no run calls it; it lives there because it needs a source and the
+database at once, which is what that module is for.
 
 ## 8. Matcher integration
 
@@ -549,9 +572,9 @@ SDK's typed answers give it for free at write time.
 
 ## 11. The HTTP API
 
-FastAPI over the same `Session`, importing `jobmatch.models`. Five routes, all
-of them thin: every one is a `repository` call plus a response model (the
-cover note adds one `claude -p` call).
+FastAPI over the same `Session`, importing `jobmatch.models`. Seven routes,
+all of them thin: every one is a `repository` or `pipeline` call plus a
+response model (the cover note adds one `claude -p` call).
 
 | Route | Purpose |
 |---|---|
@@ -560,6 +583,8 @@ cover note adds one `claude -p` call).
 | `GET /api/vacancies/{id}` | one vacancy, plus the whole `answers` blob |
 | `PATCH /api/vacancies/{id}/triage` | set or clear `seen_at` / `starred_at` / `hidden_at` / `applied_at` |
 | `POST /api/vacancies/{id}/cover-note` | a draft cover letter from `claude -p`, in the posting's language; never stored (`jobmatch/cover_note.py`) |
+| `GET /api/vacancies/{id}/company` | the looked-up employer, or `null`; no request to the source |
+| `POST /api/vacancies/{id}/company` | look the employer up (again): 404 with the reason when there is none to find, 502 when the source fails (`jobmatch/api/routers/company.py`) |
 
 **Response models are Pydantic, and they are not a second schema.** This section's
 rejection of "pydantic domain models mirroring the ORM models" stands: these

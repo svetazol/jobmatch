@@ -95,6 +95,12 @@ class Vacancy(Base):
     work_formats: Mapped[list[str]] = mapped_column(
         ARRAY(Text), server_default=text("'{}'::text[]")
     )
+    # The site's own id for the employer, as the posting links it; NULL for an
+    # anonymous posting, and for one fetched before this column existed until
+    # someone looks its company up. Joins `employers` on (source, external_id)
+    # with no FK: the crawl writes no employer row, so it cannot race on one,
+    # and nothing deletes rows for an FK to protect.
+    employer_external_id: Mapped[str | None] = mapped_column(String(128))
 
     # source-specific payload; the escape hatch that keeps the columns above
     # source-agnostic
@@ -150,6 +156,48 @@ class Vacancy(Base):
 
     def __repr__(self) -> str:
         return f"<Vacancy {self.source}:{self.external_id} {self.title!r}>"
+
+
+class Employer(Base):
+    """One row per employer someone asked about, never written by the crawl.
+
+    Created by a "look up company" click (`pipeline.lookup_employer`), so most
+    employers in the corpus have no row: the vacancy's `employer_external_id`
+    is enough until someone wants the page behind it.
+    """
+
+    __tablename__ = "employers"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+
+    # natural key, the same rule as vacancies: the site's id, never the name
+    source: Mapped[str] = mapped_column(String(32))
+    external_id: Mapped[str] = mapped_column(String(128))
+    url: Mapped[str] = mapped_column(Text)
+
+    name: Mapped[str | None] = mapped_column(Text)
+    # what the employer chose to link, http(s) only; often a careers site
+    # rather than the homepage. NULL when the page lists none.
+    site_url: Mapped[str | None] = mapped_column(Text)
+    # source-specific page text (hh: city, industries, category)
+    raw: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb")
+    )
+
+    looked_up_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
+    created_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "source", "external_id", name="uq_employers_source_external_id"
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return f"<Employer {self.source}:{self.external_id} {self.name!r}>"
 
 
 class MatchResult(Base):

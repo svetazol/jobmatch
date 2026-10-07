@@ -80,6 +80,18 @@ export interface CoverNote {
   language: 'English' | 'Russian'
 }
 
+/**
+ * GET/POST /api/vacancies/:id/company — the employer behind a vacancy, as its
+ * page said when last looked up. `url` is the employer's page on the source;
+ * `site_url` is whatever the employer links from it, often a careers site.
+ */
+export interface Company {
+  name: string | null
+  url: string
+  site_url: string | null
+  looked_up_at: string
+}
+
 export interface VacancyPage {
   items: VacancyRow[]
   total: number

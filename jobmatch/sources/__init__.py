@@ -1,9 +1,9 @@
 """The source seam.
 
 A source owns everything about its site — URLs, headers, parsing, id
-extraction, normalisation. Outside this package only ``Listing`` and
-``VacancyData`` are known, so adding a site is a new module plus one entry in
-``SOURCES``.
+extraction, normalisation. Outside this package only ``Listing``,
+``VacancyData`` and ``EmployerData`` are known, so adding a site is a new
+module plus one entry in ``SOURCES``.
 """
 from __future__ import annotations
 
@@ -50,6 +50,10 @@ class VacancyGone(Exception):
     """
 
 
+class EmployerGone(Exception):
+    """The site has no page for this employer id (404)."""
+
+
 @dataclass(frozen=True, slots=True)
 class Listing:
     """What a search feed knows about a vacancy: enough to fetch it later."""
@@ -75,7 +79,20 @@ class VacancyData:
     country: str | None = None
     skills: list[str] = field(default_factory=list)
     work_formats: list[str] = field(default_factory=list)   # a set: onsite/remote/hybrid
+    # the site's own id for the employer; None when the posting hides it
+    employer_id: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)  # -> vacancies.raw
+
+
+@dataclass(frozen=True, slots=True)
+class EmployerData:
+    """A parsed employer page, fetched only when someone asks about the company."""
+
+    external_id: str
+    url: str
+    name: str | None = None
+    site_url: str | None = None    # what the employer itself links to; can be a careers page
+    raw: dict[str, Any] = field(default_factory=dict)  # -> employers.raw
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +109,8 @@ class Source:
     fetch: Callable[[str], Awaitable[VacancyData]]  # a URL, not a Listing: `fetch <url>` has no feed
     crawl: Crawl = Crawl()                 # how far its listing may be walked
     rate: Rate = Rate()                    # how fast its pages may be fetched
+    # an employer id -> its page; None for a site without employer pages
+    fetch_employer: Callable[[str], Awaitable[EmployerData]] | None = None
 
 
 from . import hh  # noqa: E402  (circular-free: hh imports only the dataclasses)

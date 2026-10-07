@@ -156,3 +156,18 @@ class TriagePatch(BaseModel):
 class CoverNote(BaseModel):
     text: str
     language: str
+
+
+class Company(BaseModel):
+    """The employer behind a vacancy, as its page said when last looked up.
+
+    `url` is the employer's page on the source; `site_url` is whatever the
+    employer links from it, often a careers site rather than the homepage.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    name: str | None
+    url: str
+    site_url: str | None
+    looked_up_at: dt.datetime

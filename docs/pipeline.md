@@ -81,7 +81,7 @@ flowchart TD
 
 | outcome | what changed |
 |---|---|
-| **fetched** | `description`, `skills`, `salary_raw`, `experience_raw`, `company`, `country`, `work_formats`, `raw` filled; `fetched_at` set; `fetch_attempts` reset to 0; `fetch_error` and `delisted_at` cleared. The page's `published_at` beats the feed's. |
+| **fetched** | `description`, `skills`, `salary_raw`, `experience_raw`, `company`, `employer_external_id`, `country`, `work_formats`, `raw` filled; `fetched_at` set; `fetch_attempts` reset to 0; `fetch_error` and `delisted_at` cleared. The page's `published_at` beats the feed's. |
 | **delisted** | `delisted_at` set, `fetch_error` cleared. Leaves the queue for good; never retried, because a 404 is the employer's doing. |
 | **failed** | `fetch_attempts += 1`, `fetch_error` set to `Type: message`. Stays in the queue until attempts run out. |
 
@@ -167,6 +167,25 @@ matching rows instead of re-buying them.
 `Stale` — unseen by discovery for `STALE_AFTER` (14 days) — is derived at read
 time from `last_seen_at` and never stored. A stored flag would need a job to
 maintain it and would be wrong between runs.
+
+---
+
+## On demand: looking up an employer
+
+Not a phase: nothing in a run calls it. The **Look up company** button on a
+vacancy calls `pipeline.lookup_employer`, which fetches the employer's page and
+upserts an `employers` row (`docs/architecture.md` §3.5).
+
+A vacancy fetched before `employer_external_id` existed has no id yet. Its
+first lookup re-reads the vacancy page and writes **that one column** — never
+`apply_fetched`, so `description` and `content_hash` stay as they were and the
+next `match` pays nothing because of a click. A 404 there is a positive signal
+and sets `delisted_at`, as in the fetch phase.
+
+| you do this | and this is still true |
+|---|---|
+| look a company up | every vacancy column but `employer_external_id` is untouched |
+| look it up again | still one `employers` row, refreshed |
 
 ---
 
