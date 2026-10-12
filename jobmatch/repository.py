@@ -314,6 +314,11 @@ _CURRENT = MatchResult.superseded_at.is_(None)
 # wrong between runs.
 STALE_AFTER = dt.timedelta(days=14)
 
+# The keys the list can be ordered by, each DESC NULLS LAST with `id` as the
+# tie-break. Fit is the default; "posted" is newest first, and an undated
+# posting sinks to the bottom the way an unmatched one does under fit.
+SORT_KEYS = {"fit": MatchResult.overall_fit_score, "posted": Vacancy.published_at}
+
 
 async def list_vacancies(
     session: AsyncSession,
@@ -328,10 +333,14 @@ async def list_vacancies(
     country: Sequence[str] | None = None,
     work_format: Sequence[str] | None = None,
     q: str | None = None,
-    cursor: tuple[float | None, int] | None = None,
+    sort: str = "fit",
+    cursor: tuple[float | dt.datetime | None, int] | None = None,
     limit: int = 50,
 ) -> tuple[list[tuple[Vacancy, MatchResult | None]], int]:
     """The ranked list, plus the total the same filters would return.
+
+    `sort` is a key of `SORT_KEYS`; `cursor` holds that key's value and the id
+    of the last row on the previous page.
 
     A LEFT JOIN, deliberately: a fetched-but-unmatched vacancy is a real state
     the UI shows as "not matched yet", not a row to drop. That is also why the
@@ -386,14 +395,14 @@ async def list_vacancies(
     ) or 0
 
     if cursor is not None:
-        # Keyset on the same (score DESC NULLS LAST, id) the ORDER BY uses.
+        # Keyset on the same (key DESC NULLS LAST, id) the ORDER BY uses.
         #
         # The NULL arm is not a nicety: an unmatched vacancy has no score, so
         # `score < last_score` is NULL for it, and a naive predicate drops
         # every unmatched row from page two onwards -- silently, since they
-        # simply never appear.
+        # simply never appear. Undated postings under "posted" are the same.
         last_score, last_id = cursor
-        score = MatchResult.overall_fit_score
+        score = SORT_KEYS[sort]
         if last_score is None:
             # already inside the NULL block: only later ids remain
             stmt = stmt.where(and_(score.is_(None), Vacancy.id > last_id))
@@ -406,9 +415,7 @@ async def list_vacancies(
                 )
             )
 
-    stmt = stmt.order_by(
-        MatchResult.overall_fit_score.desc().nullslast(), Vacancy.id
-    ).limit(limit)
+    stmt = stmt.order_by(SORT_KEYS[sort].desc().nullslast(), Vacancy.id).limit(limit)
 
     return list((await session.execute(stmt)).all()), total
 

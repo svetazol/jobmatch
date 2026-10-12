@@ -32,6 +32,12 @@ const q = ref('')
 const unseenOnly = ref(false)
 const unappliedOnly = ref(false)
 const postedDays = ref(0)
+const sort = ref<'fit' | 'posted'>('fit')
+
+const sortOptions = [
+  { label: 'Best fit', value: 'fit' },
+  { label: 'Newest', value: 'posted' },
+]
 
 const postedOptions = [
   { label: 'Posted any time', value: 0 },
@@ -71,6 +77,7 @@ const fitSteps = [
 function filters(): VacancyQuery {
   return {
     q: q.value || undefined,
+    sort: sort.value === 'fit' ? undefined : sort.value,
     unseen: unseenOnly.value || undefined,
     unapplied: unappliedOnly.value || undefined,
     posted_days: postedDays.value || undefined,
@@ -175,7 +182,7 @@ async function hide(row: VacancyRow, event: Event) {
   <section class="page">
     <header class="head">
       <div>
-        <h1>Ranked by fit</h1>
+        <h1>{{ applied.sort === 'posted' ? 'Newest first' : 'Ranked by fit' }}</h1>
         <p class="sub">{{ total }} matched · showing {{ visible.length }}</p>
       </div>
     </header>
@@ -187,6 +194,8 @@ async function hide(row: VacancyRow, event: Event) {
                    placeholder="Any pitch" display="chip" @change="load" class="pitch" />
       <MultiSelect v-model="countries" :options="countryOptions" placeholder="Any country"
                    display="chip" show-clear aria-label="Filter by country" @change="load" class="country" />
+      <SelectButton v-model="sort" :options="sortOptions" option-label="label" option-value="value"
+                    :allow-empty="false" aria-label="Sort by" @change="load" />
       <Select v-model="postedDays" :options="postedOptions" option-label="label" option-value="value"
               aria-label="Posted within" @change="load" class="posted" />
       <SelectButton v-model="minFit" :options="fitSteps" option-label="label" option-value="value"

@@ -447,3 +447,28 @@ async def test_cover_note_passes_claudes_failure_through(client, rows, monkeypat
 
 async def test_cover_note_404(client):
     assert (await client.post("/api/vacancies/0/cover-note")).status_code == 404
+
+
+async def test_posted_sort_pages_newest_first_and_reaches_undated(client, rows):
+    """Newest first, the undated row last, and the timestamp cursor round-trips."""
+    now = dt.datetime.now(dt.UTC)
+    async with SessionLocal.begin() as session:
+        (await session.get(Vacancy, rows[0])).published_at = now - dt.timedelta(days=5)
+        (await session.get(Vacancy, rows[1])).published_at = now - dt.timedelta(days=1)
+    seen: list[int] = []
+    cursor = None
+    for _ in range(10):
+        params = {"limit": 1, "source": SOURCE_NAME, "sort": "posted"}
+        if cursor:
+            params["cursor"] = cursor
+        page = (await client.get("/api/vacancies", params=params)).json()
+        seen.extend(i["id"] for i in page["items"])
+        cursor = page["next_cursor"]
+        if not cursor or not page["items"]:
+            break
+
+    assert seen == [rows[1], rows[0], rows[2]]
+
+
+async def test_unknown_sort_is_a_422(client):
+    assert (await client.get("/api/vacancies", params={"sort": "salary"})).status_code == 422

@@ -109,6 +109,8 @@ export interface VacancyQuery {
   country?: string[]
   work_format?: string[]
   q?: string
+  /** 'fit' (the default) or 'posted', newest first. A cursor only continues the sort it came from. */
+  sort?: 'fit' | 'posted'
   cursor?: string | null
   limit?: number
 }

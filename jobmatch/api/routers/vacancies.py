@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -96,15 +96,18 @@ async def list_vacancies(
     country: Annotated[list[str] | None, Query()] = None,
     work_format: Annotated[list[str] | None, Query()] = None,
     q: str | None = None,
+    sort: Literal["fit", "posted"] = "fit",
     cursor: str | None = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> VacancyPage:
-    """Ranked by fit, filtered, keyset-paginated.
+    """Ranked by fit (or newest first), filtered, keyset-paginated.
+
+    A cursor is only valid for the `sort` it was issued under.
 
     `pitch` is the UI's word for `best_angle`; the column keeps its name and
     this is the only place the two meet.
     """
-    parsed_cursor = _parse_cursor(cursor)
+    parsed_cursor = _parse_cursor(cursor, sort)
     rows, total = await repository.list_vacancies(
         session,
         source=source,
@@ -117,6 +120,7 @@ async def list_vacancies(
         country=country,
         work_format=work_format,
         q=q,
+        sort=sort,
         cursor=parsed_cursor,
         limit=limit,
     )
@@ -124,20 +128,27 @@ async def list_vacancies(
     next_cursor = None
     if len(rows) == limit:
         last_vacancy, last_match = rows[-1]
-        # "null" when the page ended on an unmatched vacancy — those sort last
-        # and still have to be pageable, so the cursor has to be able to say
-        # "I am inside the NULL tail, at this id".
-        score = "null" if last_match is None else last_match.overall_fit_score
-        next_cursor = f"{score}:{last_vacancy.id}"
+        # "null" when the page ended on an unmatched (or undated) vacancy —
+        # those sort last and still have to be pageable, so the cursor has to
+        # be able to say "I am inside the NULL tail, at this id".
+        if sort == "posted":
+            key = last_vacancy.published_at and last_vacancy.published_at.isoformat()
+        else:
+            key = last_match and last_match.overall_fit_score
+        next_cursor = f"{'null' if key is None else key}:{last_vacancy.id}"
     return VacancyPage(items=items, total=total, next_cursor=next_cursor)
 
 
-def _parse_cursor(cursor: str | None) -> tuple[float | None, int] | None:
+def _parse_cursor(cursor: str | None, sort: str) -> tuple[float | dt.datetime | None, int] | None:
     if not cursor:
         return None
     try:
-        score, vacancy_id = cursor.split(":", 1)
-        return (None if score == "null" else float(score)), int(vacancy_id)
+        # rsplit: an ISO timestamp has colons of its own
+        key, vacancy_id = cursor.rsplit(":", 1)
+        if key == "null":
+            return None, int(vacancy_id)
+        parsed = dt.datetime.fromisoformat(key) if sort == "posted" else float(key)
+        return parsed, int(vacancy_id)
     except ValueError:
         raise HTTPException(400, f"malformed cursor {cursor!r}") from None
 
