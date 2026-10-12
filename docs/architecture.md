@@ -132,6 +132,7 @@ erDiagram
     LLM_CALLS {
         bigint id PK
         bigint vacancy_id FK "SET NULL: spend history outlives the vacancy"
+        text kind "match | employer | people; no default"
         char64 inputs_fingerprint "what was asked, even if it failed"
         text model_requested "in the fingerprint"
         text model_resolved "what actually answered"
@@ -145,6 +146,8 @@ erDiagram
         int output_tokens
         numeric cost_usd
         int duration_ms
+        jsonb request "what was sent; NULL for Jev"
+        jsonb response "the body as received; NULL for Jev"
         timestamptz started_at
         timestamptz finished_at
     }
@@ -177,9 +180,17 @@ blew up — lives in `llm_calls`.
 
 ### 3.3 `llm_calls`
 
-One row per Jev call **attempted** — including the ones that failed. This is
-the operational ledger: what was asked, what it cost, how long it took, and
-what went wrong.
+One row per LLM call **attempted** — including the ones that failed; today
+every caller is a Jev match. This is the operational ledger: what was asked, what it cost, how long
+it took, and what went wrong.
+
+`kind` says which caller paid, with no default so a new caller must name
+itself; the market view's spend sums `match` only. `request` and `response`
+are the trace — what was sent and the body as received, kept even when it
+failed to parse — read with `jobmatch trace ID`. Jev rows leave both NULL: its
+SDK exposes no raw request worth keeping, and its answer is already whole in
+`match_results.answers`. Every row goes through `repository.record_call`, in
+its own transaction.
 
 `match_results` only ever records a call that succeeded *and* parsed. Without
 this table, a run where a third of the calls 429'd leaves no evidence at all,

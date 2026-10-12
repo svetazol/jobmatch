@@ -61,6 +61,7 @@ def never_call_jev(monkeypatch):
     async def fake_match(client, cv, vacancy, model, *, fingerprint, cv_hash, content_hash, job):
         async with SessionLocal.begin() as session:
             call = LlmCall(
+                kind="match",
                 vacancy_id=vacancy.id,
                 inputs_fingerprint=fingerprint,
                 model_requested=model,

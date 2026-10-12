@@ -187,6 +187,8 @@ async def test_a_successful_call_is_flattened_and_costed(vacancy):
 
     (call,) = await calls_for(vacancy)
     assert call.status == "ok"
+    assert call.kind == "match"
+    assert call.request is None and call.response is None  # Jev keeps no trace
     assert call.model_requested == "jev-1.13"
     assert call.model_resolved == "typesafe/jev-1.13-20260917"  # differs; worth storing
     assert float(call.cost_usd) == pytest.approx(0.000413616)

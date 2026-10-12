@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import dataclasses
+import json
 import logging
 import sys
 from collections.abc import Coroutine
@@ -21,7 +22,7 @@ from sqlalchemy import func, select
 from . import matching, pipeline, repository
 from .config import DEFAULT_PATH, Settings, load_settings
 from .db import SessionLocal, engine
-from .models import MatchResult, Vacancy
+from .models import LlmCall, MatchResult, Vacancy
 from .sources import source_for_url
 
 log = logging.getLogger(__name__)
@@ -182,6 +183,67 @@ async def cmd_fetch_pending(config_path: str, limit: int | None) -> int:
     return 0
 
 
+async def cmd_trace(call_id: int | None, kind: str | None, last: int) -> int:
+    """Read the LLM ledger: the last calls as a table, or one call in full.
+
+    Read-only and free. The full view is where a failed or unparseable call
+    is diagnosed: `request` and `response` are what was sent and what came
+    back. Jev rows have neither (`models.LlmCall`).
+    """
+    if call_id is not None:
+        async with SessionLocal() as session:
+            call = await repository.get_call(session, call_id)
+        if call is None:
+            print(f"no llm_calls row #{call_id}")
+            return 1
+        _print_call(call)
+        return 0
+
+    async with SessionLocal() as session:
+        calls = await repository.recent_calls(session, kind=kind, limit=last)
+    _print_calls(calls)
+    return 0
+
+
+def _print_calls(calls: list[LlmCall]) -> None:
+    print(f"{'id':>7}  {'started':16}  {'kind':8} {'model':30} {'status':6} "
+          f"{'in':>6} {'out':>5} {'cost $':>11} {'ms':>6}  vacancy")
+    for c in calls:
+        print(f"{c.id:>7}  {c.started_at:%Y-%m-%d %H:%M}  {c.kind:8} "
+              f"{c.model_requested[:30]:30} {c.status:6} "
+              f"{_or_dash(c.input_tokens):>6} {_or_dash(c.output_tokens):>5} "
+              f"{_or_dash(c.cost_usd):>11} {_or_dash(c.duration_ms):>6}  "
+              f"{_or_dash(c.vacancy_id)}")
+
+
+def _print_call(call: LlmCall) -> None:
+    # every column, so one added later shows up here without an edit; the two
+    # JSON bodies are printed last, in full
+    for column in LlmCall.__table__.columns:
+        name = column.name
+        if name in ("request", "response"):
+            continue
+        value = getattr(call, name)
+        if name.startswith("error_") and value is None:
+            continue          # a successful call has no error to show
+        print(f"{name:18} {_or_dash(value)}")
+    for name in ("request", "response"):
+        value = getattr(call, name)
+        print(f"\n{name}:")
+        print(json.dumps(value, ensure_ascii=False, indent=2) if value is not None else "  -")
+
+
+def _or_dash(value: object) -> str:
+    return "-" if value is None else str(value)
+
+
+def _positive_int(text: str) -> int:
+    number = int(text)
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be 1 or more, not {number}")
+    return number
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     parser = argparse.ArgumentParser(prog="jobmatch")
@@ -249,6 +311,13 @@ def main(argv: list[str] | None = None) -> int:
     match.add_argument("--country", help="only vacancies in this country")
     match.add_argument("--limit", type=int, help="at most this many vacancies (dry run: 10)")
 
+    trace = sub.add_parser(
+        "trace", help="read the LLM ledger: the last calls, or one in full — free"
+    )
+    trace.add_argument("id", nargs="?", type=int, help="one call's id: its request and response")
+    trace.add_argument("--kind", help="list only calls of this kind: match, employer, people")
+    trace.add_argument("--last", type=_positive_int, help="how many calls to list (20)")
+
     args = parser.parse_args(argv)
     if args.command == "run":
         command = cmd_run(args.config, args.limit, match=not args.no_match, only=args.only)
@@ -263,6 +332,10 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "match":
         command = cmd_match(args.config, dry_run=args.dry_run, cv=args.cv,
                             country=args.country, limit=args.limit)
+    elif args.command == "trace":
+        if args.id is not None and (args.kind or args.last):
+            parser.error("trace: --kind and --last list calls; they do not apply to one id")
+        command = cmd_trace(args.id, args.kind, args.last or 20)
     else:
         parser.error(f"unknown command {args.command}")  # unreachable
     return asyncio.run(_run(command))

@@ -10,15 +10,20 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Sequence
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .matching import MatchOutcome
+from .db import SessionLocal
 from .models import MAX_FETCH_ATTEMPTS, Employer, LlmCall, MatchResult, Vacancy
 from .sources import EmployerData, Listing, VacancyData
+
+if TYPE_CHECKING:
+    # An annotation only: `matching.jev` writes its ledger rows through this
+    # module, so a runtime import here would be a cycle.
+    from .matching import MatchOutcome
 
 
 async def upsert_listing(session: AsyncSession, source: str, listing: Listing) -> Vacancy:
@@ -278,6 +283,20 @@ async def save_match(session: AsyncSession, vacancy_id: int, outcome: MatchOutco
     # the cheap pre-check for "the employer edited the posting"
     (await session.get_one(Vacancy, vacancy_id)).content_hash = outcome.vacancy_content_hash
     return result
+
+
+async def record_call(**values: Any) -> int:
+    """Write the ledger row in its *own* session, so it survives the caller's
+    rollback. A log that disappears when things go wrong is worse than none.
+
+    The one writer of `llm_calls`, shared by every caller that pays a model;
+    `values` are `LlmCall` columns, `kind` among them.
+    """
+    async with SessionLocal.begin() as session:
+        call = LlmCall(**values)
+        session.add(call)
+        await session.flush()
+        return call.id
 
 
 async def count_vacancies(session: AsyncSession) -> tuple[int, int, int]:
@@ -541,7 +560,7 @@ async def stats(
 
     spend_stmt = select(
         func.count(), func.coalesce(func.sum(LlmCall.cost_usd), 0), func.avg(LlmCall.duration_ms)
-    )
+    ).where(LlmCall.kind == "match")  # the view reports on matching, not on lookups
     if cv_hash:
         # llm_calls has no cv_hash of its own — it records the request, not
         # what the request was about — so the spend for one CV is the spend on
@@ -625,3 +644,18 @@ async def cv_hashes(session: AsyncSession) -> list[tuple[str, int, dt.datetime]]
             .order_by(func.max(MatchResult.created_at).desc())
         )).all()
     ]
+
+
+async def recent_calls(
+    session: AsyncSession, *, kind: str | None = None, limit: int = 20
+) -> list[LlmCall]:
+    """The ledger's newest rows, for `jobmatch trace`. Read-only."""
+    stmt = select(LlmCall).order_by(LlmCall.started_at.desc(), LlmCall.id.desc()).limit(limit)
+    if kind:
+        stmt = stmt.where(LlmCall.kind == kind)
+    return list(await session.scalars(stmt))
+
+
+async def get_call(session: AsyncSession, call_id: int) -> LlmCall | None:
+    """One ledger row in full, request and response included."""
+    return await session.get(LlmCall, call_id)

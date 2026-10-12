@@ -202,6 +202,7 @@ jobmatch discover --limit 20   # ...and stop the walk after 20 listings
 jobmatch fetch --pending       # phase 2 alone, over what is stored
 jobmatch match                 # phase 3 alone, no crawling
 jobmatch match --dry-run       # ask and print, write nothing
+jobmatch trace [ID]            # read llm_calls: the last calls, or one in full
 ```
 
 Each phase leaves a state the next one reads, so you can stop after any of them

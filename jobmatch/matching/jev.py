@@ -18,8 +18,8 @@ from typing import Any
 
 from typesafe_sdk import AsyncTypeSafeClient
 
-from ..db import SessionLocal
-from ..models import LlmCall, Vacancy
+from .. import repository
+from ..models import Vacancy
 from .questions import QUESTIONS, QUESTIONS_HASH
 
 log = logging.getLogger(__name__)
@@ -183,16 +183,6 @@ async def preview_vacancy(
     return _flatten(response, cost, duration_ms)
 
 
-async def _record_call(**values: Any) -> int:
-    """Write the ledger row in its *own* session, so it survives the caller's
-    rollback. A log that disappears when things go wrong is worse than none."""
-    async with SessionLocal.begin() as session:
-        call = LlmCall(**values)
-        session.add(call)
-        await session.flush()
-        return call.id
-
-
 async def match_vacancy(
     client: AsyncTypeSafeClient,
     cv: str,
@@ -209,6 +199,7 @@ async def match_vacancy(
     started = dt.datetime.now(dt.UTC)
     clock = time.monotonic()
     common = {
+        "kind": "match",
         "vacancy_id": vacancy.id,
         "inputs_fingerprint": fingerprint,
         "model_requested": model,
@@ -217,7 +208,7 @@ async def match_vacancy(
     try:
         response, meta, duration_ms = await _ask(client, cv, job, model)
     except Exception as exc:
-        await _record_call(
+        await repository.record_call(
             **common,
             status="error",
             http_status=getattr(exc, "status", None),
@@ -229,7 +220,7 @@ async def match_vacancy(
         raise
 
     cost = Decimal(str(meta["cost"])) if meta.get("cost") is not None else None
-    call_id = await _record_call(
+    call_id = await repository.record_call(
         **common,
         status="ok",
         model_resolved=response.model,

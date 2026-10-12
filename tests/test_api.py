@@ -98,7 +98,7 @@ async def rows():
             made.append(vacancy)
         await session.flush()
 
-        call = LlmCall(vacancy_id=made[0].id, inputs_fingerprint="f" * 64,
+        call = LlmCall(kind="match", vacancy_id=made[0].id, inputs_fingerprint="f" * 64,
                        model_requested="test", status="ok", cost_usd=Decimal("0.000123"))
         session.add(call)
         await session.flush()

@@ -280,7 +280,8 @@ class MatchResult(Base):
 
 
 class LlmCall(Base):
-    """One row per Jev call *attempted*, including the ones that failed.
+    """One row per LLM call *attempted*, including the ones that failed —
+    today, every one of them a Jev match; `kind` says which caller paid.
 
     The operational ledger: what was asked, what it cost, how long it took and
     what went wrong. Nothing reads it to decide what to do next — this is for
@@ -295,6 +296,11 @@ class LlmCall(Base):
         ForeignKey("vacancies.id", ondelete="SET NULL"), index=True
     )
 
+    # Which caller paid: "match" | "employer" | "people". Plain text, not a PG
+    # enum, so a new caller needs no migration.
+    # No default, so a new caller has to say what it is. The market view's
+    # spend sums "match" only — it reports on matching, not on lookups.
+    kind: Mapped[str] = mapped_column(String(16))
     inputs_fingerprint: Mapped[str] = mapped_column(String(64))
     model_requested: Mapped[str] = mapped_column(String(64))
     # not in the fingerprint — unknowable before paying for the call
@@ -314,6 +320,14 @@ class LlmCall(Base):
     # $0.000414, and a cheaper call straight to zero.
     cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(14, 9))
     duration_ms: Mapped[int | None] = mapped_column(Integer)
+
+    # The trace, read with `jobmatch trace ID`: what was sent (messages,
+    # schema, parameters) and the body as received, kept even when it failed to
+    # parse — that body is the evidence of what was paid for. Jev rows leave
+    # both NULL: the TypeSafe SDK exposes no raw request worth keeping, and
+    # Jev's answer is already whole in `match_results.answers`.
+    request: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    response: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
     started_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
     finished_at: Mapped[dt.datetime | None] = mapped_column()
