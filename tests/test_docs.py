@@ -28,6 +28,10 @@ GONE = {
     "load_settings(path).sources[0].params": "…search",
     "regions_of(": "areas.coverage()",
     "how-it-works.md": "docs/pipeline.md",
+    # the LangChain people search, parked on branch people-langchain
+    "people.py": "the employer identity call (docs/company-research.md)",
+    "PeopleSearch": "nothing yet; see docs/decisions.md, People search",
+    "find_people": "nothing yet; see docs/decisions.md, People search",
 }
 
 # Prose that happens to contain a dead string for a legitimate reason: the
