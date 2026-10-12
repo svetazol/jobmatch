@@ -4,6 +4,12 @@ Scrapes Python vacancies from hh.ru into Postgres and matches each one against
 a CV with Jev (TypeSafe AI, via OpenRouter), served to a Vue UI. Single user,
 one machine, one database.
 
+It is also where the user practises the AI engineering stack: agents, tools,
+structured output, evals, tracing. Where AI is a reasonable way to solve a
+feature, use it — and build it properly (small, testable, measured), not as
+the cheapest workaround. "Plain code would also work" is not by itself a
+reason to leave AI out.
+
 ## Read before changing anything
 
 The docs hold the reasoning the code cannot; read the relevant one first.
@@ -11,14 +17,38 @@ The docs hold the reasoning the code cannot; read the relevant one first.
 - `docs/architecture.md`: the seams, the idempotency rules, the schema's
   reasoning, the API's decisions.
 - `docs/pipeline.md`: the three phases and what is on disk after each one.
-- `docs/decisions.md`: what was considered and **refused**. Check it before
-  proposing an abstraction, a library, or a config setting. A rejected option
-  stays rejected unless the user reopens it.
+- `docs/decisions.md`: what was considered and **refused**, and why. Check it
+  before proposing an abstraction, a library, or a config setting. It can be
+  outdated: before relying on an entry, check its reason still holds against
+  today's code and data, and say when one no longer does. Reopening one is the
+  user's call.
 - `docs/jev.md`: the matcher model and SDK.
 - `docs/initial_task.md`: the original brief. Frozen, never edited to match the
   code.
 - `jobmatch/models.py`: the schema's source of truth, with the reason for each
   column in comments.
+
+## How we work on a new idea
+
+Six agents in `.claude/agents/`. The main session runs them in this order and
+brings the user each decision; nothing moves past a ✋ without the user.
+
+| Step | Agent | Edits? | Output |
+|---|---|---|---|
+| 1 | **idea-critic** | no | what the user wants; agree / disagree; a simpler option if there is one ✋ |
+| 2 | **designer** | no | a one-page design: flow, changes, data, failure and cost, tests, build steps |
+| 3 | **architect** | no | is the design's structure simple and readable; what to change ✋ (design + structure approved together) |
+| 4 | **backend-engineer** / **frontend-engineer** | yes | one build step at a time, tests or typecheck passing |
+| 5 | **code-reviewer** | no | the step's diff: correctness and readability; the engineer fixes what it finds |
+| 6 | — | — | a short summary of the step for the user ✋ — then commit if they say so, and on to the next step |
+
+- Show each agent's answer to the user as it is; don't summarise away a
+  disagreement.
+- A small fix or a question about the code skips this. A new feature or a
+  change of design does not.
+- If the build contradicts the approved design, stop and bring it back to the
+  user instead of patching around it.
+- The architect can also be asked any time the code has grown hard to follow.
 
 ## Commands
 
