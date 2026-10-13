@@ -19,18 +19,18 @@ import pydantic
 import pytest
 from sqlalchemy import delete, select
 
-from jobmatch import cli, identify, matching, pipeline, repository
+from jobmatch import cli, matching, pipeline, repository, research
 from jobmatch.api.app import app
 from jobmatch.config import load_settings
 from jobmatch.db import SessionLocal
 from jobmatch.models import Employer, EmployerIdentity, LlmCall, Vacancy
 
-SOURCE_NAME = "test-identify"
+SOURCE_NAME = "test-research"
 MODEL = "google/gemini-2.5-flash-lite"
 
 pytestmark = pytest.mark.anyio
 
-POSTER = identify.Poster(
+POSTER = research.Poster(
     name="ЭР-Телеком Холдинг",
     site_url="http://rabotavdomru.ru",
     about="Пермь; Телекоммуникации",
@@ -66,7 +66,12 @@ def completion(content: str, cost: float | None = 0.00021) -> dict:
     }
 
 
-def openrouter(handler, client_class=httpx2.AsyncClient) -> httpx2.AsyncClient:
+def key(poster: research.Poster, model: str) -> str:
+    """The employer cache key, as the pipeline computes it."""
+    return research.fingerprint(research.employer_request(poster, model))
+
+
+def openrouter(handler,client_class=httpx2.AsyncClient) -> httpx2.AsyncClient:
     """The SDK's HTTP client, answering from `handler` instead of the network."""
     return client_class(transport=httpx2.MockTransport(handler))
 
@@ -81,7 +86,7 @@ def answering(body: dict, sent: list | None = None):
 
 @pytest.fixture(autouse=True)
 def api_key(monkeypatch):
-    monkeypatch.setenv(identify.API_KEY_ENV, "sk-test")
+    monkeypatch.setenv(research.API_KEY_ENV, "sk-test")
 
 
 @pytest.fixture
@@ -129,15 +134,15 @@ async def _only_call(vacancy_id: int) -> LlmCall:
 async def test_a_good_answer_is_parsed_and_recorded(vacancy_id):
     body = completion(json.dumps(ANSWER, ensure_ascii=False))
 
-    identity, call_id = await identify.ask(
+    identity, call_id = await research.ask_employer(
         POSTER, MODEL, vacancy_id=vacancy_id, http_client=openrouter(answering(body)),
     )
 
-    assert identity == identify.Identity(**ANSWER)
+    assert identity == research.Identity(**ANSWER)
     call = await _call(call_id)
     assert (call.kind, call.status, call.vacancy_id) == ("employer", "ok", vacancy_id)
-    assert call.inputs_fingerprint == identify.fingerprint(POSTER, MODEL)
-    assert call.request == identify.request_body(POSTER, MODEL)
+    assert call.inputs_fingerprint == key(POSTER, MODEL)
+    assert call.request == research.employer_request(POSTER, MODEL)
     assert call.response == body
     assert call.cost_usd == Decimal("0.00021")
     assert (call.input_tokens, call.output_tokens) == (1500, 150)
@@ -151,7 +156,7 @@ async def test_the_request_asks_for_strict_json_from_providers_that_honour_it(va
     sent: list[dict] = []
     body = completion(json.dumps(ANSWER))
 
-    await identify.ask(POSTER, MODEL, vacancy_id=vacancy_id,
+    await research.ask_employer(POSTER, MODEL, vacancy_id=vacancy_id,
                        http_client=openrouter(answering(body, sent)))
 
     (request,) = sent
@@ -159,18 +164,18 @@ async def test_the_request_asks_for_strict_json_from_providers_that_honour_it(va
         "type": "json_schema",
         "json_schema": {
             "name": "employer_identity", "strict": True,
-            "schema": identify.Identity.model_json_schema(),
+            "schema": research.Identity.model_json_schema(),
         },
     }
     assert request["provider"] == {"require_parameters": True}
     assert request["usage"] == {"include": True}
-    assert request == identify.request_body(POSTER, MODEL)   # what is stored is what was sent
+    assert request == research.employer_request(POSTER, MODEL)   # what is stored is what was sent
 
 
 def test_the_schema_is_what_strict_mode_accepts():
     """OpenAI-style `strict`: every property required, nothing extra allowed,
     and "unknown" spelled as a union with null rather than as an optional."""
-    schema = identify.Identity.model_json_schema()
+    schema = research.Identity.model_json_schema()
     assert schema["additionalProperties"] is False
     assert set(schema["required"]) == set(schema["properties"]) == set(ANSWER)
     for name, prop in schema["properties"].items():
@@ -183,13 +188,13 @@ async def test_invalid_json_raises_and_keeps_the_body_it_paid_for(vacancy_id):
     body = completion('{"employer": "ЭР-Телеком"')      # cut off
 
     with pytest.raises(pydantic.ValidationError):
-        await identify.ask(POSTER, MODEL, vacancy_id=vacancy_id,
+        await research.ask_employer(POSTER, MODEL, vacancy_id=vacancy_id,
                            http_client=openrouter(answering(body)))
 
     call = await _only_call(vacancy_id)
     assert (call.kind, call.status, call.error_type) == ("employer", "error", "ValidationError")
     assert call.response == body
-    assert call.request == identify.request_body(POSTER, MODEL)
+    assert call.request == research.employer_request(POSTER, MODEL)
     assert call.cost_usd == Decimal("0.00021")              # paid for all the same
 
 
@@ -197,7 +202,7 @@ async def test_an_answer_with_extra_fields_is_refused(vacancy_id):
     body = completion(json.dumps({**ANSWER, "ceo": "someone"}))
 
     with pytest.raises(pydantic.ValidationError):
-        await identify.ask(POSTER, MODEL, vacancy_id=vacancy_id,
+        await research.ask_employer(POSTER, MODEL, vacancy_id=vacancy_id,
                            http_client=openrouter(answering(body)))
 
     assert (await _only_call(vacancy_id)).status == "error"
@@ -208,7 +213,7 @@ async def test_a_refusal_with_no_content_is_an_error(vacancy_id):
     body["choices"][0]["message"] |= {"content": None, "refusal": "I can't help with that."}
 
     with pytest.raises(ValueError, match="no answer"):
-        await identify.ask(POSTER, MODEL, vacancy_id=vacancy_id,
+        await research.ask_employer(POSTER, MODEL, vacancy_id=vacancy_id,
                            http_client=openrouter(answering(body)))
 
     assert (await _only_call(vacancy_id)).response == body
@@ -217,7 +222,7 @@ async def test_a_refusal_with_no_content_is_an_error(vacancy_id):
 async def test_a_hang_past_the_deadline_is_retried_once_then_recorded(vacancy_id, monkeypatch):
     """OpenRouter's keepalive whitespace keeps a per-read timeout from ever
     firing; only the whole-request deadline ends the wait."""
-    monkeypatch.setattr(identify, "MODEL_DEADLINE", 0.05)
+    monkeypatch.setattr(research, "MODEL_DEADLINE", 0.05)
     attempts = 0
 
     async def hang(request):
@@ -227,13 +232,13 @@ async def test_a_hang_past_the_deadline_is_retried_once_then_recorded(vacancy_id
         return httpx2.Response(200, json=completion(json.dumps(ANSWER)))
 
     with pytest.raises(openai.APITimeoutError):
-        await identify.ask(POSTER, MODEL, vacancy_id=vacancy_id,
-                           http_client=openrouter(hang, identify._Deadline))
+        await research.ask_employer(POSTER, MODEL, vacancy_id=vacancy_id,
+                           http_client=openrouter(hang, research._Deadline))
 
-    assert attempts == 1 + identify.MODEL_RETRIES
+    assert attempts == 1 + research.MODEL_RETRIES
     call = await _only_call(vacancy_id)
     assert (call.status, call.error_type) == ("error", "APITimeoutError")
-    assert call.request == identify.request_body(POSTER, MODEL)
+    assert call.request == research.employer_request(POSTER, MODEL)
     assert call.response is None
 
 
@@ -244,7 +249,7 @@ async def test_an_http_error_stores_openrouters_error_body(vacancy_id):
         return httpx2.Response(400, json=error)
 
     with pytest.raises(openai.BadRequestError):
-        await identify.ask(POSTER, MODEL, vacancy_id=vacancy_id, http_client=openrouter(refuse))
+        await research.ask_employer(POSTER, MODEL, vacancy_id=vacancy_id, http_client=openrouter(refuse))
 
     call = await _only_call(vacancy_id)
     assert (call.status, call.http_status) == ("error", 400)
@@ -252,10 +257,10 @@ async def test_an_http_error_stores_openrouters_error_body(vacancy_id):
 
 
 async def test_without_a_key_nothing_is_sent_or_recorded(vacancy_id, monkeypatch):
-    monkeypatch.delenv(identify.API_KEY_ENV)
+    monkeypatch.delenv(research.API_KEY_ENV)
 
-    with pytest.raises(ValueError, match=identify.API_KEY_ENV):
-        await identify.ask(POSTER, MODEL, vacancy_id=vacancy_id,
+    with pytest.raises(ValueError, match=research.API_KEY_ENV):
+        await research.ask_employer(POSTER, MODEL, vacancy_id=vacancy_id,
                            http_client=openrouter(lambda r: pytest.fail("sent")))
 
     async with SessionLocal() as session:
@@ -272,13 +277,21 @@ async def test_without_a_key_nothing_is_sent_or_recorded(vacancy_id, monkeypatch
 ])
 def test_the_fingerprint_changes_with_each_input(change):
     changed = dataclasses.replace(POSTER, **change)
-    assert identify.fingerprint(changed, MODEL) != identify.fingerprint(POSTER, MODEL)
+    assert key(changed, MODEL) != key(POSTER, MODEL)
 
 
 def test_the_fingerprint_is_stable_and_changes_with_the_model():
-    assert identify.fingerprint(POSTER, MODEL) == identify.fingerprint(POSTER, MODEL)
-    assert identify.fingerprint(POSTER, "mistralai/mistral-small") != identify.fingerprint(
-        POSTER, MODEL
+    assert key(POSTER, MODEL) == key(POSTER, MODEL)
+    assert key(POSTER, "mistralai/mistral-small") != key(POSTER, MODEL)
+
+
+def test_the_employer_fingerprint_is_pinned():
+    """Pinned on 2026-10-13, when `Identity`'s docstring was rewritten for the
+    model. A change here makes every stored `employer_identities` row miss the
+    cache -- that docstring, which is in the schema, is the easy way to cause
+    one. Change the pin only on purpose."""
+    assert key(POSTER, MODEL) == (
+        "d2fdbcbc0761aab2429fdfe17c89fbbb1e34fe49fc83004b1e228f13a62eef27"
     )
 
 
@@ -289,7 +302,7 @@ def test_the_fingerprint_is_stable_and_changes_with_the_model():
     (None, None),
 ])
 def test_a_bare_domain_is_stored_as_an_https_url(given, stored):
-    identity = identify.Identity(**{**ANSWER, "homepage": given, "careers_page": given})
+    identity = research.Identity(**{**ANSWER, "homepage": given, "careers_page": given})
     assert identity.homepage == identity.careers_page == stored
 
 
@@ -300,20 +313,20 @@ def test_a_bare_domain_is_stored_as_an_https_url(given, stored):
 ])
 def test_a_link_that_is_not_http_is_stored_as_unknown(given):
     """The card links these; a `javascript:` URL would run on click."""
-    identity = identify.Identity(**{**ANSWER, "homepage": given, "careers_page": given})
+    identity = research.Identity(**{**ANSWER, "homepage": given, "careers_page": given})
     assert identity.homepage is identity.careers_page is None
 
 
 def test_the_url_fix_leaves_the_schema_alone():
     """The schema is in the fingerprint; a validator must not change it."""
-    homepage = identify.Identity.model_json_schema()["properties"]["homepage"]
+    homepage = research.Identity.model_json_schema()["properties"]["homepage"]
     assert homepage["anyOf"] == [{"type": "string"}, {"type": "null"}]
 
 
 async def test_a_bare_domain_answer_is_stored_with_its_scheme_and_kept_raw(vacancy_id):
     body = completion(json.dumps({**ANSWER, "homepage": "ertelecom.ru"}))
 
-    identity, call_id = await identify.ask(
+    identity, call_id = await research.ask_employer(
         POSTER, MODEL, vacancy_id=vacancy_id, http_client=openrouter(answering(body)),
     )
 
@@ -337,13 +350,13 @@ def site(routes: dict[str, httpx2.Response]) -> httpx2.AsyncClient:
 
 
 async def test_a_public_page_that_answers_is_reachable():
-    assert await identify.reachable(PUBLIC + "/", http_client=site({
+    assert await research.reachable(PUBLIC + "/", http_client=site({
         PUBLIC + "/": httpx2.Response(200, text="<html>hello</html>"),
     }))
 
 
 async def test_a_missing_page_is_not_reachable():
-    assert not await identify.reachable(PUBLIC + "/", http_client=site({
+    assert not await research.reachable(PUBLIC + "/", http_client=site({
         PUBLIC + "/": httpx2.Response(404),
     }))
 
@@ -359,15 +372,15 @@ async def test_a_missing_page_is_not_reachable():
     "ertelecom.ru",                   # no scheme
 ])
 async def test_private_addresses_and_other_schemes_are_refused_unasked(url):
-    assert not await identify.reachable(url, http_client=site({}))
+    assert not await research.reachable(url, http_client=site({}))
 
 
 async def test_redirects_are_followed_and_each_hop_checked():
-    assert await identify.reachable(PUBLIC + "/", http_client=site({
+    assert await research.reachable(PUBLIC + "/", http_client=site({
         PUBLIC + "/": httpx2.Response(301, headers={"location": "/home"}),
         PUBLIC + "/home": httpx2.Response(200),
     }))
-    assert not await identify.reachable(PUBLIC + "/", http_client=site({
+    assert not await research.reachable(PUBLIC + "/", http_client=site({
         PUBLIC + "/": httpx2.Response(302, headers={"location": "http://127.0.0.1:8000/"}),
     }))
 
@@ -375,15 +388,15 @@ async def test_redirects_are_followed_and_each_hop_checked():
 async def test_too_many_redirects_is_not_reachable():
     loop = {
         f"{PUBLIC}/{i}": httpx2.Response(302, headers={"location": f"/{i + 1}"})
-        for i in range(identify.MAX_REDIRECTS + 1)
+        for i in range(research.MAX_REDIRECTS + 1)
     }
-    assert not await identify.reachable(PUBLIC + "/0", http_client=site(loop))
+    assert not await research.reachable(PUBLIC + "/0", http_client=site(loop))
 
 
 async def test_a_connection_failure_is_not_reachable():
     def down(request):
         raise httpx2.ConnectError("refused", request=request)
-    assert not await identify.reachable(
+    assert not await research.reachable(
         PUBLIC + "/", http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(down))
     )
 
@@ -392,27 +405,27 @@ async def test_a_connection_failure_is_not_reachable():
 
 @pytest.fixture
 def model_calls(monkeypatch):
-    """`identify.ask` and `reachable` replaced; returns the posters asked about.
+    """`research.ask_employer` and `reachable` replaced; returns the posters asked.
 
     The fake still writes its ledger row, because `employer_identities`
     points at one.
     """
-    asked: list[identify.Poster] = []
+    asked: list[research.Poster] = []
 
     async def ask(poster, model, *, vacancy_id, http_client=None):
         asked.append(poster)
         call_id = await repository.record_call(
             kind="employer", vacancy_id=vacancy_id, model_requested=model,
-            inputs_fingerprint=identify.fingerprint(poster, model), status="ok",
+            inputs_fingerprint=key(poster, model), status="ok",
             cost_usd=Decimal("0.0002"), started_at=dt.datetime.now(dt.UTC),
         )
-        return identify.Identity(**ANSWER), call_id
+        return research.Identity(**ANSWER), call_id
 
     async def reachable(url, *, http_client=None):
         return url == ANSWER["homepage"]
 
-    monkeypatch.setattr(identify, "ask", ask)
-    monkeypatch.setattr(identify, "reachable", reachable)
+    monkeypatch.setattr(research, "ask_employer", ask)
+    monkeypatch.setattr(research, "reachable", reachable)
     return asked
 
 
@@ -425,7 +438,7 @@ async def test_identifying_saves_the_answer_and_its_homepage_check(vacancy_id, m
     async with SessionLocal() as session:
         latest = await repository.latest_identity(session, vacancy_id)
     assert latest.id == row.id
-    assert latest.inputs_fingerprint == identify.fingerprint(model_calls[0], MODEL)
+    assert latest.inputs_fingerprint == key(model_calls[0], MODEL)
 
 
 async def test_the_same_request_twice_is_answered_from_the_database(vacancy_id, model_calls):
@@ -452,7 +465,7 @@ async def test_the_poster_is_the_hh_page_and_the_posting_as_jev_reads_it(vacancy
     (poster,) = model_calls
     async with SessionLocal() as session:
         vacancy = await session.get_one(Vacancy, vacancy_id)
-    assert poster == identify.Poster(
+    assert poster == research.Poster(
         name="ЭР-Телеком Холдинг",
         site_url="http://rabotavdomru.ru",
         about="Пермь; Телекоммуникации",
@@ -515,7 +528,7 @@ async def test_an_answer_paid_for_is_saved_even_if_the_click_is_cancelled(
         await anyio.sleep(0.1)
         return True
 
-    monkeypatch.setattr(identify, "reachable", slow_reachable)
+    monkeypatch.setattr(research, "reachable", slow_reachable)
     async with anyio.create_task_group() as tg:
         tg.start_soon(pipeline.identify_employer, vacancy_id, MODEL)
         await checking.wait()
@@ -602,19 +615,19 @@ async def test_identifying_an_unknown_vacancy_answers_404(client, model_calls):
 async def test_without_a_key_the_identity_route_answers_503_unasked(
     client, vacancy_id, model_calls, monkeypatch
 ):
-    monkeypatch.delenv(identify.API_KEY_ENV)
+    monkeypatch.delenv(research.API_KEY_ENV)
 
     resp = await client.post(f"/api/vacancies/{vacancy_id}/company/identity")
 
     assert resp.status_code == 503
-    assert identify.API_KEY_ENV in resp.json()["detail"]
+    assert research.API_KEY_ENV in resp.json()["detail"]
     assert model_calls == []
 
 
 async def test_a_failed_call_answers_502_with_the_reason(client, vacancy_id, monkeypatch):
     async def ask(*args, **kwargs):
         raise ValueError("the response holds no answer")
-    monkeypatch.setattr(identify, "ask", ask)
+    monkeypatch.setattr(research, "ask_employer", ask)
 
     resp = await client.post(f"/api/vacancies/{vacancy_id}/company/identity")
 

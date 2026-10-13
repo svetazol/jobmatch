@@ -48,12 +48,13 @@ on 2026-10-12. What it established, still true unless re-measured:
 | Rejected | Why |
 |---|---|
 | A free-roaming LangChain agent (`create_agent`, `ToolStrategy`) as the first version | Results swung between runs (0–5 people for one company), it sometimes answered without searching, quoted role phrases so searches matched nothing, and let a namesake company through. Under `tool_choice: required` gpt-oss-120b went silent and gemini-2.5-flash-lite's calls hung upstream. Replaced by fixed steps, each one structured-output call, measured on an eval set (`docs/company-research.md`). |
-| `ddgs` (DuckDuckGo, no key) run in a thread | A stuck request froze the whole process past every asyncio timeout: one run took 390 s against a 180 s limit, another never ended. A thread cannot be cancelled. Search goes through an HTTP API with a hard deadline (Tavily). |
+| `ddgs` (DuckDuckGo, no key) run in a thread | A stuck request froze the whole process past every asyncio timeout: one run took 390 s against a 180 s limit, another never ended. A thread cannot be cancelled. Search now runs inside the model call, through OpenRouter (its web plugin, or a search model such as sonar), under the call's own deadline: the user's choice, 2026-10-13. |
 | `openai/gpt-oss-120b` | Four live runs, no answer; failed a forced structured answer 2 of 2 times in a probe that gemini-2.5-flash-lite, mistral-small-2603 and gpt-5-nano passed. |
 | Relying on the OpenAI SDK's timeout for a stuck model call | It is per read, and OpenRouter keeps a waiting connection alive with whitespace every 3 s (measured 2026-10-07), so a hung call waited out the whole run. Bound each request whole. |
 | A tool budget asked of the model in the prompt | gpt-oss-120b was told "about eight searches" and searched until the step limit. Code enforces limits. |
 | Reading LinkedIn pages, or doing it logged in | A plain request gets HTTP 999 and no content (2026-10-08). Logged in, it is automated use against LinkedIn's terms on the account the job hunt depends on. Search-result snippets carry name, title and employer. |
 | The recruiter's contact from the hh posting | 3 of 15 sampled postings show one, and all 3 hide it from a visitor who is not logged in (`contactsHidden: true`, 2026-10-08). |
+| Showing a person the model names without a matching citation | A model's memory invents profile URLs. A person is shown only if their linkedin.com/in/ URL is among the URLs the search returned. |
 | Guessing email addresses from a pattern, or a finder service | A guess reaches a stranger or bounces; probing mail servers reads as spam. An address is used only as published. |
 
 ## Retries and failure

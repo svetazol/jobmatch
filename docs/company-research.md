@@ -8,14 +8,14 @@ the AI parts are built as small, measured steps:
 |---|---|---|---|
 | 0 | **Company lookup** — the employer's hh page: name, the link it publishes, city, industries | none | built 2026-10-07 |
 | 1 | **Employer identity** — who posted the vacancy (the agency itself, for an agency posting), its homepage and careers page, and, for an agency, the client it hires for if the posting names it | one structured-output call, no tools | the call built 2026-10-12; the card 2026-10-13; eval to come (§2) |
-| 2 | **People at the company** — code runs 2–3 searches (Tavily), one call extracts people from the results, each with its source and a same-company verdict | structured output over tool results | not designed |
-| 3 | **An agent that picks its own searches** — only if step 2's eval scores show misses, and judged on the same eval set | a tool-using agent | not designed |
+| 2 | **Recruiters on LinkedIn** — one click, one model call that searches the web for recruiters and HR at the company; only people whose profile the search cited are shown | one structured-output call with web search, through OpenRouter | approved 2026-10-13 (§3) |
+| 3 | **An agent that picks its own searches** — only if step 2 shows misses on real clicks | a tool-using agent | not designed |
 
 Each step is traced (every call's request and response in the database) and
 scored on a small labelled eval set before it is trusted. A first attempt at
 steps 2–3 as one free-roaming LangChain agent was built and dropped;
 `docs/decisions.md` ("People search") has what it established; its code was
-deleted on 2026-10-12, after the parts worth keeping moved into identify.py.
+deleted on 2026-10-12, after the parts worth keeping moved into what is now `jobmatch/research.py`.
 
 ---
 
@@ -67,21 +67,23 @@ approved by the user with the architect's changes folded in.
 
 ### Where the code lives
 
-- **identify.py** (new, `jobmatch/`) — the only module that knows the OpenAI
-  SDK, as `jobmatch/matching/jev.py` is for Jev. Top to bottom:
+- **research.py** (`jobmatch/`; built as the identify module, renamed
+  2026-10-13 when step 2 was designed) — the only module that knows the
+  OpenAI SDK, as `jobmatch/matching/jev.py` is for Jev. Top to bottom:
   - `Poster(name, site_url, about, posting)` — frozen dataclass, the input.
   - `Identity` — a frozen pydantic model, `extra="forbid"`, every field
     required: `employer`, `homepage`, `careers_page`, `is_agency`, `client`
     (each `X | None`, None = unknown) and `notes`. The one shape of the
     answer: it produces the JSON schema, validates the response, and its
     `model_dump()` is what is stored.
-  - `SYSTEM` prompt: facts given plus own knowledge only, null rather than a
+  - `EMPLOYER_SYSTEM` prompt: facts given plus own knowledge only, null rather than a
     guess; the hh link may be a careers site; an agency says so ("наш
     клиент", "кадровое агентство"), and the client is named only if the
     posting names it.
-  - `user_prompt(poster)`, `fingerprint(poster, model)` — sha256 of system
-    prompt, user prompt, schema and model.
-  - `async def ask(poster, model, *, vacancy_id, http_client=None) ->
+  - `employer_prompt(poster)`, `employer_request(poster, model)` — the whole
+    request; `fingerprint(request)` is its sha256: everything sent — prompts,
+    schema, model and OpenRouter's fields.
+  - `async def ask_employer(poster, model, *, vacancy_id, http_client=None) ->
     tuple[Identity, int]` — one `chat.completions.create` through OpenRouter
     with `response_format` `json_schema` (`strict`), `usage.include` and
     `provider.require_parameters`; validates `message.content` itself
@@ -100,7 +102,7 @@ approved by the user with the architect's changes folded in.
   `matching.job_text(vacancy)` as is — Jev's questions and fingerprint are not
   touched) and `identify_employer(vacancy_id, model)`: load the vacancy and
   its employer (none → `NotLookedUp`, the API's 409); fingerprint; a stored
-  identity with that fingerprint → return it; else `identify.ask`, then
+  identity with that fingerprint → return it; else `research.ask_employer`, then
   `reachable` on the homepage and careers page and the save, shielded from
   cancellation so a paid answer is kept. No session held across a network
   call.
@@ -110,7 +112,7 @@ approved by the user with the architect's changes folded in.
   `latest_identity(vacancy_id)`, `save_identity`.
 - **evals.py** (new, `jobmatch/`) — `async def run(path, model) -> Report` at
   the top: load the cases, read each posting through the repository, call
-  `identify.ask` one case at a time, score. Below it, in reading order:
+  `research.ask_employer` one case at a time, score. Below it, in reading order:
   `load_cases`, `score` (per field: right / unknown / wrong), the normalisers
   (names without quotes and ООО/АО/ПАО, casefolded; URLs by host without
   `www.`). It does **not** use the cache and writes no identity rows — each
@@ -172,7 +174,7 @@ HTTP call; the fingerprint changes with each input and the model; `reachable`
 refuses private addresses and `javascript:`. The eval: `score` and the
 normalisers on hand-built cases; `load_cases` rejects a case missing a field.
 The paid eval run is a CLI command, never pytest. API tests with
-`identify.ask` stubbed; `npm run typecheck`.
+`research.ask_employer` stubbed; `npm run typecheck`.
 
 ### Build steps
 
@@ -181,7 +183,7 @@ The paid eval run is a CLI command, never pytest. API tests with
    and `CLAUDE.md` committed.
 1. **The ledger**: `kind`, `request`, `response`, the migration,
    `repository.record_call`, `jobmatch trace`; `docs/architecture.md` §3.3.
-2. **The call** (built 2026-10-12): identify.py, `employer_identities`, the
+2. **The call** (built 2026-10-12): research.py, `employer_identities`, the
    pipeline and repository functions, `jobmatch identify --vacancy N`.
 3. **The eval**: evals.py, `jobmatch eval employers`, the labels pre-filled
    for the user to correct; then gemini-2.5-flash-lite against
@@ -192,11 +194,82 @@ The paid eval run is a CLI command, never pytest. API tests with
 
 ### Decisions
 
-- LangChain and `ddgs`: dropped for the plain OpenAI SDK and, in step 2,
-  Tavily (`docs/decisions.md`, "People search").
-- "Matcher protocol / pluggable LLM providers" stays refused: identify.py is a
+- LangChain and `ddgs`: dropped for the plain OpenAI SDK and, in step 2, a
+  search inside the model call (`docs/decisions.md`, "People search").
+- "Matcher protocol / pluggable LLM providers" stays refused: research.py is a
   second plain module, not an interface.
 - "Per-vacancy files" holds: the eval file stores labels and short employer
   facts, not posting text.
 - "`llm_calls`: nothing reads it to decide" holds: the cache is
   `employer_identities`; the ledger is for reading.
+
+---
+
+## 3. Step 2: recruiters on LinkedIn (approved 2026-10-13)
+
+Designed by the designer agent, structure reviewed by the architect agent,
+approved by the user.
+
+### What the user sees
+
+A **RecruitersBlock** under the identity on the Company card
+(`frontend/src/components/RecruitersBlock.vue`, a sibling of
+`CompanyIdentity.vue`):
+
+1. A free "Search LinkedIn yourself ↗" link, always there.
+2. **Find recruiters** (~$0.02, ~5–20 s; both estimates): one AI web search for
+   recruiters, HR and talent acquisition at the company.
+3. Each person: name · role · linkedin ↗, and the snippet that shows it.
+   Below: "N found · M dropped · searched <date>". None confirmed reads "No
+   profiles the search could confirm".
+
+### Where the code lives
+
+- `jobmatch/research.py` gains a recruiters section between "who is behind a
+  posting" and "checks on an answer":
+  - `Target(name, homepage, city)` — the company to search for.
+  - `Person(name, role | None, linkedin_url, evidence)` and
+    `Recruiters(people, notes)` — pydantic, strict like `Identity`. Their
+    docstrings and `Field` descriptions are sent as part of the schema: prompt
+    text, written for the model and covered by the fingerprint, so notes for
+    people go in comments.
+  - `RECRUITERS_SYSTEM`, `recruiters_request(target, model)`, and
+    `ask_recruiters(target, model, *, vacancy_id) -> (Confirmed, call_id)`,
+    kind `"recruiters"`: `_call`, then `keep_cited(answer, body)`.
+  - Checks: `linkedin_slug(url)`; `cited(body)` reads only
+    `choices[0].message.annotations[*].url_citation`; `keep_cited` is a pure
+    filter that never raises and returns `Confirmed(people, dropped, sources)`,
+    keeping only people whose profile slug was cited, each URL rewritten in
+    its canonical form.
+- `jobmatch/pipeline.py`: `target_of(employer, identity | None)` beside
+  `poster_of`; `find_recruiters(vacancy_id, model)` returns the employer's
+  newest search free when it has the same fingerprint and is younger than
+  `RECRUITERS_FRESH` (30 days, in the pipeline, not config: recruiters change
+  jobs), else asks and saves.
+- `people_model` in `config.toml`: `google/gemini-2.5-flash-lite:online`;
+  Perplexity's sonar is the alternative, by config.
+- API: `POST /api/vacancies/{id}/company/recruiters` (409 / 404 / 503 / 502 as
+  for the identity); `GET /company` gains `recruiters`, shaped
+  `CompanyRecruiters(people, dropped, sources, created_at)` only.
+
+### Data
+
+**`recruiter_searches`**, per employer (the request holds no posting text):
+`id`, `employer_id` (FK), `inputs_fingerprint` (not unique: the same request
+is asked again once its answer is stale), `answer` (JSONB), `llm_call_id`
+(FK), `created_at`; indexed on `(employer_id, created_at)`. Plain inserts; the
+newest row is shown.
+
+### Unverified until the first clicks
+
+That `:online` searches with Exa at ~$0.02 a call, that its citations arrive
+in `annotations`, and that strict `json_schema` works with the web plugin.
+No committed eval file: it would hold recruiters' names.
+
+### Build steps
+
+1. **Make room** (built 2026-10-13, no behaviour change): the identify module
+   becomes `jobmatch/research.py`; one private `_call` sends, validates and
+   records any question, and `ask_employer` is a thin wrapper over it.
+2. **The search**: the recruiters section, the table, the pipeline function.
+3. **The block**: the route, the schema, the UI.

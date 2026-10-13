@@ -26,7 +26,7 @@ from decimal import Decimal
 
 import anyio
 
-from . import identify, matching, repository
+from . import matching, repository, research
 from .config import Settings, SourceConfig
 from .db import SessionLocal
 from .models import MAX_FETCH_ATTEMPTS, Employer, EmployerIdentity, LlmCall, Vacancy
@@ -496,7 +496,7 @@ async def _employer_id_from_page(source: Source, vacancy: Vacancy) -> str:
 
 async def identify_employer(vacancy_id: int, model: str) -> EmployerIdentity:
     """Who is behind a posting: the stored answer to this exact request, or a
-    paid one (`identify.ask`), its homepage checked and the answer saved.
+    paid one (`research.ask_employer`), its homepage checked and the answer saved.
 
     Needs the employer row `lookup_employer` writes -- its name and link are
     half of what the model is told -- and raises `NotLookedUp` without it. A repeat click with nothing changed is
@@ -512,11 +512,11 @@ async def identify_employer(vacancy_id: int, model: str) -> EmployerIdentity:
         if employer is None:
             raise NotLookedUp("the company has not been looked up yet; look it up first")
         poster = poster_of(employer, vacancy)
-        fingerprint = identify.fingerprint(poster, model)
+        fingerprint = research.fingerprint(research.employer_request(poster, model))
         if (stored := await repository.identity_by_fingerprint(session, fingerprint)) is not None:
             return stored
 
-    identity, call_id = await identify.ask(poster, model, vacancy_id=vacancy_id)
+    identity, call_id = await research.ask_employer(poster, model, vacancy_id=vacancy_id)
     # Paid for from here on: a cancelled request (a closed tab) must not lose
     # the answer, or the next click pays for it again. Shielded, and bounded by
     # the checks' own deadlines -- one after the other, two at most.
@@ -534,15 +534,15 @@ async def identify_employer(vacancy_id: int, model: str) -> EmployerIdentity:
 
 async def _answers(url: str | None) -> bool | None:
     """Whether a URL from the answer responds; None when there is no URL."""
-    return None if url is None else await identify.reachable(url)
+    return None if url is None else await research.reachable(url)
 
 
-def poster_of(employer: Employer, vacancy: Vacancy) -> identify.Poster:
+def poster_of(employer: Employer, vacancy: Vacancy) -> research.Poster:
     """What the model is told: the hh employer page, and the posting exactly as
     Jev reads it. Only `job_text` is shared -- Jev's request and fingerprint
     are untouched."""
     about = "; ".join(v for key in ("city", "industries") if (v := employer.raw.get(key)))
-    return identify.Poster(
+    return research.Poster(
         name=employer.name,
         site_url=employer.site_url,
         about=about or None,

@@ -1,17 +1,20 @@
-"""Who is behind a posting: one structured-output call, and a check on its link.
+"""Questions to a model, through OpenRouter, about a company; the only module
+that knows the OpenAI SDK.
 
-The only module that knows the OpenAI SDK, as `matching/jev.py` is the only one
-that knows TypeSafe's. One request through OpenRouter, no tools: the poster's
-hh facts and the posting go in, an `Identity` comes out -- the employer, its
-homepage and careers page, and whether the poster is a recruiting agency.
+As `matching/jev.py` is the only one that knows TypeSafe's. Each question is
+one structured-output request: a pydantic model is the one shape of its
+answer -- its JSON schema is sent as the response format, it validates what
+comes back, and its `model_dump()` is what the pipeline stores. Today there is
+one question, who is behind a posting: the poster's hh facts and the posting go
+in, an `Identity` comes out -- the employer, its homepage and careers page, and
+whether the poster is a recruiting agency.
 
-`Identity` is the one shape of the answer: its JSON schema is sent as the
-response format, it validates what comes back, and its `model_dump()` is what
-`employer_identities.answer` stores. Every call is written to `llm_calls` with
-the request and the body as received, whether it succeeded or not. The cache
-is the pipeline's (`pipeline.identify_employer`); this module always pays.
+Every call goes through `_call`, which writes it to `llm_calls` with the
+request and the body as received, whether it succeeded or not. The caches are
+the pipeline's (`pipeline.identify_employer`); this module always pays.
 
-Design and reasoning: `docs/company-research.md` §2.
+Design and reasoning: `docs/company-research.md` §2 (and §3 for the recruiters
+search).
 """
 from __future__ import annotations
 
@@ -52,8 +55,13 @@ HEADERS = {
     ),
 }
 
+# OpenRouter's own request fields, part of every request: the call's cost in
+# `usage`, and only providers that honour every parameter -- without that, one
+# that ignores `response_format` may answer in free text.
+OPENROUTER = {"usage": {"include": True}, "provider": {"require_parameters": True}}
 
-# --- the input and the answer ---------------------------------------------------
+
+# --- who is behind a posting ----------------------------------------------------
 
 @dataclass(frozen=True, slots=True)
 class Poster:
@@ -65,15 +73,17 @@ class Poster:
     posting: str            # the vacancy as Jev reads it (`matching.job_text`)
 
 
+# The docstring and every Field description are sent: pydantic puts them in the
+# schema, so they are written for the model, and editing one changes every
+# employer fingerprint (one cache miss per stored identity). Notes for people
+# go here instead:
+# every field is required and nothing extra is allowed, which OpenAI-style
+# `strict` structured output demands; pydantic already writes `X | None` as
+# `anyOf` with null and `extra="forbid"` as `additionalProperties: false`, so
+# the generated schema is sent unchanged (`tests/test_research.py` holds it to
+# that).
 class Identity(BaseModel):
-    """The answer. None means the model did not know, never "there is none".
-
-    Every field is required and nothing extra is allowed, which is what
-    OpenAI-style `strict` structured output demands of a schema; pydantic
-    already writes `X | None` as `anyOf` with null and `extra="forbid"` as
-    `additionalProperties: false`, so the generated schema is sent unchanged
-    (`tests/test_identify.py` holds it to that).
-    """
+    """Who is behind the posting. Null means unknown, never "there is none"."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -107,9 +117,7 @@ class Identity(BaseModel):
         return None
 
 
-SCHEMA = Identity.model_json_schema()
-
-SYSTEM = """\
+EMPLOYER_SYSTEM = """\
 You identify the organisation behind a job posting from hh.ru. Use only the
 facts given and what you already know about real companies. For anything you
 do not know, answer null: a null is useful, a guess is not.
@@ -125,7 +133,7 @@ do not know, answer null: a null is useful, a guess is not.
   "крупный банк" or "международная IT-компания"."""
 
 
-def user_prompt(poster: Poster) -> str:
+def employer_prompt(poster: Poster) -> str:
     return "\n".join([
         f"Name on hh.ru: {poster.name or 'unknown'}",
         f"Link on its hh.ru page: {poster.site_url or 'none'}",
@@ -137,56 +145,120 @@ def user_prompt(poster: Poster) -> str:
     ])
 
 
-# OpenRouter's own request fields, sent as the SDK's `extra_body`: the call's
-# cost in `usage`, and only providers that honour every parameter -- without
-# that, one that ignores `response_format` may answer in free text.
-OPENROUTER = {"usage": {"include": True}, "provider": {"require_parameters": True}}
-
-
-def request_body(poster: Poster, model: str) -> dict[str, Any]:
-    """The whole request, exactly as sent. Stored as `llm_calls.request`, and
+def employer_request(poster: Poster, model: str) -> dict[str, Any]:
+    """The whole request, exactly as sent: stored as `llm_calls.request`, and
     what `fingerprint` hashes."""
-    # "Exactly as sent" holds only while `_send` passes these fields on and the
-    # SDK adds none: `test_the_request_asks_for_strict_json_from_providers_that_
-    # honour_it` compares this dict with the body the mocked OpenRouter received.
     return {
         "model": model,
         "messages": [
-            {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": user_prompt(poster)},
+            {"role": "system", "content": EMPLOYER_SYSTEM},
+            {"role": "user", "content": employer_prompt(poster)},
         ],
         "response_format": {
             "type": "json_schema",
-            "json_schema": {"name": "employer_identity", "strict": True, "schema": SCHEMA},
+            "json_schema": {
+                "name": "employer_identity", "strict": True,
+                "schema": Identity.model_json_schema(),
+            },
         },
         **OPENROUTER,
     }
 
 
-def fingerprint(poster: Poster, model: str) -> str:
-    """sha256 of the whole request, by the rule in `docs/architecture.md` §4.
-
-    The system prompt, the user prompt (so every `Poster` field), the schema
-    with its descriptions and the model: editing any of them makes a different
-    request and so a different key, with no version constant to forget.
-    """
-    blob = json.dumps(
-        request_body(poster, model), sort_keys=True, ensure_ascii=False, separators=(",", ":")
-    )
-    return hashlib.sha256(blob.encode()).hexdigest()
-
-
-# --- the call ------------------------------------------------------------------
-
-async def ask(
+async def ask_employer(
     poster: Poster,
     model: str,
     *,
     vacancy_id: int,
     http_client: httpx2.AsyncClient | None = None,   # tests pass a mocked one
 ) -> tuple[Identity, int]:
-    """Ask once, validate, and record the call. Returns the answer and its
-    `llm_calls` id; on any failure the row is written, then the error raised.
+    """Who is behind a posting: the answer and its `llm_calls` id. On any
+    failure the call is recorded, then the error raised."""
+    identity, _, call_id = await _call(
+        employer_request(poster, model), Identity,
+        kind="employer", vacancy_id=vacancy_id, http_client=http_client,
+    )
+    return identity, call_id
+
+
+# --- checks on an answer ----------------------------------------------------------
+
+async def reachable(url: str, *, http_client: httpx2.AsyncClient | None = None) -> bool:
+    """Does `url` answer below 400, within `REACH_DEADLINE`, in at most
+    `MAX_REDIRECTS` hops, each of them public? Never raises.
+
+    A hallucinated homepage usually does not resolve; this is what keeps it
+    from being shown as a link. It does not check that the page is about the
+    employer: a Cyrillic name against a Latin site would fail real homepages.
+    """
+    try:
+        async with asyncio.timeout(REACH_DEADLINE):
+            async with http_client or httpx2.AsyncClient(
+                headers=HEADERS, follow_redirects=False
+            ) as client:
+                return await _answers(client, url)
+    except (TimeoutError, httpx2.HTTPError, ValueError):   # ValueError: a malformed URL
+        return False
+
+
+async def _answers(client: httpx2.AsyncClient, url: str) -> bool:
+    for _ in range(MAX_REDIRECTS + 1):
+        if not await _public(url):
+            return False
+        async with client.stream("GET", url) as resp:   # the body is never read
+            if resp.is_redirect and (location := resp.headers.get("location")):
+                url = urljoin(url, location)
+                continue
+            return resp.status_code < 400
+    return False                                        # too many redirects
+
+
+async def _public(url: str) -> bool:
+    """http(s), and every address the host resolves to is public.
+
+    The URL comes from a model's answer, and this machine answers on localhost
+    with CV-derived data (the API on :8000). The check resolves the name
+    itself, so a public hostname pointing at 127.0.0.1 is refused too. (The
+    HTTP client resolves again on connect; a rebinding DNS server could slip
+    between the two, which is beyond what a single-user tool needs to stop.)
+    """
+    parts = urlsplit(url)
+    host = parts.hostname
+    if parts.scheme not in ("http", "https") or not host:
+        return False
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError:
+        return False
+    return all(ipaddress.ip_address(info[4][0].split("%")[0]).is_global for info in infos)
+
+
+# --- the call ------------------------------------------------------------------
+
+def fingerprint(request: dict[str, Any]) -> str:
+    """sha256 of the whole request, by the rule in `docs/architecture.md` §4.
+
+    The prompts (so every input they are built from), the schema with its
+    descriptions, the model and OpenRouter's fields: editing any of them makes
+    a different request and so a different key, with no version constant to
+    forget.
+    """
+    blob = json.dumps(request, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+async def _call[T: BaseModel](
+    request: dict[str, Any],
+    answer: type[T],
+    *,
+    kind: str,
+    vacancy_id: int,
+    http_client: httpx2.AsyncClient | None = None,
+) -> tuple[T, dict[str, Any], int]:
+    """Send once, validate into `answer`, and record the call. Returns the
+    answer, the response body as received, and its `llm_calls` id; on any
+    failure the row is written, then the error raised.
 
     `create`, not the SDK's `parse`: the body is read and validated here, so
     when validation fails the body that was paid for is still in hand for the
@@ -198,14 +270,13 @@ async def ask(
     """
     key = os.environ.get(API_KEY_ENV)
     if not key:
-        raise ValueError(f"Set {API_KEY_ENV} in .env before identifying employers.")
+        raise ValueError(f"Set {API_KEY_ENV} in .env before asking a model about a company.")
 
-    request = request_body(poster, model)
     row = {
-        "kind": "employer",
+        "kind": kind,
         "vacancy_id": vacancy_id,
-        "inputs_fingerprint": fingerprint(poster, model),
-        "model_requested": model,
+        "inputs_fingerprint": fingerprint(request),
+        "model_requested": request["model"],
         "request": request,
         "started_at": dt.datetime.now(dt.UTC),
     }
@@ -213,19 +284,27 @@ async def ask(
     body: dict[str, Any] | None = None
     try:
         body = await _send(request, key, http_client)
-        identity = Identity.model_validate_json(_content(body))
+        parsed = answer.model_validate_json(_content(body))
     except BaseException as exc:
         with anyio.CancelScope(shield=True):
             await _record(row, clock, body, exc)
         raise
     with anyio.CancelScope(shield=True):
-        return identity, await _record(row, clock, body, None)
+        return parsed, body, await _record(row, clock, body, None)
 
 
 async def _send(
     request: dict[str, Any], key: str, http_client: httpx2.AsyncClient | None
 ) -> dict[str, Any]:
-    """One chat completion; the response body as received."""
+    """One chat completion; the response body as received.
+
+    Everything but `model` and `messages` goes as the SDK's `extra_body`, so
+    the request is sent exactly as stored, whatever fields it holds; the SDK
+    adds none. `test_the_request_asks_for_strict_json_from_providers_that_
+    honour_it` compares the stored request with the body OpenRouter received.
+    """
+    model, messages = request["model"], request["messages"]
+    rest = {k: v for k, v in request.items() if k not in ("model", "messages")}
     async with AsyncOpenAI(
         api_key=key,
         base_url=BASE_URL,
@@ -233,10 +312,7 @@ async def _send(
         http_client=http_client or _Deadline(),
     ) as client:
         raw = await client.chat.completions.with_raw_response.create(
-            model=request["model"],
-            messages=request["messages"],
-            response_format=request["response_format"],
-            extra_body=OPENROUTER,
+            model=model, messages=messages, extra_body=rest,
         )
     return raw.http_response.json()
 
@@ -302,56 +378,3 @@ class _Deadline(httpx2.AsyncClient):
             raise httpx2.ReadTimeout(
                 f"no answer within {MODEL_DEADLINE}s", request=request
             ) from None
-
-
-# --- does the homepage answer --------------------------------------------------
-
-async def reachable(url: str, *, http_client: httpx2.AsyncClient | None = None) -> bool:
-    """Does `url` answer below 400, within `REACH_DEADLINE`, in at most
-    `MAX_REDIRECTS` hops, each of them public? Never raises.
-
-    A hallucinated homepage usually does not resolve; this is what keeps it
-    from being shown as a link. It does not check that the page is about the
-    employer: a Cyrillic name against a Latin site would fail real homepages.
-    """
-    try:
-        async with asyncio.timeout(REACH_DEADLINE):
-            async with http_client or httpx2.AsyncClient(
-                headers=HEADERS, follow_redirects=False
-            ) as client:
-                return await _answers(client, url)
-    except (TimeoutError, httpx2.HTTPError, ValueError):   # ValueError: a malformed URL
-        return False
-
-
-async def _answers(client: httpx2.AsyncClient, url: str) -> bool:
-    for _ in range(MAX_REDIRECTS + 1):
-        if not await _public(url):
-            return False
-        async with client.stream("GET", url) as resp:   # the body is never read
-            if resp.is_redirect and (location := resp.headers.get("location")):
-                url = urljoin(url, location)
-                continue
-            return resp.status_code < 400
-    return False                                        # too many redirects
-
-
-async def _public(url: str) -> bool:
-    """http(s), and every address the host resolves to is public.
-
-    The URL comes from a model's answer, and this machine answers on localhost
-    with CV-derived data (the API on :8000). The check resolves the name
-    itself, so a public hostname pointing at 127.0.0.1 is refused too. (The
-    HTTP client resolves again on connect; a rebinding DNS server could slip
-    between the two, which is beyond what a single-user tool needs to stop.)
-    """
-    parts = urlsplit(url)
-    host = parts.hostname
-    if parts.scheme not in ("http", "https") or not host:
-        return False
-    port = parts.port or (443 if parts.scheme == "https" else 80)
-    try:
-        infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
-    except OSError:
-        return False
-    return all(ipaddress.ip_address(info[4][0].split("%")[0]).is_global for info in infos)

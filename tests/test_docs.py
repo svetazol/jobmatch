@@ -32,6 +32,15 @@ GONE = {
     "people.py": "the employer identity call (docs/company-research.md)",
     "PeopleSearch": "nothing yet; see docs/decisions.md, People search",
     "find_people": "nothing yet; see docs/decisions.md, People search",
+    # the employer identity call's module, renamed 2026-10-13 to make room for
+    # the recruiters search (docs/company-research.md §3)
+    "identify.py": "jobmatch/research.py",
+    "identify.ask": "research.ask_employer",
+    "identify.fingerprint": "research.fingerprint(research.employer_request(...))",
+    "identify.request_body": "research.employer_request",
+    "identify.reachable": "research.reachable",
+    "identify.Identity": "research.Identity",
+    "identify.Poster": "research.Poster",
 }
 
 # Prose that happens to contain a dead string for a legitimate reason: the

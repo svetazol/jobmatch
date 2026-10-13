@@ -9,7 +9,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ... import identify, pipeline, repository
+from ... import pipeline, repository, research
 from ...config import DEFAULT_PATH, load_settings
 from ...db import SessionLocal
 from ...models import Employer, EmployerIdentity
@@ -59,10 +59,10 @@ async def identify_company(vacancy_id: int) -> CompanyIdentity:
     means the company must be looked up first, 503 that there is no API key,
     502 that the call failed -- it is in `llm_calls` either way.
     """
-    # Checked here, not left to `identify.ask`, so a missing key reads as the
+    # Checked here, not left to `research.ask_employer`, so a missing key reads as the
     # server's setup (503) rather than the model failing (502).
-    if not os.environ.get(identify.API_KEY_ENV):
-        raise HTTPException(503, f"Set {identify.API_KEY_ENV} in .env to identify employers.")
+    if not os.environ.get(research.API_KEY_ENV):
+        raise HTTPException(503, f"Set {research.API_KEY_ENV} in .env to identify employers.")
     model = load_settings(DEFAULT_PATH).research_model
     try:
         row = await pipeline.identify_employer(vacancy_id, model)

@@ -202,7 +202,7 @@ class Employer(Base):
 
 class EmployerIdentity(Base):
     """Who is behind a posting, as one model call answered it
-    (`identify.ask`, `pipeline.identify_employer`).
+    (`research.ask_employer`, `pipeline.identify_employer`).
 
     Per posting, not a column on `employers`: the posting is part of the
     request -- it is what reveals an agency and its client -- so the answer
@@ -217,15 +217,15 @@ class EmployerIdentity(Base):
     vacancy_id: Mapped[int] = mapped_column(
         ForeignKey("vacancies.id", ondelete="CASCADE"), index=True
     )
-    # The cache key: sha256 of the whole request (`identify.fingerprint`).
+    # The cache key: sha256 of the whole request (`research.fingerprint`).
     # Unique, unlike match_results' (vacancy_id, fingerprint): the posting is
     # inside the request, so one fingerprint cannot belong to two vacancies
     # unless their text, company and link are identical -- and then so is the
     # answer.
     inputs_fingerprint: Mapped[str] = mapped_column(String(64), unique=True)
-    # `identify.Identity.model_dump()`, whole; nothing filters on its fields
+    # `research.Identity.model_dump()`, whole; nothing filters on its fields
     answer: Mapped[dict[str, Any]] = mapped_column(JSONB)
-    # did the answer's homepage and careers page respond (`identify.reachable`);
+    # did the answer's homepage and careers page respond (`research.reachable`);
     # NULL when the answer has none. Checked once, when the answer is stored:
     # the UI links only a URL that answered.
     homepage_ok: Mapped[bool | None] = mapped_column(Boolean)

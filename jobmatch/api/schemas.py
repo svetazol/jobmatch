@@ -161,7 +161,7 @@ class CoverNote(BaseModel):
 
 class CompanyIdentity(BaseModel):
     """Who is behind the posting, as a model answered it: the stored answer
-    (`identify.Identity`, None = the model did not know), whether each link
+    (`research.Identity`, None = the model did not know), whether each link
     answered, and which `llm_calls` row paid for it.
 
     `model` is the model that actually answered when OpenRouter says so, else
