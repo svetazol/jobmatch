@@ -78,10 +78,23 @@ async def identify_company(vacancy_id: int) -> CompanyIdentity:
 
 
 async def _company(session: AsyncSession, employer: Employer, vacancy_id: int) -> Company:
-    """The employer, with the newest identity asked for this vacancy."""
+    """The employer, with the newest identity asked for this vacancy.
+
+    Written out field by field: three of them live in `raw`, which
+    `model_validate` cannot see into.
+    """
     row = await repository.latest_identity(session, vacancy_id)
-    identity = None if row is None else await _identity(session, row)
-    return Company.model_validate(employer).model_copy(update={"identity": identity})
+    raw = employer.raw or {}
+    return Company(
+        name=employer.name,
+        url=employer.url,
+        site_url=employer.site_url,
+        city=raw.get("city"),
+        category=raw.get("category"),
+        industries=raw.get("industries"),
+        looked_up_at=employer.looked_up_at,
+        identity=None if row is None else await _identity(session, row),
+    )
 
 
 async def _identity(session: AsyncSession, row: EmployerIdentity) -> CompanyIdentity:

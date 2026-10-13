@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Sequence
-from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, func, or_, select, text, update
@@ -495,13 +494,6 @@ async def get_vacancy(session: AsyncSession, vacancy_id: int) -> tuple[Vacancy, 
         .where(Vacancy.id == vacancy_id)
     )).first()
     return (row[0], row[1]) if row else None
-
-
-async def call_cost(session: AsyncSession, match: MatchResult | None) -> Decimal | None:
-    """What the current match cost. Lives on llm_calls, not match_results."""
-    if match is None:
-        return None
-    return await session.scalar(select(LlmCall.cost_usd).where(LlmCall.id == match.llm_call_id))
 
 
 async def set_triage(session: AsyncSession, vacancy_id: int, field: str, on: bool) -> bool:

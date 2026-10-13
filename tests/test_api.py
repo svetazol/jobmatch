@@ -182,7 +182,8 @@ async def test_detail_carries_the_whole_answers_blob(client, rows):
     # the legend travels with it, so the client never hardcodes questions.py
     assert body["answers"]["overall_fit"]["legend"]["3"]["label"] == "strong"
     assert body["match"]["top_gap_confidence"] == 0.17
-    assert body["cost_usd"] is not None
+    assert "cost_usd" not in body
+    assert body["last_seen_at"] is not None
 
 
 async def test_detail_404(client):

@@ -72,6 +72,17 @@ export const LOW_CONFIDENCE = 0.5
 export const isVague = (confidence: number | null | undefined) =>
   confidence !== null && confidence !== undefined && confidence < LOW_CONFIDENCE
 
+/**
+ * Bands around noul's .50 threshold. Borderline is within .15 of it, where
+ * `is_qualified` is a coin flip either side of the line: 35% of good-or-better
+ * fits fall there (counted 2026-10-13), so "Met" alone would oversell a third
+ * of the matches worth reading.
+ */
+export const REQ_MEETS = 0.65
+export const REQ_MISSES = 0.35
+export const requirementsBand = (noul: number): 'meets' | 'borderline' | 'misses' =>
+  noul >= REQ_MEETS ? 'meets' : noul < REQ_MISSES ? 'misses' : 'borderline'
+
 /** Probabilities of a Choice answer, sorted high to low, ready to render. */
 export function distribution(
   probs: Record<string, number>,
@@ -81,3 +92,7 @@ export function distribution(
     .map(([key, p]) => ({ key, label: label(key), p }))
     .sort((a, b) => b.p - a.p)
 }
+
+/** The two leading answers: what an unsure verdict names instead of one winner. */
+export const topTwo = (probs: Record<string, number>, label: (key: string) => string) =>
+  distribution(probs, label).slice(0, 2)

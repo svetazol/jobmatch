@@ -167,10 +167,10 @@ async def get_vacancy(vacancy_id: int, session: SessionDep) -> VacancyDetail:
         description=vacancy.description,
         skills=list(vacancy.skills),
         fetched_at=vacancy.fetched_at,
+        last_seen_at=vacancy.last_seen_at,
         # the complete record, so the client reads level descriptions from the
         # stored legend rather than hardcoding questions.py
         answers=match.answers if match else None,
-        cost_usd=await repository.call_cost(session, match),
     )
 
 

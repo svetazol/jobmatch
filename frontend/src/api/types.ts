@@ -55,8 +55,9 @@ export interface VacancyDetail extends VacancyRow {
   description: string | null
   skills: string[]
   fetched_at: string | null
+  /** When discovery last saw it in search; `stale` is measured from it. */
+  last_seen_at: string
   answers: Answers | null
-  cost_usd: string | null
 }
 
 /** The `answers` JSONB, verbatim. The legend travels with it, so the UI never
@@ -89,6 +90,10 @@ export interface Company {
   name: string | null
   url: string
   site_url: string | null
+  /** Verbatim from the hh page, in its language; null when the page omits it. */
+  city: string | null
+  category: string | null
+  industries: string | null
   looked_up_at: string
   /** The newest answer for this posting; null until identified. */
   identity: CompanyIdentity | null

@@ -141,6 +141,33 @@ async def test_a_repeat_lookup_refreshes_the_one_row(client, vacancy, source):
     assert [e.name for e in rows] == ["Okko Renamed"]
 
 
+async def test_the_page_facts_in_raw_are_served_verbatim(client, vacancy, source):
+    """`_company` reads them out of `raw` by hand; `model_validate` would not."""
+    await _set_employer_id(vacancy, "77")
+    facts = {"city": "Санкт-Петербург", "category": "Прямой работодатель",
+             "industries": "Информационные технологии, Медиа"}
+    source(fetch_employer=lambda eid: EmployerData(
+        external_id=eid, url=f"https://example.invalid/employer/{eid}",
+        name="Okko", site_url=None, raw=facts,
+    ))
+    await client.post(f"/api/vacancies/{vacancy}/company")
+
+    body = (await client.get(f"/api/vacancies/{vacancy}/company")).json()
+
+    assert {k: body[k] for k in facts} == facts
+
+
+async def test_a_fact_the_page_did_not_show_is_null(client, vacancy, source):
+    await _set_employer_id(vacancy, "77")
+    source(fetch_employer=lambda eid: employer(eid))   # raw holds the city alone
+    await client.post(f"/api/vacancies/{vacancy}/company")
+
+    body = (await client.get(f"/api/vacancies/{vacancy}/company")).json()
+
+    assert body["city"] == "Санкт-Петербург"
+    assert body["category"] is None and body["industries"] is None
+
+
 async def test_an_old_row_gets_its_employer_id_and_nothing_else(client, vacancy, source):
     """The page has changed since it was fetched; the click must not notice."""
     calls = source(fetch=lambda url: page("77", description="EDITED by the employer"),

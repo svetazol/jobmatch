@@ -155,7 +155,8 @@ export function mockDetail(id: number): VacancyDetail {
       : ['Python', 'PostgreSQL', 'SQL', 'Linux'],
     fetched_at: '2026-09-24T09:12:00Z',
     answers: is40 ? ANSWERS_40 : ANSWERS_40,
-    cost_usd: '0.000314',
+    // vacancy 40's, read on 2026-10-13
+    last_seen_at: '2026-10-09T11:32:42Z',
   }
 }
 
@@ -169,6 +170,10 @@ export function mockCompany(): Company {
     name: 'Okko',
     url: 'https://hh.ru/employer/1375441',
     site_url: 'http://okko.tv/',
+    // its `employers.raw`, read on 2026-10-13
+    city: 'Санкт-Петербург',
+    category: 'Организация',
+    industries: 'Информационные технологии, системная интеграция, интернет, СМИ, маркетинг, реклама, BTL, PR, дизайн, продюсирование',
     looked_up_at: new Date().toISOString(),
     identity: null,
   }

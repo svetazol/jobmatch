@@ -38,7 +38,7 @@ shape creates.
 |---|---|
 | `GET /api/stats?since=30d` | `Stats` — headline figures, fit distribution, per-pitch breakdown |
 | `GET /api/vacancies?…` | `VacancyPage` — ranked slice, keyset cursor on `(overall_fit_score, id)` |
-| `GET /api/vacancies/:id` | `VacancyDetail` — the row plus `description`, `skills` and the whole `answers` JSONB |
+| `GET /api/vacancies/:id` | `VacancyDetail` — the row plus `description`, `skills`, `last_seen_at` and the whole `answers` JSONB |
 | `PATCH /api/vacancies/:id/triage` | `{seen\|starred\|hidden: boolean}` — sets or clears the timestamp |
 
 The list endpoint projects `fit_probabilities` (the five stored floats) onto

@@ -8,7 +8,6 @@ nothing to translate on the client side.
 from __future__ import annotations
 
 import datetime as dt
-from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
@@ -69,8 +68,10 @@ class VacancyDetail(VacancyRow):
     description: str | None
     skills: list[str]
     fetched_at: dt.datetime | None
+    # when discovery last saw it in search: what `stale` is measured from, so
+    # the UI can say since when, not only that
+    last_seen_at: dt.datetime
     answers: dict[str, Any] | None
-    cost_usd: Decimal | None
 
 
 class VacancyPage(BaseModel):
@@ -186,13 +187,17 @@ class Company(BaseModel):
 
     `url` is the employer's page on the source; `site_url` is whatever the
     employer links from it, often a careers site rather than the homepage.
-    `identity` is the newest answer for this vacancy, if one was asked for.
+    `city`, `category` and `industries` are the page's own text, verbatim
+    from `employer.raw` (`industries` one comma-separated string, as hh
+    prints it). `identity` is the newest answer for this vacancy, if one was
+    asked for.
     """
-
-    model_config = ConfigDict(from_attributes=True)
 
     name: str | None
     url: str
     site_url: str | None
+    city: str | None
+    category: str | None
+    industries: str | None
     looked_up_at: dt.datetime
     identity: CompanyIdentity | None = None
