@@ -64,6 +64,7 @@ uv run pytest tests/test_docs.py           # doc accuracy; no DB needed
 uv run jobmatch run [--only bg] [--no-match] [--limit N]
 uv run jobmatch discover | fetch --pending | match [--dry-run] | cv-hash
 uv run jobmatch trace [ID] [--kind K] [--last N]  # the LLM ledger; free, read-only
+uv run jobmatch identify --vacancy N          # who is behind a posting; pays ~$0.0002
 uv run python -m jobmatch.sources.hh russia   # what a country expands to
 
 uv run uvicorn jobmatch.api.app:app --reload  # API on :8000
@@ -71,8 +72,8 @@ cd frontend && npm run dev                    # UI on :5173, proxies /api
 cd frontend && npm run typecheck
 ```
 
-**`jobmatch match` and `jobmatch run` without `--no-match` spend real money.**
-Don't run them unless asked. Use `match --dry-run --limit N` to preview (it
+**`jobmatch match`, `jobmatch run` without `--no-match`, and `jobmatch
+identify` spend real money.** Don't run them unless asked. Use `match --dry-run --limit N` to preview (it
 still pays, but writes nothing). `discover` and `fetch` are free but hit
 hh.ru, so keep them small (`--limit`).
 
@@ -82,6 +83,7 @@ hh.ru, so keep them small (`--limit`).
 jobmatch/
   sources/     the web: one module per site; hh/ is the only one
   matching/    the LLM: questions, CV sanitising, fingerprint; jev.py alone knows the SDK
+  identify.py  who is behind a posting: one structured-output call; alone knows the OpenAI SDK
   models.py    the schema (SQLAlchemy 2.0)
   repository.py  flat module of named queries, keeps SQL out of pipeline.py
   pipeline.py  the only module allowed to know all three areas above

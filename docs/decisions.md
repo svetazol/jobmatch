@@ -42,8 +42,8 @@ one, check the measurement still holds first.
 ## People search
 
 The first attempt — a LangChain agent searching DuckDuckGo for people at a
-company — was built, run live 2026-10-07/08, and dropped. Its code is on the
-branch `people-langchain`. What it established, still true unless re-measured:
+company — was built, run live 2026-10-07/08, and dropped; its code was deleted
+on 2026-10-12. What it established, still true unless re-measured:
 
 | Rejected | Why |
 |---|---|

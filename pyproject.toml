@@ -8,6 +8,7 @@ dependencies = [
     "fastapi>=0.141.1",
     "httpx2>=2.13.0",
     "lxml>=6.1.3",
+    "openai>=3.29.0",
     "psycopg[binary]>=3.3.6",
     "python-dotenv",
     "sqlalchemy[asyncio]>=2.0.54",

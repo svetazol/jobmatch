@@ -28,7 +28,7 @@ GONE = {
     "load_settings(path).sources[0].params": "…search",
     "regions_of(": "areas.coverage()",
     "how-it-works.md": "docs/pipeline.md",
-    # the LangChain people search, parked on branch people-langchain
+    # the LangChain people search, dropped 2026-10-12 (docs/decisions.md)
     "people.py": "the employer identity call (docs/company-research.md)",
     "PeopleSearch": "nothing yet; see docs/decisions.md, People search",
     "find_people": "nothing yet; see docs/decisions.md, People search",

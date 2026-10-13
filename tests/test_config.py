@@ -125,6 +125,7 @@ def test_the_checked_in_config_loads_and_holds_only_choices():
     assert {s for _, s, _ in settings.crawls()} == {"bg", "ru"}
     assert (settings.crawl, settings.fetch_workers, settings.fetch_delay) == (None, None, None)
     assert settings.model and settings.cv_path and settings.stats_cv_hash
+    assert settings.research_model == "google/gemini-2.5-flash-lite"
 
 
 def test_the_checked_in_config_expands_to_the_queries_it_used_to_list():

@@ -200,6 +200,44 @@ class Employer(Base):
         return f"<Employer {self.source}:{self.external_id} {self.name!r}>"
 
 
+class EmployerIdentity(Base):
+    """Who is behind a posting, as one model call answered it
+    (`identify.ask`, `pipeline.identify_employer`).
+
+    Per posting, not a column on `employers`: the posting is part of the
+    request -- it is what reveals an agency and its client -- so the answer
+    belongs to the request, and one per company would need a rule for which
+    posting's answer wins. The price is one more cheap call per further posting
+    of the same company. Append-only; the newest row for a vacancy is shown.
+    """
+
+    __tablename__ = "employer_identities"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    vacancy_id: Mapped[int] = mapped_column(
+        ForeignKey("vacancies.id", ondelete="CASCADE"), index=True
+    )
+    # The cache key: sha256 of the whole request (`identify.fingerprint`).
+    # Unique, unlike match_results' (vacancy_id, fingerprint): the posting is
+    # inside the request, so one fingerprint cannot belong to two vacancies
+    # unless their text, company and link are identical -- and then so is the
+    # answer.
+    inputs_fingerprint: Mapped[str] = mapped_column(String(64), unique=True)
+    # `identify.Identity.model_dump()`, whole; nothing filters on its fields
+    answer: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    # did the answer's homepage and careers page respond (`identify.reachable`);
+    # NULL when the answer has none. Checked once, when the answer is stored:
+    # the UI links only a URL that answered.
+    homepage_ok: Mapped[bool | None] = mapped_column(Boolean)
+    careers_ok: Mapped[bool | None] = mapped_column(Boolean)
+    llm_call_id: Mapped[int] = mapped_column(ForeignKey("llm_calls.id"))
+
+    created_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
+
+    def __repr__(self) -> str:
+        return f"<EmployerIdentity v{self.vacancy_id} {self.answer.get('employer')!r}>"
+
+
 class MatchResult(Base):
     """One row per *paid* Jev call that produced a usable answer.
 

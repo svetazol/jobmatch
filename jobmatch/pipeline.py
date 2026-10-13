@@ -7,8 +7,10 @@ run. Nothing here remembers where it got to, because every guard is
 state-based — the next run resumes by looking at the rows, not at a cursor.
 
 Two operations here are not phases of a run but answers to a click:
-`lookup_employer` (and, later, the people search). They live here for the same
-reason the phases do -- they need a source and the database at once.
+`lookup_employer`, which reads the employer's hh page, and `identify_employer`,
+which asks a model who is behind the posting (and, later, the people search).
+They live here for the same reason the phases do -- they need a source or a
+model and the database at once.
 
 Async throughout, on one event loop: the overlap that matters — pages in
 flight, Jev calls in flight — is waiting, and coroutines wait for free.
@@ -22,10 +24,12 @@ from contextlib import aclosing
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from . import matching, repository
+import anyio
+
+from . import identify, matching, repository
 from .config import Settings, SourceConfig
 from .db import SessionLocal
-from .models import MAX_FETCH_ATTEMPTS, Employer, LlmCall, Vacancy
+from .models import MAX_FETCH_ATTEMPTS, Employer, EmployerIdentity, LlmCall, Vacancy
 from .sources import (
     SOURCES, EmployerGone, Listing, Rate, Source, VacancyGone, source_for_url,
 )
@@ -436,6 +440,13 @@ class EmployerUnknown(LookupError):
     """
 
 
+class NotLookedUp(LookupError):
+    """The vacancy's company has not been looked up, so there is nothing to
+    tell a model about it yet. Not a dead end: `lookup_employer` first, then
+    ask again. The API answers 409.
+    """
+
+
 async def lookup_employer(vacancy_id: int) -> Employer:
     """Fetch the employer page behind a vacancy and store what it says.
 
@@ -481,3 +492,59 @@ async def _employer_id_from_page(source: Source, vacancy: Vacancy) -> str:
     async with SessionLocal.begin() as session:
         await repository.set_employer_external_id(session, vacancy.id, data.employer_id)
     return data.employer_id
+
+
+async def identify_employer(vacancy_id: int, model: str) -> EmployerIdentity:
+    """Who is behind a posting: the stored answer to this exact request, or a
+    paid one (`identify.ask`), its homepage checked and the answer saved.
+
+    Needs the employer row `lookup_employer` writes -- its name and link are
+    half of what the model is told -- and raises `NotLookedUp` without it. A repeat click with nothing changed is
+    free; an edited posting, a re-looked-up employer page or another model is
+    a new request and pays. As in `_fetch`, no session is held across a
+    network call. Failures of the call propagate, already in `llm_calls`.
+    """
+    async with SessionLocal() as session:
+        vacancy = await session.get(Vacancy, vacancy_id)
+        if vacancy is None:
+            raise EmployerUnknown(f"no vacancy {vacancy_id}")
+        employer = await repository.employer_of(session, vacancy_id)
+        if employer is None:
+            raise NotLookedUp("the company has not been looked up yet; look it up first")
+        poster = poster_of(employer, vacancy)
+        fingerprint = identify.fingerprint(poster, model)
+        if (stored := await repository.identity_by_fingerprint(session, fingerprint)) is not None:
+            return stored
+
+    identity, call_id = await identify.ask(poster, model, vacancy_id=vacancy_id)
+    # Paid for from here on: a cancelled request (a closed tab) must not lose
+    # the answer, or the next click pays for it again. Shielded, and bounded by
+    # the checks' own deadlines -- one after the other, two at most.
+    with anyio.CancelScope(shield=True):
+        homepage_ok = await _answers(identity.homepage)
+        careers_ok = await _answers(identity.careers_page)
+        async with SessionLocal.begin() as session:
+            row = await repository.save_identity(
+                session, vacancy_id, fingerprint, identity.model_dump(),
+                homepage_ok, careers_ok, call_id,
+            )
+    log.info("identified the employer of vacancy %d: %s", vacancy_id, identity.employer)
+    return row
+
+
+async def _answers(url: str | None) -> bool | None:
+    """Whether a URL from the answer responds; None when there is no URL."""
+    return None if url is None else await identify.reachable(url)
+
+
+def poster_of(employer: Employer, vacancy: Vacancy) -> identify.Poster:
+    """What the model is told: the hh employer page, and the posting exactly as
+    Jev reads it. Only `job_text` is shared -- Jev's request and fingerprint
+    are untouched."""
+    about = "; ".join(v for key in ("city", "industries") if (v := employer.raw.get(key)))
+    return identify.Poster(
+        name=employer.name,
+        site_url=employer.site_url,
+        about=about or None,
+        posting=matching.job_text(vacancy),
+    )

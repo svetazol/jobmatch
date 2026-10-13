@@ -45,6 +45,8 @@ class Settings:
     fetch_workers: int | None = None
     crawl: Crawl | None = None
     model: str = "jev-1.13"          # pinned; part of the match fingerprint
+    # pinned like `model`; part of the employer-identity fingerprint
+    research_model: str = "google/gemini-2.5-flash-lite"
     cv_path: Path = Path("data/cv.md")
     # A hash, not a path: answers are stored under the hash of the CV that
     # earned them, which survives the file being edited or renamed. Empty means
@@ -113,6 +115,7 @@ def load_settings(path: Path | str = DEFAULT_PATH) -> Settings:
             delay=float(crawl.get("delay", 2.5)),
         ),
         model=str(raw.get("model", "jev-1.13")),
+        research_model=str(raw.get("research_model", "google/gemini-2.5-flash-lite")),
         cv_path=Path(raw.get("cv_path", "data/cv.md")),
         stats_cv_hash=str(raw.get("stats_cv_hash", "")).strip(),
     )

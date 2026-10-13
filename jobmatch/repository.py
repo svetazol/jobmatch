@@ -17,7 +17,9 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .db import SessionLocal
-from .models import MAX_FETCH_ATTEMPTS, Employer, LlmCall, MatchResult, Vacancy
+from .models import (
+    MAX_FETCH_ATTEMPTS, Employer, EmployerIdentity, LlmCall, MatchResult, Vacancy,
+)
 from .sources import EmployerData, Listing, VacancyData
 
 if TYPE_CHECKING:
@@ -158,6 +160,52 @@ async def employer_of(session: AsyncSession, vacancy_id: int) -> Employer | None
         .where(Vacancy.id == vacancy_id)
     )
 
+
+
+async def identity_by_fingerprint(session: AsyncSession, fingerprint: str) -> EmployerIdentity | None:
+    """The stored answer to exactly this request, if one exists: the cache."""
+    return await session.scalar(
+        select(EmployerIdentity).where(EmployerIdentity.inputs_fingerprint == fingerprint)
+    )
+
+
+async def latest_identity(session: AsyncSession, vacancy_id: int) -> EmployerIdentity | None:
+    """The newest answer for a vacancy -- the one shown. `id` breaks a tie."""
+    return await session.scalar(
+        select(EmployerIdentity)
+        .where(EmployerIdentity.vacancy_id == vacancy_id)
+        .order_by(EmployerIdentity.created_at.desc(), EmployerIdentity.id.desc())
+        .limit(1)
+    )
+
+
+async def save_identity(
+    session: AsyncSession,
+    vacancy_id: int,
+    fingerprint: str,
+    answer: dict[str, Any],
+    homepage_ok: bool | None,
+    careers_ok: bool | None,
+    llm_call_id: int,
+) -> EmployerIdentity:
+    """Store an answer; if two clicks paid for the same request at once, the
+    first row stays and both callers get it. The second call is still in
+    `llm_calls`, which is where a spend belongs."""
+    await session.execute(
+        insert(EmployerIdentity)
+        .values(
+            vacancy_id=vacancy_id,
+            inputs_fingerprint=fingerprint,
+            answer=answer,
+            homepage_ok=homepage_ok,
+            careers_ok=careers_ok,
+            llm_call_id=llm_call_id,
+        )
+        .on_conflict_do_nothing(index_elements=[EmployerIdentity.inputs_fingerprint])
+    )
+    return (await session.scalars(
+        select(EmployerIdentity).where(EmployerIdentity.inputs_fingerprint == fingerprint)
+    )).one()
 
 async def matchable_vacancy_ids(
     session: AsyncSession, sources: Sequence[str], country: str | None = None

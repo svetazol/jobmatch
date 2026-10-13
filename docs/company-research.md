@@ -7,15 +7,15 @@ the AI parts are built as small, measured steps:
 | | Step | AI | Status |
 |---|---|---|---|
 | 0 | **Company lookup** — the employer's hh page: name, the link it publishes, city, industries | none | built 2026-10-07 |
-| 1 | **Employer identity** — the real employer behind a posting, its homepage and careers page, whether the poster is an agency | one structured-output call, no tools | designed 2026-10-12 (§2) |
+| 1 | **Employer identity** — who posted the vacancy (the agency itself, for an agency posting), its homepage and careers page, and, for an agency, the client it hires for if the posting names it | one structured-output call, no tools | the call built 2026-10-12; eval and card to come (§2) |
 | 2 | **People at the company** — code runs 2–3 searches (Tavily), one call extracts people from the results, each with its source and a same-company verdict | structured output over tool results | not designed |
 | 3 | **An agent that picks its own searches** — only if step 2's eval scores show misses, and judged on the same eval set | a tool-using agent | not designed |
 
 Each step is traced (every call's request and response in the database) and
 scored on a small labelled eval set before it is trusted. A first attempt at
 steps 2–3 as one free-roaming LangChain agent was built and dropped;
-`docs/decisions.md` ("People search") has what it established, and the code is
-on the branch `people-langchain`.
+`docs/decisions.md` ("People search") has what it established; its code was
+deleted on 2026-10-12, after the parts worth keeping moved into identify.py.
 
 ---
 
@@ -99,9 +99,11 @@ approved by the user with the architect's changes folded in.
   the employer row, `about` from its city and industries, `posting` =
   `matching.job_text(vacancy)` as is — Jev's questions and fingerprint are not
   touched) and `identify_employer(vacancy_id, model)`: load the vacancy and
-  its employer (none → `EmployerUnknown`); fingerprint; a stored identity
-  with that fingerprint → return it; else `identify.ask`, `reachable` on the
-  homepage, save. No session held across a network call.
+  its employer (none → `NotLookedUp`, the API's 409); fingerprint; a stored
+  identity with that fingerprint → return it; else `identify.ask`, then
+  `reachable` on the homepage and careers page and the save, shielded from
+  cancellation so a paid answer is kept. No session held across a network
+  call.
 - `jobmatch/repository.py` — `record_call(**values)`, moved out of
   `jev._record_call` so both callers share one ledger writer (own session, so
   the row survives the caller's rollback); `identity_by_fingerprint`,
@@ -123,7 +125,8 @@ approved by the user with the architect's changes folded in.
 
 - **`employer_identities`**: `id`, `vacancy_id` (FK), `inputs_fingerprint`
   (unique — the cache key), `answer` (JSONB, `Identity.model_dump()`),
-  `homepage_ok` (NULL without a homepage), `llm_call_id` (FK), `created_at`.
+  `homepage_ok` and `careers_ok` (did each URL answer; NULL without one, and
+  only a URL that answered is linked), `llm_call_id` (FK), `created_at`.
   Append-only; the newest row for a vacancy is shown. **Per posting, not on
   `employers`**: the posting is part of the request (it is what reveals an
   agency and its client), so the answer belongs to the request, and storing it
@@ -174,12 +177,12 @@ The paid eval run is a CLI command, never pytest. API tests with
 ### Build steps
 
 0. **Clear the bench** (done 2026-10-12): the sort work committed on its own;
-   the LangChain attempt parked on `people-langchain`, its migration rolled
-   back; the agents and `CLAUDE.md` committed.
+   the LangChain attempt removed and its migration rolled back; the agents
+   and `CLAUDE.md` committed.
 1. **The ledger**: `kind`, `request`, `response`, the migration,
    `repository.record_call`, `jobmatch trace`; `docs/architecture.md` §3.3.
-2. **The call**: identify.py, `employer_identities`, the pipeline and
-   repository functions, `jobmatch identify --vacancy N`.
+2. **The call** (built 2026-10-12): identify.py, `employer_identities`, the
+   pipeline and repository functions, `jobmatch identify --vacancy N`.
 3. **The eval**: evals.py, `jobmatch eval employers`, the labels pre-filled
    for the user to correct; then gemini-2.5-flash-lite against
    mistral-small-2603, and `research_model` set from the scores.

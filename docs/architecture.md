@@ -21,6 +21,11 @@ Three leaf areas that know nothing about each other — `sources/` (the web),
 `pipeline.py`, allowed to know all three. `cli.py` and later `api/` are both
 thin callers of that same core.
 
+`identify.py` is a second LLM leaf beside `matching/`, not a part of it: one
+structured-output call through the OpenAI SDK, which it alone imports, as
+`matching/jev.py` alone imports Jev's. It asks who is behind a posting
+(`docs/company-research.md` §2); `pipeline.identify_employer` is its caller.
+
 No `src/` layout (buys import hygiene that matters for distributed libraries,
 not for one app) and no `core/` subpackage (a path segment, nothing more).
 `api/` lives inside the same package because `initial_task.md` rules out a second
@@ -64,7 +69,8 @@ string to code, and with 1–4 sources an import line is the whole mechanism.
 
 Three tables for the pipeline: what was scraped, what the AI concluded, and
 what each AI call cost. A fourth, `employers`, holds only the companies someone
-looked up from the UI (§3.5). Single user kills `users`, `user_vacancy_state`,
+looked up from the UI (§3.5), and a fifth, `employer_identities`, what a model
+said about who is behind a posting (§3.6). Single user kills `users`, `user_vacancy_state`,
 roles. Also deliberately absent: a `sources` table (sources are config), a
 `crawl_log` of discovery runs (nothing reads it), a `skills` table (nothing
 joins on it).
@@ -75,6 +81,8 @@ erDiagram
     VACANCIES ||--o{ LLM_CALLS : "was asked about"
     VACANCIES ||--o{ MATCH_RESULTS : "has"
     LLM_CALLS ||--o| MATCH_RESULTS : "produced"
+    VACANCIES ||--o{ EMPLOYER_IDENTITIES : "who posted it"
+    LLM_CALLS ||--o| EMPLOYER_IDENTITIES : "produced"
 
     VACANCIES {
         bigint id PK
@@ -151,6 +159,17 @@ erDiagram
         timestamptz started_at
         timestamptz finished_at
     }
+
+    EMPLOYER_IDENTITIES {
+        bigint id PK
+        bigint vacancy_id FK "per posting, not per employer"
+        char64 inputs_fingerprint UK "the cache key"
+        jsonb answer "Identity.model_dump()"
+        boolean homepage_ok "NULL without a homepage"
+        boolean careers_ok "NULL without a careers page"
+        bigint llm_call_id FK "the call that produced it"
+        timestamptz created_at "newest is shown"
+    }
 ```
 
 ### 3.1 `vacancies`
@@ -180,8 +199,8 @@ blew up — lives in `llm_calls`.
 
 ### 3.3 `llm_calls`
 
-One row per LLM call **attempted** — including the ones that failed; today
-every caller is a Jev match. This is the operational ledger: what was asked, what it cost, how long
+One row per LLM call **attempted** — including the ones that failed: a Jev
+match (`match`) or an employer identity (`employer`). This is the operational ledger: what was asked, what it cost, how long
 it took, and what went wrong.
 
 `kind` says which caller paid, with no default so a new caller must name
@@ -267,6 +286,19 @@ and nothing deletes rows for an FK to protect. A "look up company" click
 second click refreshes it. Columns and the reason for each:
 `jobmatch/models.py`. The design, and what comes next on top of it:
 `docs/company-research.md`.
+
+### 3.6 `employer_identities`
+
+What one structured-output call (`jobmatch/identify.py`) answered about who is
+behind a posting: who posted it (the agency, for an agency posting), its
+homepage and careers page with whether each answered, and an agency's client
+when the posting names it. Append-only, one row per distinct request;
+the newest for a vacancy is the one shown. `inputs_fingerprint` is unique and
+is the cache, by the rule in §4: the request holds the hh facts, the posting,
+the prompts, the schema and the model, so a repeat click with nothing changed
+is free. Per posting rather than on `employers`, because the posting is part
+of the request. Columns and the reason for each: `jobmatch/models.py`; the
+design: `docs/company-research.md` §2.
 
 ---
 
@@ -401,9 +433,10 @@ transaction, so one bad page or one failed API call costs a warning
 rather than the run — and nothing records progress, because every guard
 is a condition on the rows.
 
-`pipeline.py` also answers one click: `lookup_employer`. It is not a phase
-and no run calls it; it lives there because it needs a source and the
-database at once, which is what that module is for.
+`pipeline.py` also answers two clicks: `lookup_employer` and
+`identify_employer`. They are not phases and no run calls them; they live
+there because each needs a source or a model and the database at once, which
+is what that module is for.
 
 ## 8. Matcher integration
 

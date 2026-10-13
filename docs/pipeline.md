@@ -187,6 +187,12 @@ and sets `delisted_at`, as in the fetch phase.
 | look a company up | every vacancy column but `employer_external_id` is untouched |
 | look it up again | still one `employers` row, refreshed |
 
+After a lookup, `pipeline.identify_employer` asks a model who is behind the
+posting (`jobmatch identify --vacancy N`, which looks the company up first if
+nobody has). It pays once per distinct request and stores an
+`employer_identities` row; asking again with nothing changed is free
+(`docs/architecture.md` §3.6).
+
 ---
 
 ## Running the phases on their own

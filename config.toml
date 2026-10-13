@@ -5,6 +5,11 @@
 model = "jev-1.13"        # pinned, never an alias: part of the match fingerprint
 cv_path = "data/cv2.md"   # the CV the next match run uses
 
+# Who is behind a posting (`jobmatch identify`), pinned like `model`: part of
+# that call's fingerprint. Provisional until the employer eval picks it
+# (docs/company-research.md, build step 3).
+research_model = "google/gemini-2.5-flash-lite"
+
 # What the market view reports on: the CV *already* matched, not cv_path.
 # cv2, the same as cv_path; they diverge only while a new CV is being matched.
 # 2026-10-02: cv2 holds all 2 720 current matches. `jobmatch cv-hash`.
