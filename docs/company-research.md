@@ -134,7 +134,7 @@ approved by the user with the architect's changes folded in.
   agency and its client), so the answer belongs to the request, and storing it
   per company would need a rule for which posting's answer wins. Cost: one
   more ~$0.0002 call per further posting of the same company.
-- **`llm_calls`** gains `kind` (`"match"` | `"employer"` | later `"people"`,
+- **`llm_calls`** gains `kind` (`"match"` | `"employer"` | later `"recruiters"`,
   no default — a new caller must say what it is; the market view's spend sums
   `match` only), `request` and `response` (JSONB: what was sent and received —
   the trace). Jev rows leave `request`/`response` NULL; Jev's SDK does not
@@ -271,5 +271,9 @@ No committed eval file: it would hold recruiters' names.
 1. **Make room** (built 2026-10-13, no behaviour change): the identify module
    becomes `jobmatch/research.py`; one private `_call` sends, validates and
    records any question, and `ask_employer` is a thin wrapper over it.
-2. **The search**: the recruiters section, the table, the pipeline function.
-3. **The block**: the route, the schema, the UI.
+2. **The question and the citation check** (built 2026-10-13, nothing calls
+   it yet): the recruiters section of `jobmatch/research.py` and its checks,
+   with offline tests.
+3. **The search, kept**: the table, the pipeline function, `people_model` in
+   config.
+4. **The block**: the route, the schema, the UI.

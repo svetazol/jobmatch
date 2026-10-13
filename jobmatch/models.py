@@ -319,7 +319,8 @@ class MatchResult(Base):
 
 class LlmCall(Base):
     """One row per LLM call *attempted*, including the ones that failed —
-    today, every one of them a Jev match; `kind` says which caller paid.
+    Jev matches and the company questions (`jobmatch/research.py`); `kind`
+    says which caller paid.
 
     The operational ledger: what was asked, what it cost, how long it took and
     what went wrong. Nothing reads it to decide what to do next — this is for
@@ -334,7 +335,7 @@ class LlmCall(Base):
         ForeignKey("vacancies.id", ondelete="SET NULL"), index=True
     )
 
-    # Which caller paid: "match" | "employer" | "people". Plain text, not a PG
+    # Which caller paid: "match" | "employer" | "recruiters". Plain text, not a PG
     # enum, so a new caller needs no migration.
     # No default, so a new caller has to say what it is. The market view's
     # spend sums "match" only — it reports on matching, not on lookups.

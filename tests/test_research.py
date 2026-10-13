@@ -634,3 +634,213 @@ async def test_a_failed_call_answers_502_with_the_reason(client, vacancy_id, mon
     assert resp.status_code == 502
     assert resp.json()["detail"] == "ValueError: the response holds no answer"
 
+
+
+# --- who recruits for it: the search and its citation check -------------------------
+
+TARGET = research.Target(name="ЭР-Телеком", homepage="https://ertelecom.ru", city="Пермь")
+ONLINE = MODEL + ":online"
+PERSON = {
+    "name": "Иван Петров",
+    "role": "IT Recruiter",
+    "linkedin_url": "https://ru.linkedin.com/in/ivan-petrov-123/",
+    "evidence": "Иван Петров – IT Recruiter – ЭР-Телеком | LinkedIn",
+}
+GUESSED = {**PERSON, "name": "Анна Смирнова", "linkedin_url": "https://www.linkedin.com/in/anna-smirnova"}
+
+
+def citation(url: str, title: str | None = "Иван Петров – IT Recruiter – ЭР-Телеком") -> dict:
+    """An OpenRouter web-search annotation, as it arrives."""
+    return {"type": "url_citation",
+            "url_citation": {"url": url, "title": title, "content": "...",
+                             "start_index": 0, "end_index": 10}}
+
+
+def searched(people: list[dict], annotations: list[dict]) -> dict:
+    """A completion from an `:online` model: the answer, and what the search cited."""
+    body = completion(json.dumps({"people": people, "notes": "searched LinkedIn"},
+                                 ensure_ascii=False))
+    body["choices"][0]["message"]["annotations"] = annotations
+    return body
+
+
+def answer_of(*people: dict) -> research.Recruiters:
+    return research.Recruiters(people=[research.Person(**p) for p in people], notes="")
+
+
+@pytest.mark.parametrize(("url", "slug"), [
+    ("https://ru.linkedin.com/in/ivan-petrov-123/", "ivan-petrov-123"),
+    ("https://www.linkedin.com/in/Ivan-Petrov-123?trk=public_profile", "ivan-petrov-123"),
+    ("http://linkedin.com/in/ivan-petrov-123/details/experience/", "ivan-petrov-123"),
+    ("https://www.linkedin.com/in/%D0%B8%D0%B2%D0%B0%D0%BD", "иван"),
+    ("https://www.linkedin.com/in/Иван", "иван"),
+])
+def test_a_linkedin_profile_has_a_slug(url, slug):
+    assert research.linkedin_slug(url) == slug
+
+
+@pytest.mark.parametrize("url", [
+    "https://www.linkedin.com/company/ertelecom",
+    "https://www.linkedin.com/pub/ivan-petrov/1/2/3",
+    "https://www.linkedin.com/in/",
+    "https://www.linkedin.com/in/..",
+    "https://www.linkedin.com/in/.",
+    "https://www.linkedin.com/in/%20",
+    "https://www.linkedin.com/in/a%2Fb",
+    "javascript:alert('linkedin.com/in/x')",
+    "https://linkedin.com.evil.io/in/x",
+    "https://notlinkedin.com/in/x",
+    "linkedin.com/in/x",                      # no scheme
+    "https://[::1/in/x",                      # malformed
+    "",
+])
+def test_anything_else_has_none(url):
+    assert research.linkedin_slug(url) is None
+
+
+def test_a_cited_profile_is_kept_in_its_canonical_form():
+    body = searched([], [citation("https://ru.linkedin.com/in/Ivan-Petrov-123?trk=x")])
+
+    confirmed = research.keep_cited(answer_of(PERSON), body)
+
+    assert confirmed == research.Confirmed(
+        people=(research.ConfirmedPerson(
+            name="Иван Петров", role="IT Recruiter",
+            linkedin_url="https://www.linkedin.com/in/ivan-petrov-123",
+            evidence=PERSON["evidence"],
+            source_title="Иван Петров – IT Recruiter – ЭР-Телеком",
+        ),),
+        dropped=0, sources=1,
+    )
+
+
+def test_an_uncited_profile_is_dropped():
+    body = searched([], [citation(PERSON["linkedin_url"]),
+                         citation("https://ertelecom.ru/careers", "Карьера")])
+
+    confirmed = research.keep_cited(answer_of(PERSON, GUESSED), body)
+
+    assert [p.name for p in confirmed.people] == ["Иван Петров"]
+    assert (confirmed.dropped, confirmed.sources) == (1, 2)
+
+
+def test_a_cyrillic_profile_matches_its_percent_encoded_citation():
+    person = {**PERSON, "linkedin_url": "https://www.linkedin.com/in/Иван"}
+    body = searched([], [citation("https://www.linkedin.com/in/%D0%B8%D0%B2%D0%B0%D0%BD")])
+
+    (kept,) = research.keep_cited(answer_of(person), body).people
+
+    assert kept.linkedin_url == "https://www.linkedin.com/in/%D0%B8%D0%B2%D0%B0%D0%BD"
+
+
+def test_one_person_named_twice_is_kept_once():
+    body = searched([], [citation(PERSON["linkedin_url"])])
+
+    confirmed = research.keep_cited(answer_of(PERSON, PERSON), body)
+
+    assert (len(confirmed.people), confirmed.dropped) == (1, 0)
+
+
+def test_without_citations_everyone_is_dropped():
+    """A model that did not search, or whose citations did not arrive, names
+    people from memory; none of them is shown."""
+    confirmed = research.keep_cited(answer_of(PERSON, GUESSED), completion("{}"))
+
+    assert confirmed == research.Confirmed(people=(), dropped=2, sources=0)
+
+
+def test_a_url_only_in_the_content_is_not_a_citation():
+    body = searched([PERSON], [])
+    assert research.cited(body) == {}
+
+
+@pytest.mark.parametrize("body", [
+    {},
+    {"choices": []},
+    {"choices": None},
+    {"choices": [{"message": None}]},
+    {"choices": [{"message": {"annotations": "x"}}]},
+    {"choices": [{"message": {"annotations": [None, 1, {"type": "url_citation"},
+                                              {"type": "url_citation", "url_citation": "x"},
+                                              {"type": "url_citation",
+                                               "url_citation": {"url": 5, "title": 7}},
+                                              {"type": "file", "url": PERSON["linkedin_url"]}]}}]},
+])
+def test_a_malformed_body_drops_everyone_and_does_not_raise(body):
+    confirmed = research.keep_cited(answer_of(PERSON), body)
+    assert (confirmed.people, confirmed.dropped) == ((), 1)
+
+
+def test_a_citation_without_a_title_still_confirms():
+    body = searched([], [citation(PERSON["linkedin_url"], title=None)])
+    (kept,) = research.keep_cited(answer_of(PERSON), body).people
+    assert kept.source_title is None
+
+
+@pytest.mark.parametrize(("target", "prompt"), [
+    (TARGET, "Recruiters, HR or talent acquisition at ЭР-Телеком "
+             "(ertelecom.ru, Пермь) — LinkedIn profiles"),
+    (research.Target("ЭР-Телеком", "https://www.ertelecom.ru/about", None),
+     "Recruiters, HR or talent acquisition at ЭР-Телеком (ertelecom.ru) — LinkedIn profiles"),
+    (research.Target("ЭР-Телеком", None, "Пермь"),
+     "Recruiters, HR or talent acquisition at ЭР-Телеком (Пермь) — LinkedIn profiles"),
+    (research.Target("ЭР-Телеком", None, None),
+     "Recruiters, HR or talent acquisition at ЭР-Телеком — LinkedIn profiles"),
+])
+def test_the_question_is_short_like_a_search_query(target, prompt):
+    assert research.recruiters_prompt(target) == prompt
+
+
+def test_the_recruiters_schema_is_what_strict_mode_accepts():
+    recruiters = research.Recruiters.model_json_schema()
+    for schema in (recruiters, recruiters["$defs"]["Person"]):
+        assert schema["additionalProperties"] is False
+        assert set(schema["required"]) == set(schema["properties"])
+        assert all("default" not in prop for prop in schema["properties"].values())
+
+
+def test_the_recruiters_schema_holds_no_notes_for_people():
+    """Every description is sent to the model and paid for in the fingerprint."""
+    text = json.dumps(research.recruiters_request(TARGET, ONLINE)["response_format"]).lower()
+    for word in ("test", "pydantic", "openai", "fingerprint", "keep_cited", "todo"):
+        assert word not in text
+
+
+def test_the_search_is_the_model_id_not_a_plugin():
+    request = research.recruiters_request(TARGET, ONLINE)
+    assert "plugins" not in request
+    assert request["model"] == ONLINE
+
+
+async def test_the_recruiters_search_is_sent_as_stored_and_recorded(vacancy_id):
+    sent: list[dict] = []
+    body = searched([PERSON, GUESSED], [citation(PERSON["linkedin_url"])])
+
+    confirmed, call_id = await research.ask_recruiters(
+        TARGET, ONLINE, vacancy_id=vacancy_id, http_client=openrouter(answering(body, sent)),
+    )
+
+    (request,) = sent
+    assert request == research.recruiters_request(TARGET, ONLINE)
+    assert ([p.name for p in confirmed.people], confirmed.dropped) == (["Иван Петров"], 1)
+    call = await _call(call_id)
+    assert (call.kind, call.status, call.vacancy_id) == ("recruiters", "ok", vacancy_id)
+    assert call.request == request
+    assert call.response == body                 # the citations kept with the answer
+    assert call.inputs_fingerprint == research.fingerprint(request)
+
+
+async def test_a_recruiters_search_past_the_deadline_is_recorded(vacancy_id, monkeypatch):
+    monkeypatch.setattr(research, "MODEL_DEADLINE", 0.05)
+
+    async def hang(request):
+        await asyncio.sleep(5)
+        return httpx2.Response(200, json=searched([], []))
+
+    with pytest.raises(openai.APITimeoutError):
+        await research.ask_recruiters(TARGET, ONLINE, vacancy_id=vacancy_id,
+                                      http_client=openrouter(hang, research._Deadline))
+
+    call = await _only_call(vacancy_id)
+    assert (call.kind, call.status, call.error_type) == ("recruiters", "error", "APITimeoutError")
+    assert call.request == research.recruiters_request(TARGET, ONLINE)

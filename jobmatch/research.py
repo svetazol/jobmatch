@@ -4,10 +4,13 @@ that knows the OpenAI SDK.
 As `matching/jev.py` is the only one that knows TypeSafe's. Each question is
 one structured-output request: a pydantic model is the one shape of its
 answer -- its JSON schema is sent as the response format, it validates what
-comes back, and its `model_dump()` is what the pipeline stores. Today there is
-one question, who is behind a posting: the poster's hh facts and the posting go
-in, an `Identity` comes out -- the employer, its homepage and careers page, and
-whether the poster is a recruiting agency.
+comes back. Today there are two questions. Who is behind a posting: the poster's hh facts and the posting
+go in, an `Identity` comes out -- the employer, its homepage and careers page,
+and whether the poster is a recruiting agency. And who recruits for it: a web
+search for their LinkedIn profiles, of which only those the search itself
+cited are kept (`keep_cited`). An `Identity`'s `model_dump()` is stored as
+is; a `Recruiters` answer is stored only as the `Confirmed` that `keep_cited`
+leaves.
 
 Every call goes through `_call`, which writes it to `llm_calls` with the
 request and the body as received, whether it succeeded or not. The caches are
@@ -29,7 +32,7 @@ import time
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, unquote, urljoin, urlsplit
 
 import anyio
 import httpx2
@@ -181,6 +184,117 @@ async def ask_employer(
     return identity, call_id
 
 
+
+# --- who recruits for it ---------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class Target:
+    """The company to search for: its name, and what tells it from namesakes."""
+
+    name: str
+    homepage: str | None
+    city: str | None
+
+
+# As with `Identity`, the docstrings and descriptions are prompt text, covered
+# by the fingerprint (one cache miss per stored search on any edit). Notes for
+# people: `linkedin_url` and `evidence` are what `keep_cited` checks against
+# the search's citations; nothing the model writes here is trusted unchecked.
+class Person(BaseModel):
+    """Someone who works at the company now, in recruiting, HR or talent acquisition."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(description="Their name, as the search result gives it")
+    role: str | None = Field(description="Their job title, as the search result gives it")
+    linkedin_url: str = Field(
+        description="Their LinkedIn profile (linkedin.com/in/...), "
+        "copied exactly from a search result link"
+    )
+    evidence: str = Field(
+        description="The search result text that shows their name, role and company"
+    )
+
+
+class Recruiters(BaseModel):
+    """The people found. An empty list is a good answer; a guess is not."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    people: list[Person] = Field(description="Each person the search results show")
+    notes: str = Field(description="One or two sentences: what you searched, what is unsure")
+
+
+RECRUITERS_SYSTEM = """\
+You find the people who recruit for a company: recruiters, HR and talent
+acquisition who work there now. Search the web for their LinkedIn profiles.
+
+- Use only what the web search returned. Every profile must be a
+  linkedin.com/in/... page that a search result links; never write a URL from
+  memory or build one from a name.
+- `evidence` is the search result text that shows the person's name, role and
+  company.
+- A company with the same or a similar name is not this company: tell them
+  apart by the homepage and the city.
+- Someone who left the company, or who recruits for another one, does not
+  belong in the list.
+- If the search shows no one, answer with an empty list: an empty list is
+  useful, a guess is not."""
+
+
+def recruiters_prompt(target: Target) -> str:
+    """Short and query-like: the web search is likely built from this text,
+    so the homepage goes in as its bare host, as a person would type it."""
+    known = ", ".join(part for part in (_host(target.homepage), target.city) if part)
+    company = f"{target.name} ({known})" if known else target.name
+    return f"Recruiters, HR or talent acquisition at {company} — LinkedIn profiles"
+
+
+def _host(url: str | None) -> str | None:
+    """`https://www.ertelecom.ru/about` -> `ertelecom.ru`."""
+    try:
+        host = urlsplit(url).hostname if url else None
+    except ValueError:
+        return None
+    return host.removeprefix("www.") if host else None
+
+
+def recruiters_request(target: Target, model: str) -> dict[str, Any]:
+    """The whole request, exactly as sent, as `employer_request`. The web
+    search is the model id's `:online` suffix, not a field here."""
+    return {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": RECRUITERS_SYSTEM},
+            {"role": "user", "content": recruiters_prompt(target)},
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "recruiters", "strict": True,
+                "schema": Recruiters.model_json_schema(),
+            },
+        },
+        **OPENROUTER,
+    }
+
+
+async def ask_recruiters(
+    target: Target,
+    model: str,
+    *,
+    vacancy_id: int,
+    http_client: httpx2.AsyncClient | None = None,   # tests pass a mocked one
+) -> tuple[Confirmed, int]:
+    """Who recruits for the company: the people the search's own citations
+    confirm, and the call's `llm_calls` id. On any failure the call is
+    recorded, then the error raised."""
+    answer, body, call_id = await _call(
+        recruiters_request(target, model), Recruiters,
+        kind="recruiters", vacancy_id=vacancy_id, http_client=http_client,
+    )
+    return keep_cited(answer, body), call_id
+
 # --- checks on an answer ----------------------------------------------------------
 
 async def reachable(url: str, *, http_client: httpx2.AsyncClient | None = None) -> bool:
@@ -233,6 +347,119 @@ async def _public(url: str) -> bool:
         return False
     return all(ipaddress.ip_address(info[4][0].split("%")[0]).is_global for info in infos)
 
+
+
+@dataclass(frozen=True, slots=True)
+class ConfirmedPerson:
+    """A `Person` whose profile the search cited; what is stored and shown."""
+
+    name: str
+    role: str | None
+    linkedin_url: str           # canonical: https://www.linkedin.com/in/<slug>
+    evidence: str               # the model's quote of the result
+    source_title: str | None    # the cited page's title, as the search gave it
+
+
+@dataclass(frozen=True, slots=True)
+class Confirmed:
+    """What survived `keep_cited`, with counts the card shows."""
+
+    people: tuple[ConfirmedPerson, ...]
+    dropped: int                # people the model named whose profile was not cited
+    sources: int                # url_citation annotations: how much the search found
+
+
+def keep_cited(answer: Recruiters, body: dict[str, Any]) -> Confirmed:
+    """Only the people whose profile the web search itself returned. Never raises.
+
+    A model asked for LinkedIn URLs writes plausible ones from a name; a
+    citation is OpenRouter's record of a page the search really returned, so
+    it is the one check on a profile that costs nothing. Each person is kept
+    once, by slug; a repeat is not counted as dropped.
+
+    The trust boundary: a citation proves the profile exists and the search
+    returned it, not that the model's name and role belong to it. The
+    `source_title` is the search's own text for that page, which is why the
+    card shows it beside the name.
+    """
+    citations = cited(body)
+    kept: dict[str, ConfirmedPerson] = {}
+    dropped = 0
+    for person in answer.people:
+        slug = linkedin_slug(person.linkedin_url)
+        if slug is None or slug not in citations:
+            dropped += 1
+            continue
+        if slug in kept:
+            continue
+        kept[slug] = ConfirmedPerson(
+            name=person.name,
+            role=person.role,
+            linkedin_url=f"https://www.linkedin.com/in/{quote(slug, safe='')}",
+            evidence=person.evidence,
+            source_title=citations[slug],
+        )
+    return Confirmed(
+        people=tuple(kept.values()),
+        dropped=dropped,
+        sources=len(_url_citations(body)),
+    )
+
+
+def cited(body: dict[str, Any]) -> dict[str, str | None]:
+    """LinkedIn profile slug -> the citation's title, for every profile the
+    search cited. Reads only the answer's `annotations`: a URL the model
+    wrote in its content is a claim, not a citation."""
+    found: dict[str, str | None] = {}
+    for citation in _url_citations(body):
+        url, title = citation.get("url"), citation.get("title")
+        slug = linkedin_slug(url) if isinstance(url, str) else None
+        if slug is not None and found.get(slug) is None:
+            found[slug] = title if isinstance(title, str) else None
+    return found
+
+
+def _url_citations(body: dict[str, Any]) -> list[dict[str, Any]]:
+    """Each `url_citation` object in the first choice; any other shape is none."""
+    try:
+        annotations = body["choices"][0]["message"].get("annotations") or []
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return []
+    if not isinstance(annotations, list):
+        return []
+    return [
+        a["url_citation"] for a in annotations
+        if isinstance(a, dict) and a.get("type") == "url_citation"
+        and isinstance(a.get("url_citation"), dict)
+    ]
+
+
+def linkedin_slug(url: str) -> str | None:
+    """`https://ru.linkedin.com/in/Ivan-Petrov/?trk=x` -> `ivan-petrov`; None for
+    anything but a personal profile on LinkedIn's own host.
+
+    The slug is unquoted and lowercased, so a model's Cyrillic and a
+    citation's percent-encoding of it compare equal. The host must be
+    linkedin.com or a subdomain of it: `linkedin.com.evil.io` is not. A slug
+    with a slash or a blank in it, or only dots, is none.
+    """
+    try:
+        parts = urlsplit(url.strip())
+        host = parts.hostname
+    except ValueError:                                   # e.g. a malformed IPv6 host
+        return None
+    if parts.scheme not in ("http", "https") or not host:
+        return None
+    if host != "linkedin.com" and not host.endswith(".linkedin.com"):
+        return None
+    path = [segment for segment in parts.path.split("/") if segment]
+    if len(path) < 2 or path[0] != "in":
+        return None
+    slug = unquote(path[1]).lower()
+    # what a percent-encoding can smuggle in: a path of its own, or a blank
+    if not slug or "/" in slug or any(c.isspace() for c in slug) or set(slug) == {"."}:
+        return None
+    return slug
 
 # --- the call ------------------------------------------------------------------
 
