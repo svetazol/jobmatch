@@ -8,7 +8,7 @@
  * real shape creates.
  */
 import type {
-  Answers, Company, FitLevel, Gap, Pitch, Stats, VacancyDetail, VacancyPage, VacancyRow,
+  Answers, Company, CompanyIdentity, FitLevel, Gap, Pitch, Stats, VacancyDetail, VacancyPage, VacancyRow,
 } from './types'
 
 const MOCK_CV = {
@@ -170,5 +170,16 @@ export function mockCompany(): Company {
     url: 'https://hh.ru/employer/1375441',
     site_url: 'http://okko.tv/',
     looked_up_at: new Date().toISOString(),
+    identity: null,
   }
+}
+
+/**
+ * No identity is stored yet to copy from, and an invented one would break
+ * the rule at the top of this file, so the mock answers as the API does without a key. Replace
+ * it with a real row from `employer_identities` once one exists.
+ */
+export function mockIdentify(): Promise<CompanyIdentity> {
+  return new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('Mock: no stored identity to show yet.')), 600))
 }

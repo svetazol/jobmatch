@@ -616,7 +616,7 @@ SDK's typed answers give it for free at write time.
 
 ## 11. The HTTP API
 
-FastAPI over the same `Session`, importing `jobmatch.models`. Seven routes,
+FastAPI over the same `Session`, importing `jobmatch.models`. Eight routes,
 all of them thin: every one is a `repository` or `pipeline` call plus a
 response model (the cover note adds one `claude -p` call).
 
@@ -627,8 +627,9 @@ response model (the cover note adds one `claude -p` call).
 | `GET /api/vacancies/{id}` | one vacancy, plus the whole `answers` blob |
 | `PATCH /api/vacancies/{id}/triage` | set or clear `seen_at` / `starred_at` / `hidden_at` / `applied_at` |
 | `POST /api/vacancies/{id}/cover-note` | a draft cover letter from `claude -p`, in the posting's language; never stored (`jobmatch/cover_note.py`) |
-| `GET /api/vacancies/{id}/company` | the looked-up employer, or `null`; no request to the source |
-| `POST /api/vacancies/{id}/company` | look the employer up (again): 404 with the reason when there is none to find, 502 when the source fails (`jobmatch/api/routers/company.py`) |
+| `GET /api/vacancies/{id}/company` | the looked-up employer, or `null`, with the newest stored `identity` for this vacancy (or `null`); no request to the source or a model |
+| `POST /api/vacancies/{id}/company` | look the employer up (again): 404 with the reason when there is none to find, 502 when the source fails (`jobmatch/api/routers/company.py`); `identity` is whatever is already stored |
+| `POST /api/vacancies/{id}/company/identity` | ask `research_model` who is behind the posting (`pipeline.identify_employer`), free when the same request was answered before: 409 before the lookup, 503 without `OPENROUTER_API_KEY`, 502 when the call fails |
 
 **Response models are Pydantic, and they are not a second schema.** This section's
 rejection of "pydantic domain models mirroring the ORM models" stands: these

@@ -158,11 +158,35 @@ class CoverNote(BaseModel):
     language: str
 
 
+class CompanyIdentity(BaseModel):
+    """Who is behind the posting, as a model answered it: the stored answer
+    (`identify.Identity`, None = the model did not know), whether each link
+    answered, and which `llm_calls` row paid for it.
+
+    `model` is the model that actually answered when OpenRouter says so, else
+    the one asked for.
+    """
+
+    employer: str | None
+    homepage: str | None
+    careers_page: str | None
+    is_agency: bool | None
+    client: str | None
+    notes: str
+    homepage_ok: bool | None
+    careers_ok: bool | None
+    model: str
+    cost_usd: float | None
+    llm_call_id: int
+    created_at: dt.datetime
+
+
 class Company(BaseModel):
     """The employer behind a vacancy, as its page said when last looked up.
 
     `url` is the employer's page on the source; `site_url` is whatever the
     employer links from it, often a careers site rather than the homepage.
+    `identity` is the newest answer for this vacancy, if one was asked for.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -171,3 +195,4 @@ class Company(BaseModel):
     url: str
     site_url: str | None
     looked_up_at: dt.datetime
+    identity: CompanyIdentity | None = None

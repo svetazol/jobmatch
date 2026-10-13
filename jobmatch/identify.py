@@ -97,11 +97,14 @@ class Identity(BaseModel):
         """`ertelecom.ru` -> `https://ertelecom.ru`, so the stored answer, the
         reachability check and the UI's link are one URL. A model asked for a
         full URL still answers with a bare domain at times; the raw answer stays
-        in `llm_calls.response`. The schema is unchanged by this, and anything
-        that is not then http(s) is still refused by `reachable`."""
+        in `llm_calls.response`. Anything that is not then http(s) -- a
+        `javascript://` the UI would run on click -- is stored as unknown, as
+        hh's `_web_url` does for its link. The schema is unchanged by this."""
         if url and "://" not in url:
-            return f"https://{url}"
-        return url
+            url = f"https://{url}"
+        if url and urlsplit(url).scheme in ("http", "https"):
+            return url
+        return None
 
 
 SCHEMA = Identity.model_json_schema()

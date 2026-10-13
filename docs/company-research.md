@@ -7,7 +7,7 @@ the AI parts are built as small, measured steps:
 | | Step | AI | Status |
 |---|---|---|---|
 | 0 | **Company lookup** — the employer's hh page: name, the link it publishes, city, industries | none | built 2026-10-07 |
-| 1 | **Employer identity** — who posted the vacancy (the agency itself, for an agency posting), its homepage and careers page, and, for an agency, the client it hires for if the posting names it | one structured-output call, no tools | the call built 2026-10-12; eval and card to come (§2) |
+| 1 | **Employer identity** — who posted the vacancy (the agency itself, for an agency posting), its homepage and careers page, and, for an agency, the client it hires for if the posting names it | one structured-output call, no tools | the call built 2026-10-12; the card 2026-10-13; eval to come (§2) |
 | 2 | **People at the company** — code runs 2–3 searches (Tavily), one call extracts people from the results, each with its source and a same-company verdict | structured output over tool results | not designed |
 | 3 | **An agent that picks its own searches** — only if step 2's eval scores show misses, and judged on the same eval set | a tool-using agent | not designed |
 
@@ -186,7 +186,9 @@ The paid eval run is a CLI command, never pytest. API tests with
 3. **The eval**: evals.py, `jobmatch eval employers`, the labels pre-filled
    for the user to correct; then gemini-2.5-flash-lite against
    mistral-small-2603, and `research_model` set from the scores.
-4. **The card**: the route, the schema, the UI.
+4. **The card** (built 2026-10-13): the route, the schema, the UI. Built
+   before the eval, by the user's choice, to see the answer on screen first;
+   the eval (step 3) is still to come.
 
 ### Decisions
 

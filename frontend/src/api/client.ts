@@ -1,7 +1,7 @@
 import type {
-  Company, CoverNote, Stats, TriageField, VacancyDetail, VacancyPage, VacancyQuery,
+  Company, CompanyIdentity, CoverNote, Stats, TriageField, VacancyDetail, VacancyPage, VacancyQuery,
 } from './types'
-import { MOCK_STATS, mockCompany, mockDetail, mockPage } from './mock'
+import { MOCK_STATS, mockCompany, mockDetail, mockIdentify, mockPage } from './mock'
 
 /**
  * Opt-in, not opt-out: with no .env.local the app talks to the real API.
@@ -91,5 +91,21 @@ export const api = {
       throw new Error(body?.detail ?? `${res.status} ${res.statusText}`)
     }
     return res.json() as Promise<Company>
+  },
+
+  /**
+   * POST /api/vacancies/:id/company/identity — one model call, ~1-3 s and
+   * ~$0.0002, up to ~90 s at worst (two 30 s tries, then two 10 s
+   * reachability checks); free and instant when nothing it reads has changed. 409 until the company is looked up, 502 with the
+   * model's error, 503 without OPENROUTER_API_KEY; each says so in `detail`.
+   */
+  async identifyCompany(id: number): Promise<CompanyIdentity> {
+    if (USE_MOCK) return mockIdentify()
+    const res = await fetch(`${BASE}/vacancies/${id}/company/identity`, { method: 'POST' })
+    if (!res.ok) {
+      const body = await res.json().catch(() => null)
+      throw new Error(body?.detail ?? `${res.status} ${res.statusText}`)
+    }
+    return res.json() as Promise<CompanyIdentity>
   },
 }

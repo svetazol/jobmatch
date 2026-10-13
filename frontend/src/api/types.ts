@@ -90,6 +90,31 @@ export interface Company {
   url: string
   site_url: string | null
   looked_up_at: string
+  /** The newest answer for this posting; null until identified. */
+  identity: CompanyIdentity | null
+}
+
+/**
+ * POST /api/vacancies/:id/company/identity — who is behind the posting, as a
+ * model answered it. Every null means "unknown": the model is told to say
+ * so rather than guess. A URL is worth a link only when its `_ok` is true.
+ */
+export interface CompanyIdentity {
+  employer: string | null
+  homepage: string | null
+  careers_page: string | null
+  is_agency: boolean | null
+  /** The agency's client, named only when the posting names it. */
+  client: string | null
+  notes: string
+  /** Did the URL answer a GET; null when there was no URL to try. */
+  homepage_ok: boolean | null
+  careers_ok: boolean | null
+  model: string
+  cost_usd: number | null
+  /** Read in full with `jobmatch trace <id>`. */
+  llm_call_id: number
+  created_at: string
 }
 
 export interface VacancyPage {

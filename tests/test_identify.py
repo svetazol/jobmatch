@@ -1,5 +1,5 @@
 """Who is behind a posting: the call on a mocked OpenRouter, the homepage check,
-and the pipeline's cache on the real database.
+the pipeline's cache on the real database, and the API's card.
 
 Nothing here reaches OpenRouter or a live site: the OpenAI SDK runs over an
 `httpx2.MockTransport`, and `reachable` gets a mocked transport and IP
@@ -20,6 +20,8 @@ import pytest
 from sqlalchemy import delete, select
 
 from jobmatch import cli, identify, matching, pipeline, repository
+from jobmatch.api.app import app
+from jobmatch.config import load_settings
 from jobmatch.db import SessionLocal
 from jobmatch.models import Employer, EmployerIdentity, LlmCall, Vacancy
 
@@ -291,6 +293,17 @@ def test_a_bare_domain_is_stored_as_an_https_url(given, stored):
     assert identity.homepage == identity.careers_page == stored
 
 
+@pytest.mark.parametrize("given", [
+    "javascript://x%0aalert(1)",      # has "://", so no scheme is added to it
+    "file:///etc/passwd",
+    "ftp://ertelecom.ru",
+])
+def test_a_link_that_is_not_http_is_stored_as_unknown(given):
+    """The card links these; a `javascript:` URL would run on click."""
+    identity = identify.Identity(**{**ANSWER, "homepage": given, "careers_page": given})
+    assert identity.homepage is identity.careers_page is None
+
+
 def test_the_url_fix_leaves_the_schema_alone():
     """The schema is in the fingerprint; a validator must not change it."""
     homepage = identify.Identity.model_json_schema()["properties"]["homepage"]
@@ -526,3 +539,85 @@ async def test_the_command_reports_why_it_cannot_identify(vacancy_id, monkeypatc
     monkeypatch.setattr(pipeline, "identify_employer", fails)
     assert await cli.cmd_identify("config.toml", vacancy_id) == 1
     assert str(error) in capsys.readouterr().out
+
+
+# --- the API: the card's two requests, with the call stubbed ------------------------
+
+@pytest.fixture
+async def client():
+    transport = httpx2.ASGITransport(app=app)
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+
+
+async def test_the_identity_route_returns_the_answer_and_what_it_cost(
+    client, vacancy_id, model_calls
+):
+    resp = await client.post(f"/api/vacancies/{vacancy_id}/company/identity")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert {k: body[k] for k in ANSWER} == ANSWER
+    assert body["homepage_ok"] is True and body["careers_ok"] is False
+    # the fake records no model_resolved, so the model asked for is shown
+    assert body["model"] == load_settings().research_model
+    assert body["cost_usd"] == 0.0002
+    assert body["llm_call_id"] == (await _only_call(vacancy_id)).id
+    assert body["created_at"]
+
+
+async def test_the_company_carries_its_newest_identity(client, vacancy_id, model_calls, monkeypatch):
+    assert (await client.get(f"/api/vacancies/{vacancy_id}/company")).json()["identity"] is None
+    posted = (await client.post(f"/api/vacancies/{vacancy_id}/company/identity")).json()
+
+    got = (await client.get(f"/api/vacancies/{vacancy_id}/company")).json()
+    assert got["name"] == "ЭР-Телеком Холдинг"
+    assert got["identity"] == posted
+
+    # a fresh lookup keeps showing the answer already stored, and asks nothing
+    async def lookup(vid):
+        async with SessionLocal() as session:
+            return await repository.employer_of(session, vid)
+    monkeypatch.setattr(pipeline, "lookup_employer", lookup)
+    looked_up = (await client.post(f"/api/vacancies/{vacancy_id}/company")).json()
+    assert looked_up["identity"] == posted
+    assert len(model_calls) == 1
+
+
+async def test_identifying_before_the_lookup_answers_409(client, vacancy_id, model_calls):
+    async with SessionLocal.begin() as session:
+        await session.execute(delete(Employer).where(Employer.source == SOURCE_NAME))
+
+    resp = await client.post(f"/api/vacancies/{vacancy_id}/company/identity")
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "look up the company first"
+    assert model_calls == []
+
+
+async def test_identifying_an_unknown_vacancy_answers_404(client, model_calls):
+    assert (await client.post("/api/vacancies/0/company/identity")).status_code == 404
+
+
+async def test_without_a_key_the_identity_route_answers_503_unasked(
+    client, vacancy_id, model_calls, monkeypatch
+):
+    monkeypatch.delenv(identify.API_KEY_ENV)
+
+    resp = await client.post(f"/api/vacancies/{vacancy_id}/company/identity")
+
+    assert resp.status_code == 503
+    assert identify.API_KEY_ENV in resp.json()["detail"]
+    assert model_calls == []
+
+
+async def test_a_failed_call_answers_502_with_the_reason(client, vacancy_id, monkeypatch):
+    async def ask(*args, **kwargs):
+        raise ValueError("the response holds no answer")
+    monkeypatch.setattr(identify, "ask", ask)
+
+    resp = await client.post(f"/api/vacancies/{vacancy_id}/company/identity")
+
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "ValueError: the response holds no answer"
+
