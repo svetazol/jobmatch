@@ -34,7 +34,7 @@ GONE = {
     "find_people": "nothing yet; see docs/decisions.md, People search",
     # the employer identity call's module, renamed 2026-10-13 to make room for
     # the recruiters search (docs/company-research.md §3)
-    "identify.py": "jobmatch/research.py",
+    "identify.py": "jobmatch/research/",
     "identify.ask": "research.ask_employer",
     "identify.fingerprint": "research.fingerprint(research.employer_request(...))",
     # one copy of the key and the hashing rule, 2026-10-14 (the llm/ package)
@@ -46,6 +46,11 @@ GONE = {
     "identify.Poster": "research.Poster",
     # renamed 2026-10-14, when a website alone became enough to search by
     "NoCompanyName": "pipeline.NothingToSearchFor",
+    # split 2026-10-14; not bare "research.py", which company_research.py contains
+    "jobmatch/research.py": "jobmatch/research/ and jobmatch/llm/openrouter.py",
+    "`research.py`": "`research/` and `llm/openrouter.py`",
+    "**research.py**": "research/ and llm/openrouter.py",
+    "research._call": "llm.openrouter.ask",
 }
 
 # Prose that happens to contain a dead string for a legitimate reason: the

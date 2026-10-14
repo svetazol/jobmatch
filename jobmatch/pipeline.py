@@ -25,6 +25,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import Any
 
 import anyio
 
@@ -524,11 +525,12 @@ async def identify_employer(vacancy_id: int, model: str) -> EmployerIdentity:
         if employer is None:
             raise NotLookedUp("the company has not been looked up yet; look it up first")
         poster = poster_of(employer, vacancy)
-        fingerprint = research.fingerprint(research.employer_request(poster, model))
+        request = research.employer_request(poster, model)
+        fingerprint = research.fingerprint(request)
         if (stored := await repository.identity_by_fingerprint(session, fingerprint)) is not None:
             return stored
 
-    identity, call_id = await research.ask_employer(poster, model, vacancy_id=vacancy_id)
+    identity, call_id = await research.ask_employer(request, vacancy_id=vacancy_id)
     # Paid for from here on: a cancelled request (a closed tab) must not lose
     # the answer, or the next click pays for it again. Shielded, and bounded by
     # the checks' own deadlines -- one after the other, two at most.
@@ -608,12 +610,12 @@ async def find_recruiters(
     the network call, and failures of the call propagate, already in
     `llm_calls`.
     """
-    employer_id, target, fingerprint, stored = await _recruiters_request(vacancy_id, model)
+    employer_id, target, request, fingerprint, stored = await _recruiters_request(vacancy_id, model)
     if (not refresh and stored is not None
             and dt.datetime.now(dt.UTC) - stored.created_at < RECRUITERS_FRESH):
         return stored
 
-    confirmed, call_id = await research.ask_recruiters(target, model, vacancy_id=vacancy_id)
+    confirmed, call_id = await research.ask_recruiters(request, vacancy_id=vacancy_id)
     # Paid for from here on: as in `identify_employer`, a cancelled request
     # must not lose the answer.
     with anyio.CancelScope(shield=True):
@@ -637,8 +639,8 @@ async def stored_recruiters(vacancy_id: int, model: str) -> RecruiterSearch | No
 
 async def _recruiters_request(
     vacancy_id: int, model: str
-) -> tuple[int, research.Target, str, RecruiterSearch | None]:
-    """The employer, the target, the request's fingerprint and its newest
+) -> tuple[int, research.Target, dict[str, Any], str, RecruiterSearch | None]:
+    """The employer, the target, the request and its fingerprint, and its newest
     stored search; raises as `identify_employer` does without a vacancy or a
     lookup, and `NothingToSearchFor` for a company with neither a website nor
     a name."""
@@ -652,6 +654,7 @@ async def _recruiters_request(
         target = target_of(employer, await repository.latest_identity(session, vacancy_id))
         if not target.searchable:
             raise NothingToSearchFor("the company has neither a website nor a name to search for")
-        fingerprint = research.fingerprint(research.recruiters_request(target, model))
+        request = research.recruiters_request(target, model)
+        fingerprint = research.fingerprint(request)
         stored = await repository.latest_recruiters(session, employer.id, fingerprint)
-    return employer.id, target, fingerprint, stored
+    return employer.id, target, request, fingerprint, stored

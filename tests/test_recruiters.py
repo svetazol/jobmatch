@@ -77,18 +77,18 @@ async def vacancy_id():
 
 @pytest.fixture
 def searches(monkeypatch):
-    """`research.ask_recruiters` replaced; returns the (target, model) pairs asked.
+    """`research.ask_recruiters` replaced; returns the requests asked.
 
     The fake still writes its ledger row, because `recruiter_searches` points
     at one.
     """
-    asked: list[tuple[research.Target, str]] = []
+    asked: list[dict] = []
 
-    async def ask(target, model, *, vacancy_id, http_client=None):
-        asked.append((target, model))
+    async def ask(sent, *, vacancy_id, http_client=None):
+        asked.append(sent)
         call_id = await repository.record_call(
-            kind="recruiters", vacancy_id=vacancy_id, model_requested=model,
-            inputs_fingerprint=key(target, model), status="ok",
+            kind="recruiters", vacancy_id=vacancy_id, model_requested=sent["model"],
+            inputs_fingerprint=llm.fingerprint(sent), status="ok",
             cost_usd=Decimal("0.02"), started_at=dt.datetime.now(dt.UTC),
         )
         return CONFIRMED, call_id
@@ -97,8 +97,9 @@ def searches(monkeypatch):
     return asked
 
 
-def key(target: research.Target, model: str) -> str:
-    return research.fingerprint(research.recruiters_request(target, model))
+def request(target: research.Target) -> dict:
+    """The request the pipeline sends for `target` under `MODEL`."""
+    return research.recruiters_request(target, MODEL)
 
 
 async def _employer_id() -> int:
@@ -234,11 +235,11 @@ def test_an_unknown_name_falls_back_to_the_hh_name():
 async def test_a_search_is_saved_as_the_confirmed_people(vacancy_id, searches):
     row = await pipeline.find_recruiters(vacancy_id, MODEL)
 
-    ((target, _),) = searches
+    (sent,) = searches
     # as JSON: the people tuple comes back a list
     assert row.answer == json.loads(json.dumps(dataclasses.asdict(CONFIRMED)))
     assert row.employer_id == await _employer_id()
-    assert row.inputs_fingerprint == key(target, MODEL)
+    assert row.inputs_fingerprint == llm.fingerprint(sent)
     assert [s.id for s in await _searches()] == [row.id]
 
 
@@ -246,8 +247,7 @@ async def test_the_search_uses_the_identity_when_there_is_one(vacancy_id, search
     await _identify(vacancy_id, homepage_ok=True)
     await pipeline.find_recruiters(vacancy_id, MODEL)
 
-    ((target, _),) = searches
-    assert target == research.Target("ЭР-Телеком", "https://ertelecom.ru", "Пермь")
+    assert searches == [request(research.Target("ЭР-Телеком", "https://ertelecom.ru", "Пермь"))]
 
 
 async def test_a_fresh_search_with_the_same_request_is_free(vacancy_id, searches):
@@ -362,8 +362,7 @@ async def test_a_company_with_a_website_but_no_name_is_searched_by_it(vacancy_id
 
     await pipeline.find_recruiters(vacancy_id, MODEL)
 
-    ((target, _),) = searches
-    assert target == research.Target(None, "http://rabotavdomru.ru", "Пермь")
+    assert searches == [request(research.Target(None, "http://rabotavdomru.ru", "Пермь"))]
 
 
 async def test_a_company_with_neither_a_website_nor_a_name_is_not_searched(
@@ -381,7 +380,7 @@ async def test_a_company_with_neither_a_website_nor_a_name_is_not_searched(
 
 
 async def test_a_failed_search_raises_and_stores_nothing(vacancy_id, monkeypatch):
-    async def fails(target, model, *, vacancy_id, http_client=None):
+    async def fails(sent, *, vacancy_id, http_client=None):
         raise RuntimeError("OpenRouter said no")
 
     monkeypatch.setattr(research, "ask_recruiters", fails)
@@ -483,7 +482,7 @@ async def test_the_route_answers_with_the_people_and_the_counts(vacancy_id, sear
     assert (body["dropped"], body["sources"]) == (1, 4)
     assert dt.datetime.fromisoformat(body["created_at"]) == (await _searches())[0].created_at
     assert set(body) == {"people", "dropped", "sources", "created_at"}
-    assert [model for _, model in searches] == [MODEL]
+    assert [sent["model"] for sent in searches] == [MODEL]
 
 
 async def test_the_company_card_carries_the_search_once_made(vacancy_id, searches, client):
@@ -562,7 +561,7 @@ async def test_the_route_needs_the_key_before_any_call(vacancy_id, searches, cli
 
 
 async def test_a_failed_call_is_a_502_with_its_type(vacancy_id, client, monkeypatch):
-    async def fails(target, model, *, vacancy_id, http_client=None):
+    async def fails(sent, *, vacancy_id, http_client=None):
         raise RuntimeError("OpenRouter said no")
 
     monkeypatch.setattr(research, "ask_recruiters", fails)

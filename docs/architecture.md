@@ -21,11 +21,11 @@ Three leaf areas that know nothing about each other — `sources/` (the web),
 `pipeline.py`, allowed to know all three. `cli.py` and later `api/` are both
 thin callers of that same core.
 
-`research.py` is a second LLM leaf beside `matching/`, not a part of it:
-structured-output calls about a company through the OpenAI SDK, which it alone
-imports, as `matching/jev.py` alone imports Jev's. Today it asks who is behind
-a posting (`docs/company-research.md` §2); `pipeline.identify_employer` is its
-caller.
+`research/` is a second LLM leaf beside `matching/`, not a part of it:
+structured-output questions about a company, sent by `jobmatch/llm/openrouter.py`,
+the only module that imports the OpenAI SDK, as `matching/jev.py` alone imports
+Jev's. It asks who is behind a posting and who recruits there
+(`docs/company-research.md` §2, §3); `pipeline` is its caller.
 
 No `src/` layout (buys import hygiene that matters for distributed libraries,
 not for one app) and no `core/` subpackage (a path segment, nothing more).
@@ -303,7 +303,7 @@ second click refreshes it. Columns and the reason for each:
 
 ### 3.6 `employer_identities`
 
-What one structured-output call (`jobmatch/research.py`) answered about who is
+What one structured-output call (`jobmatch/research/employer.py`) answered about who is
 behind a posting: who posted it (the agency, for an agency posting), its
 homepage and careers page with whether each answered, and an agency's client
 when the posting names it. Append-only, one row per distinct request;

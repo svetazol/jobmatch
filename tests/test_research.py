@@ -24,6 +24,7 @@ from jobmatch import cli, llm, matching, pipeline, repository, research
 from jobmatch.api.app import app
 from jobmatch.config import load_settings
 from jobmatch.db import SessionLocal
+from jobmatch.llm.openrouter import MODEL_RETRIES, _Deadline
 from jobmatch.models import Employer, EmployerIdentity, LlmCall, Vacancy
 
 SOURCE_NAME = "test-research"
@@ -70,6 +71,9 @@ def completion(content: str, cost: float | None = 0.00021) -> dict:
 def key(poster: research.Poster, model: str) -> str:
     """The employer cache key, as the pipeline computes it."""
     return research.fingerprint(research.employer_request(poster, model))
+
+
+REQUEST = research.employer_request(POSTER, MODEL)
 
 
 def openrouter(handler,client_class=httpx2.AsyncClient) -> httpx2.AsyncClient:
@@ -136,7 +140,7 @@ async def test_a_good_answer_is_parsed_and_recorded(vacancy_id):
     body = completion(json.dumps(ANSWER, ensure_ascii=False))
 
     identity, call_id = await research.ask_employer(
-        POSTER, MODEL, vacancy_id=vacancy_id, http_client=openrouter(answering(body)),
+        REQUEST, vacancy_id=vacancy_id, http_client=openrouter(answering(body)),
     )
 
     assert identity == research.Identity(**ANSWER)
@@ -157,7 +161,7 @@ async def test_the_request_asks_for_strict_json_from_providers_that_honour_it(va
     sent: list[dict] = []
     body = completion(json.dumps(ANSWER))
 
-    await research.ask_employer(POSTER, MODEL, vacancy_id=vacancy_id,
+    await research.ask_employer(REQUEST, vacancy_id=vacancy_id,
                        http_client=openrouter(answering(body, sent)))
 
     (request,) = sent
@@ -189,7 +193,7 @@ async def test_invalid_json_raises_and_keeps_the_body_it_paid_for(vacancy_id):
     body = completion('{"employer": "ЭР-Телеком"')      # cut off
 
     with pytest.raises(pydantic.ValidationError):
-        await research.ask_employer(POSTER, MODEL, vacancy_id=vacancy_id,
+        await research.ask_employer(REQUEST, vacancy_id=vacancy_id,
                            http_client=openrouter(answering(body)))
 
     call = await _only_call(vacancy_id)
@@ -203,7 +207,7 @@ async def test_an_answer_with_extra_fields_is_refused(vacancy_id):
     body = completion(json.dumps({**ANSWER, "ceo": "someone"}))
 
     with pytest.raises(pydantic.ValidationError):
-        await research.ask_employer(POSTER, MODEL, vacancy_id=vacancy_id,
+        await research.ask_employer(REQUEST, vacancy_id=vacancy_id,
                            http_client=openrouter(answering(body)))
 
     assert (await _only_call(vacancy_id)).status == "error"
@@ -214,7 +218,7 @@ async def test_a_refusal_with_no_content_is_an_error(vacancy_id):
     body["choices"][0]["message"] |= {"content": None, "refusal": "I can't help with that."}
 
     with pytest.raises(ValueError, match="no answer"):
-        await research.ask_employer(POSTER, MODEL, vacancy_id=vacancy_id,
+        await research.ask_employer(REQUEST, vacancy_id=vacancy_id,
                            http_client=openrouter(answering(body)))
 
     assert (await _only_call(vacancy_id)).response == body
@@ -223,7 +227,7 @@ async def test_a_refusal_with_no_content_is_an_error(vacancy_id):
 async def test_a_hang_past_the_deadline_is_retried_once_then_recorded(vacancy_id, monkeypatch):
     """OpenRouter's keepalive whitespace keeps a per-read timeout from ever
     firing; only the whole-request deadline ends the wait."""
-    monkeypatch.setattr(research, "MODEL_DEADLINE", 0.05)
+    monkeypatch.setattr("jobmatch.llm.openrouter.MODEL_DEADLINE", 0.05)
     attempts = 0
 
     async def hang(request):
@@ -233,10 +237,10 @@ async def test_a_hang_past_the_deadline_is_retried_once_then_recorded(vacancy_id
         return httpx2.Response(200, json=completion(json.dumps(ANSWER)))
 
     with pytest.raises(openai.APITimeoutError):
-        await research.ask_employer(POSTER, MODEL, vacancy_id=vacancy_id,
-                           http_client=openrouter(hang, research._Deadline))
+        await research.ask_employer(REQUEST, vacancy_id=vacancy_id,
+                           http_client=openrouter(hang, _Deadline))
 
-    assert attempts == 1 + research.MODEL_RETRIES
+    assert attempts == 1 + MODEL_RETRIES
     call = await _only_call(vacancy_id)
     assert (call.status, call.error_type) == ("error", "APITimeoutError")
     assert call.request == research.employer_request(POSTER, MODEL)
@@ -250,7 +254,7 @@ async def test_an_http_error_stores_openrouters_error_body(vacancy_id):
         return httpx2.Response(400, json=error)
 
     with pytest.raises(openai.BadRequestError):
-        await research.ask_employer(POSTER, MODEL, vacancy_id=vacancy_id, http_client=openrouter(refuse))
+        await research.ask_employer(REQUEST, vacancy_id=vacancy_id, http_client=openrouter(refuse))
 
     call = await _only_call(vacancy_id)
     assert (call.status, call.http_status) == ("error", 400)
@@ -261,7 +265,7 @@ async def test_without_a_key_nothing_is_sent_or_recorded(vacancy_id, monkeypatch
     monkeypatch.delenv(llm.API_KEY_ENV)
 
     with pytest.raises(ValueError, match=llm.API_KEY_ENV):
-        await research.ask_employer(POSTER, MODEL, vacancy_id=vacancy_id,
+        await research.ask_employer(REQUEST, vacancy_id=vacancy_id,
                            http_client=openrouter(lambda r: pytest.fail("sent")))
 
     async with SessionLocal() as session:
@@ -394,7 +398,7 @@ async def test_a_bare_domain_answer_is_stored_with_its_scheme_and_kept_raw(vacan
     body = completion(json.dumps({**ANSWER, "homepage": "ertelecom.ru"}))
 
     identity, call_id = await research.ask_employer(
-        POSTER, MODEL, vacancy_id=vacancy_id, http_client=openrouter(answering(body)),
+        REQUEST, vacancy_id=vacancy_id, http_client=openrouter(answering(body)),
     )
 
     assert identity.homepage == "https://ertelecom.ru"
@@ -455,7 +459,7 @@ async def test_redirects_are_followed_and_each_hop_checked():
 async def test_too_many_redirects_is_not_reachable():
     loop = {
         f"{PUBLIC}/{i}": httpx2.Response(302, headers={"location": f"/{i + 1}"})
-        for i in range(research.MAX_REDIRECTS + 1)
+        for i in range(research.employer.MAX_REDIRECTS + 1)
     }
     assert not await research.reachable(PUBLIC + "/0", http_client=site(loop))
 
@@ -472,18 +476,18 @@ async def test_a_connection_failure_is_not_reachable():
 
 @pytest.fixture
 def model_calls(monkeypatch):
-    """`research.ask_employer` and `reachable` replaced; returns the posters asked.
+    """`research.ask_employer` and `reachable` replaced; returns the requests asked.
 
     The fake still writes its ledger row, because `employer_identities`
     points at one.
     """
-    asked: list[research.Poster] = []
+    asked: list[dict] = []
 
-    async def ask(poster, model, *, vacancy_id, http_client=None):
-        asked.append(poster)
+    async def ask(sent, *, vacancy_id, http_client=None):
+        asked.append(sent)
         call_id = await repository.record_call(
-            kind="employer", vacancy_id=vacancy_id, model_requested=model,
-            inputs_fingerprint=key(poster, model), status="ok",
+            kind="employer", vacancy_id=vacancy_id, model_requested=sent["model"],
+            inputs_fingerprint=llm.fingerprint(sent), status="ok",
             cost_usd=Decimal("0.0002"), started_at=dt.datetime.now(dt.UTC),
         )
         return research.Identity(**ANSWER), call_id
@@ -505,7 +509,7 @@ async def test_identifying_saves_the_answer_and_its_homepage_check(vacancy_id, m
     async with SessionLocal() as session:
         latest = await repository.latest_identity(session, vacancy_id)
     assert latest.id == row.id
-    assert latest.inputs_fingerprint == key(model_calls[0], MODEL)
+    assert latest.inputs_fingerprint == llm.fingerprint(model_calls[0])
 
 
 async def test_the_same_request_twice_is_answered_from_the_database(vacancy_id, model_calls):
@@ -529,15 +533,15 @@ async def test_another_model_is_another_request(vacancy_id, model_calls):
 async def test_the_poster_is_the_hh_page_and_the_posting_as_jev_reads_it(vacancy_id, model_calls):
     await pipeline.identify_employer(vacancy_id, MODEL)
 
-    (poster,) = model_calls
+    (sent,) = model_calls
     async with SessionLocal() as session:
         vacancy = await session.get_one(Vacancy, vacancy_id)
-    assert poster == research.Poster(
+    assert sent == research.employer_request(research.Poster(
         name="ЭР-Телеком Холдинг",
         site_url="http://rabotavdomru.ru",
         about="Пермь; Телекоммуникации",
         posting=matching.job_text(vacancy),
-    )
+    ), MODEL)
 
 
 async def test_without_a_looked_up_employer_there_is_nothing_to_ask(vacancy_id, model_calls):
@@ -897,7 +901,7 @@ async def test_the_recruiters_search_is_sent_as_stored_and_recorded(vacancy_id):
     body = searched([PERSON, GUESSED], [citation(PERSON["linkedin_url"])])
 
     confirmed, call_id = await research.ask_recruiters(
-        TARGET, ONLINE, vacancy_id=vacancy_id, http_client=openrouter(answering(body, sent)),
+        research.recruiters_request(TARGET, ONLINE), vacancy_id=vacancy_id, http_client=openrouter(answering(body, sent)),
     )
 
     (request,) = sent
@@ -911,15 +915,15 @@ async def test_the_recruiters_search_is_sent_as_stored_and_recorded(vacancy_id):
 
 
 async def test_a_recruiters_search_past_the_deadline_is_recorded(vacancy_id, monkeypatch):
-    monkeypatch.setattr(research, "MODEL_DEADLINE", 0.05)
+    monkeypatch.setattr("jobmatch.llm.openrouter.MODEL_DEADLINE", 0.05)
 
     async def hang(request):
         await asyncio.sleep(5)
         return httpx2.Response(200, json=searched([], []))
 
     with pytest.raises(openai.APITimeoutError):
-        await research.ask_recruiters(TARGET, ONLINE, vacancy_id=vacancy_id,
-                                      http_client=openrouter(hang, research._Deadline))
+        await research.ask_recruiters(research.recruiters_request(TARGET, ONLINE), vacancy_id=vacancy_id,
+                                      http_client=openrouter(hang, _Deadline))
 
     call = await _only_call(vacancy_id)
     assert (call.kind, call.status, call.error_type) == ("recruiters", "error", "APITimeoutError")

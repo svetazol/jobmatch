@@ -15,7 +15,7 @@ Each step is traced (every call's request and response in the database) and
 scored on a small labelled eval set before it is trusted. A first attempt at
 steps 2–3 as one free-roaming LangChain agent was built and dropped;
 `docs/decisions.md` ("People search") has what it established; its code was
-deleted on 2026-10-12, after the parts worth keeping moved into what is now `jobmatch/research.py`.
+deleted on 2026-10-12, after the parts worth keeping moved into what is now `jobmatch/research/`.
 
 ---
 
@@ -67,9 +67,10 @@ approved by the user with the architect's changes folded in.
 
 ### Where the code lives
 
-- **research.py** (`jobmatch/`; built as the identify module, renamed
-  2026-10-13 when step 2 was designed) — the only module that knows the
-  OpenAI SDK, as `jobmatch/matching/jev.py` is for Jev. Top to bottom:
+- `jobmatch/research/employer.py` (built as the identify module, renamed
+  2026-10-13, split 2026-10-14) asks the question through
+  `jobmatch/llm/openrouter.py`, the only module that knows the OpenAI SDK, as
+  `jobmatch/matching/jev.py` is for Jev. Across the two, top to bottom:
   - `Poster(name, site_url, about, posting)` — frozen dataclass, the input.
   - `Identity` — a frozen pydantic model, `extra="forbid"`, every field
     required: `employer`, `homepage`, `careers_page`, `is_agency`, `client`
@@ -84,11 +85,11 @@ approved by the user with the architect's changes folded in.
     request; `fingerprint(request)` is its sha256: everything sent — prompts,
     schema, model and OpenRouter's fields.
   - `async def ask_employer(poster, model, *, vacancy_id, http_client=None) ->
-    tuple[Identity, int]` — one `chat.completions.create` through OpenRouter
+    tuple[Identity, int]` — `openrouter.ask`: one `chat.completions.create`
     with `response_format` `json_schema` (`strict`), `usage.include` and
     `provider.require_parameters`; validates `message.content` itself
     (`create`, not `parse`, so the raw body is kept when validation fails);
-    records the call through `repository.record_call`, success or failure,
+    records the call through `llm.recorded`, success or failure,
     shielded from cancellation. Returns the identity and the `llm_calls` id.
   - `_Deadline` — the SDK's HTTP client with a deadline on each whole request
     (`MODEL_DEADLINE = 30`, one retry): OpenRouter's keepalive whitespace
@@ -183,7 +184,7 @@ The paid eval run is a CLI command, never pytest. API tests with
    and `CLAUDE.md` committed.
 1. **The ledger**: `kind`, `request`, `response`, the migration,
    `repository.record_call`, `jobmatch trace`; `docs/architecture.md` §3.3.
-2. **The call** (built 2026-10-12): research.py, `employer_identities`, the
+2. **The call** (built 2026-10-12): the research module, `employer_identities`, the
    pipeline and repository functions, `jobmatch identify --vacancy N`.
 3. **The eval**: evals.py, `jobmatch eval employers`, the labels pre-filled
    for the user to correct; then gemini-2.5-flash-lite against
@@ -196,8 +197,8 @@ The paid eval run is a CLI command, never pytest. API tests with
 
 - LangChain and `ddgs`: dropped for the plain OpenAI SDK and, in step 2, a
   search inside the model call (`docs/decisions.md`, "People search").
-- "Matcher protocol / pluggable LLM providers" stays refused: research.py is a
-  second plain module, not an interface.
+- "Matcher protocol / pluggable LLM providers" stays refused: `research/` is
+  plain modules, not an interface.
 - "Per-vacancy files" holds: the eval file stores labels and short employer
   facts, not posting text.
 - "`llm_calls`: nothing reads it to decide" holds: the cache is
@@ -229,8 +230,7 @@ A **RecruitersBlock** under the identity on the Company card
 
 ### Where the code lives
 
-- `jobmatch/research.py` gains a recruiters section between "who is behind a
-  posting" and "checks on an answer":
+- `jobmatch/research/recruiters.py`:
   - `Target(name, homepage, city)` — the company to search for.
     `recruiters_prompt` names it by its homepage's host, and by its name only
     when there is no homepage (see "Query by website" below).
@@ -241,7 +241,7 @@ A **RecruitersBlock** under the identity on the Company card
     people go in comments.
   - `RECRUITERS_SYSTEM`, `recruiters_request(target, model)`, and
     `ask_recruiters(target, model, *, vacancy_id) -> (Confirmed, call_id)`,
-    kind `"recruiters"`: `_call`, then `keep_cited(answer, body)`.
+    kind `"recruiters"`: `openrouter.ask`, then `keep_cited(answer, body)`.
   - Checks: `linkedin_slug(url)`; `cited(body)` reads only
     `choices[0].message.annotations[*].url_citation`; `keep_cited` is a pure
     filter that never raises and returns `Confirmed(people, dropped, sources)`,
@@ -306,10 +306,10 @@ No committed eval file: it would hold recruiters' names.
 ### Build steps
 
 1. **Make room** (built 2026-10-13, no behaviour change): the identify module
-   becomes `jobmatch/research.py`; one private `_call` sends, validates and
-   records any question, and `ask_employer` is a thin wrapper over it.
+   becomes the research module; one call sends, validates and records any
+   question (now `openrouter.ask`), and `ask_employer` is a thin wrapper over it.
 2. **The question and the citation check** (built 2026-10-13, nothing calls
-   it yet): the recruiters section of `jobmatch/research.py` and its checks,
+   it yet): the recruiters question (now `jobmatch/research/recruiters.py`) and its checks,
    with offline tests.
 3. **The search, kept** (built 2026-10-13): the table, the pipeline function,
    `people_model` in config, and `jobmatch recruiters --vacancy N` for the
