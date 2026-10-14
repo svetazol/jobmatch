@@ -19,7 +19,8 @@ one, check the measurement still holds first.
 | DI container, a `Pipeline` class with injected collaborators | `run(settings)` takes its dependencies as arguments; tests pass a fake `Source` and a fake client. Nothing to wire. |
 | Celery / RQ / APScheduler | `cron` calls `jobmatch run`. Idempotency, not a broker, is what makes re-runs safe — and it is already required for correctness. |
 | A separate `normalizer.py` or `parsers/` layer | Normalisation *is* the source's job; that is what `VacancyData` is for. A shared normaliser grows site-specific branches. |
-| `Matcher` protocol, pluggable LLM providers | One matcher exists. `matching/jev.py` is already the containment point. |
+| `Matcher` protocol, pluggable LLM providers | One matcher exists. `llm/jev.py` is already the containment point. |
+| ~~The caller passes the match fingerprint in~~ — **reversed 2026-10-14** | It let the stored key and the request sent disagree. The provider module (`llm/jev.py`, `llm/openrouter.py`) now hashes what it sends and returns the hash. |
 | `Source.describe()` returning a search description | Would amend the documented two-question contract and add a type, to move 28 lines out of one router. `stats.py::_search()` declares itself the sanctioned exception instead. |
 | ~~A source answers exactly two questions~~ — **amended 2026-10-07** | `Source.fetch_employer`, optional, is a third. Unlike `describe()` it fetches a page from the site rather than describing the source, and fetching pages is exactly what the seam exists to hide: pipeline calling `hh.fetch_employer` directly would put hh's URLs and stub detection outside `sources/`. See `docs/company-research.md`. |
 | `logging.config` dict, structured logging | `basicConfig()` in `cli.py`, `getLogger(__name__)` elsewhere. |

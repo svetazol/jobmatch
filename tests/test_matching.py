@@ -12,10 +12,8 @@ from typesafe_sdk._core.errors import TypeSafeRateLimitError
 
 from jobmatch import matching
 from jobmatch.db import SessionLocal
-from jobmatch.matching import jev, sanitize
+from jobmatch.matching import match, sanitize
 from jobmatch.models import LlmCall, MatchResult, Vacancy
-
-FINGERPRINT = "f" * 64
 
 pytestmark = pytest.mark.anyio
 LEGEND = {
@@ -220,13 +218,12 @@ def test_the_sanitised_cv_is_pinned():
 
 
 async def test_jev_is_sent_exactly_the_inputs_the_fingerprint_hashes():
-    """The fingerprint is computed apart from the request `_ask` builds; this
-    keeps the two the same request. A drift would make the cache key stop
-    describing what was paid for."""
+    """`inputs_fingerprint` and what `system_one` is given must stay one request,
+    or the cache key stops describing what was paid for."""
     client = FakeClient(response=FakeResponse())
     cv, job = "the cv", "the job"
 
-    await jev.preview_vacancy(client, cv, Vacancy(title="unused"), "jev-1.13", job=job)
+    await match.preview_vacancy(client, cv, Vacancy(title="unused"), "jev-1.13", job=job)
 
     assert client.sent == [{
         "state": {"cv": cv, "job_description": job},
@@ -240,7 +237,7 @@ async def test_jev_is_sent_exactly_the_inputs_the_fingerprint_hashes():
 
 def test_score_is_normalised_off_the_legend_scale():
     """Jev returns 2.4 on a 0..4 rubric, not 0-1. The column is 0-1."""
-    unit, label, confidence = jev._score_to_unit(answers()["overall_fit"])
+    unit, label, confidence = match._score_to_unit(answers()["overall_fit"])
 
     assert unit == pytest.approx(0.6)  # 2.4 / 4
     assert label == "good"             # argmax, not round(2.4)
@@ -251,7 +248,7 @@ def test_the_label_is_the_most_probable_level_not_the_rounded_score():
     answer = answers(score=2.6, probabilities={0: 0, 1: 0, 2: 0.51, 3: 0.49, 4: 0})[
         "overall_fit"
     ]
-    unit, label, _ = jev._score_to_unit(answer)
+    unit, label, _ = match._score_to_unit(answer)
 
     assert unit == pytest.approx(0.65)
     assert label == "good"  # round(2.6) would say "strong"
@@ -261,7 +258,7 @@ def test_a_single_level_rubric_does_not_divide_by_zero():
     answer = ScoreAnswer(
         score=0.0, legend={0: {"label": "only"}}, probabilities={0: 1.0}, confidence=1.0
     )
-    assert jev._score_to_unit(answer) == (0.0, "only", 1.0)
+    assert match._score_to_unit(answer) == (0.0, "only", 1.0)
 
 
 # --- the ledger -----------------------------------------------------------
@@ -270,12 +267,11 @@ def test_a_single_level_rubric_does_not_divide_by_zero():
 async def test_a_successful_call_is_flattened_and_costed(vacancy):
     client = FakeClient(response=FakeResponse())
 
-    outcome = await jev.match_vacancy(
+    outcome = await match.match_vacancy(
         client,
         "cv",
         await load(vacancy),
         "jev-1.13",
-        fingerprint=FINGERPRINT,
         cv_hash="a" * 64,
         content_hash="b" * 64,
         job="job text",
@@ -292,6 +288,9 @@ async def test_a_successful_call_is_flattened_and_costed(vacancy):
     (call,) = await calls_for(vacancy)
     assert call.status == "ok"
     assert call.kind == "match"
+    # the key stored is the hash of what was sent, and the one the cache check builds
+    assert outcome.inputs_fingerprint == call.inputs_fingerprint == matching.inputs_fingerprint(
+        "cv", "job text", matching.QUESTIONS, "jev-1.13")
     assert call.request is None and call.response is None  # Jev keeps no trace
     assert call.model_requested == "jev-1.13"
     assert call.model_resolved == "typesafe/jev-1.13-20260917"  # differs; worth storing
@@ -307,12 +306,11 @@ async def test_a_failed_call_is_recorded_and_re_raised(vacancy):
     client = FakeClient(error=error)
 
     with pytest.raises(RuntimeError):
-        await jev.match_vacancy(
+        await match.match_vacancy(
             client,
             "cv",
             await load(vacancy),
             "jev-1.13",
-            fingerprint=FINGERPRINT,
             cv_hash="a" * 64,
             content_hash="b" * 64,
             job="job text",
@@ -330,9 +328,9 @@ async def test_an_sdk_error_keeps_jevs_error_body(vacancy):
     error = TypeSafeRateLimitError(429, {"error": {"message": "slow down"}}, httpx2.Headers())
 
     with pytest.raises(TypeSafeRateLimitError):
-        await jev.match_vacancy(
+        await match.match_vacancy(
             FakeClient(error=error), "cv", await load(vacancy), "jev-1.13",
-            fingerprint=FINGERPRINT, cv_hash="a" * 64, content_hash="b" * 64, job="job",
+            cv_hash="a" * 64, content_hash="b" * 64, job="job",
         )
 
     (call,) = await calls_for(vacancy)
@@ -346,9 +344,9 @@ async def test_an_answer_of_an_unknown_shape_is_still_recorded_as_paid(vacancy):
     del response.answers["overall_fit"]
 
     with pytest.raises(KeyError):
-        await jev.match_vacancy(
+        await match.match_vacancy(
             FakeClient(response=response), "cv", await load(vacancy), "jev-1.13",
-            fingerprint=FINGERPRINT, cv_hash="a" * 64, content_hash="b" * 64, job="job",
+            cv_hash="a" * 64, content_hash="b" * 64, job="job",
         )
 
     (call,) = await calls_for(vacancy)
@@ -371,7 +369,7 @@ async def test_preview_returns_the_same_answers_but_records_nothing(vacancy):
     """The whole contract of --dry-run: identical flattening, zero rows."""
     client = FakeClient(response=FakeResponse())
 
-    preview = await jev.preview_vacancy(
+    preview = await match.preview_vacancy(
         client, "cv", await load(vacancy), "jev-1.13", job="job text"
     )
 
@@ -391,15 +389,14 @@ async def test_preview_returns_the_same_answers_but_records_nothing(vacancy):
 
 async def test_preview_and_match_agree_on_every_promoted_field(vacancy):
     """A dry run that disagreed with the real thing would be worse than none."""
-    preview = await jev.preview_vacancy(
+    preview = await match.preview_vacancy(
         FakeClient(response=FakeResponse()), "cv", await load(vacancy), "jev-1.13", job="job"
     )
-    outcome = await jev.match_vacancy(
+    outcome = await match.match_vacancy(
         FakeClient(response=FakeResponse()),
         "cv",
         await load(vacancy),
         "jev-1.13",
-        fingerprint=FINGERPRINT,
         cv_hash="a" * 64,
         content_hash="b" * 64,
         job="job",

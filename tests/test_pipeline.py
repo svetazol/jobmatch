@@ -58,7 +58,8 @@ def never_call_jev(monkeypatch):
     """A fake outcome, and a client that would explode if anything used it."""
     outcomes = []
 
-    async def fake_match(client, cv, vacancy, model, *, fingerprint, cv_hash, content_hash, job):
+    async def fake_match(client, cv, vacancy, model, *, cv_hash, content_hash, job):
+        fingerprint = matching.inputs_fingerprint(cv, job, matching.QUESTIONS, model)
         async with SessionLocal.begin() as session:
             call = LlmCall(
                 kind="match",

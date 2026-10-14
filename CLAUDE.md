@@ -83,9 +83,9 @@ hh.ru, so keep them small (`--limit`).
 ```
 jobmatch/
   sources/     the web: one module per site; hh/ is the only one
-  matching/    the LLM: questions, CV sanitising, fingerprint; jev.py alone knows the SDK
+  matching/    the match: questions, CV sanitising, job text, the flattened answer (match.py)
   research/    questions to a model about a company: employer.py, recruiters.py
-  llm/         what every model call shares (key, fingerprint, ledger); openrouter.py alone knows the OpenAI SDK
+  llm/         what every model call shares (key, fingerprint, ledger); jev.py and openrouter.py alone know their SDKs
   models.py    the schema (SQLAlchemy 2.0)
   repository.py  flat module of named queries, keeps SQL out of pipeline.py
   pipeline.py  the only module allowed to know all three areas above

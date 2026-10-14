@@ -23,7 +23,7 @@ thin callers of that same core.
 
 `research/` is a second LLM leaf beside `matching/`, not a part of it:
 structured-output questions about a company, sent by `jobmatch/llm/openrouter.py`,
-the only module that imports the OpenAI SDK, as `matching/jev.py` alone imports
+the only module that imports the OpenAI SDK, as `jobmatch/llm/jev.py` alone calls
 Jev's. It asks who is behind a posting and who recruits there
 (`docs/company-research.md` §2, §3); `pipeline` is its caller.
 
@@ -396,7 +396,7 @@ becomes 2–3 columns and a migration, every removal leaves dead ones, and
 
 **Sorting is correct for free.** Jev's `Score` returns a position on the
 ordered scale — verified 2026-09-23: the *raw* value is on the legend's own
-index scale (`2.4` of `0..4`), not 0–1, so `matching/jev.py` normalises it to
+index scale (`2.4` of `0..4`), not 0–1, so `jobmatch/matching/match.py` normalises it to
 0–1 before storing and keeps the raw value in `answers`. The stored score is
 therefore a plain float, so `ORDER BY overall_fit_score DESC` is an
 indexed float sort. The classic enum trap (`excellent < good < poor < strong <
@@ -478,7 +478,8 @@ into `jobmatch/matching/` and deleted:
 - `questions.py` → moved unchanged, plus a module-level `QUESTIONS_HASH`.
 - `sanitize.py` → moved, `SystemExit` → `ValueError` (a library must not kill
   the process; `cli.py` decides exit codes).
-- `matcher.py` → `matching/jev.py`, widened to own the whole LLM concern.
+- `matcher.py` → the Jev module, widened to own the whole LLM concern; split
+  2026-10-14 into `jobmatch/llm/jev.py` (the call) and `jobmatch/matching/match.py`.
 - `config.py` → folded into `jobmatch/config.py`; `JOB_PATH` disappears, jobs
   come from the DB.
 - `cli.py` → **deleted**; its behaviour survives as `jobmatch match --url <url>`.
@@ -493,12 +494,12 @@ def job_text(vacancy: Vacancy) -> str               # renders the posting for th
 def inputs_fingerprint(cv, job, questions, model) -> str
 def preview_vacancy(client, cv, vacancy, model, *, job) -> Preview   # asks, records nothing
 def match_vacancy(client, cv, vacancy, model, *,
-                  fingerprint, cv_hash, content_hash, job) -> MatchOutcome
+                  cv_hash, content_hash, job) -> MatchOutcome
 ```
 
-The hashes are passed **in** rather than computed inside `match_vacancy`: the
-caller has already built the fingerprint to decide whether to call at all, and
-recomputing it would be a second chance to disagree with itself.
+The fingerprint is not passed in: `llm.jev.ask` hashes exactly what it sends
+and returns it in `MatchOutcome`, so the stored key cannot describe another
+request. `inputs_fingerprint` builds the same hash for the cache check.
 
 `MatchOutcome` is a small frozen dataclass holding the flattened fields, the
 full `answers: dict`, and `call_id: int` — the id of an `llm_calls` row that is
@@ -508,9 +509,10 @@ attached to the caller's session. `Preview` is the same shape minus the
 identity of a stored call, which is what makes `--dry-run` able to report
 exactly what a real run would have saved.
 
-`jev.py` is the only place that knows the SDK's answer shape
+`matching/match.py` is the only place that knows the SDK's answer shape
 (`answers.is_qualified.noul`, `answers.overall_fit.score` + `legend`,
-`answers.top_gap.choice`, `answers.best_angle.choice`, `usage.cost`) — that
+`answers.top_gap.choice`, `answers.best_angle.choice`; the cost is read in
+`jobmatch/llm/jev.py`) — that
 containment is what lets `repository.save_match` stay a dumb column write.
 
 Two deliberate choices: the client is opened **once per run** (it's an HTTP

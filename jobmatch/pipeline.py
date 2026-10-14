@@ -409,7 +409,6 @@ async def _match(
             cv,
             vacancy,
             settings.model,
-            fingerprint=fingerprint,
             cv_hash=matching.sha256(cv),
             content_hash=matching.content_hash(job),
             job=job,

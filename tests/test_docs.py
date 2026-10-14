@@ -51,6 +51,10 @@ GONE = {
     "`research.py`": "`research/` and `llm/openrouter.py`",
     "**research.py**": "research/ and llm/openrouter.py",
     "research._call": "llm.openrouter.ask",
+    # split 2026-10-14; not bare "jev.py", which llm/jev.py contains
+    "matching/jev.py": "llm/jev.py and matching/match.py",
+    "`jev.py`": "`llm/jev.py` and `matching/match.py`",
+    "fingerprint, cv_hash, content_hash, job": "match_vacancy no longer takes a fingerprint",
 }
 
 # Prose that happens to contain a dead string for a legitimate reason: the

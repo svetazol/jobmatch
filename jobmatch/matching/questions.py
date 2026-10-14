@@ -4,9 +4,10 @@ Each question is its own named constant so it can be read, added, removed, or
 reused on its own; QUESTIONS is just the aggregate the API call sends.
 """
 import hashlib
-import json
 
 from typesafe_sdk import Choice, Noul, NoulCriteria, Score
+
+from ..llm.jev import canonical
 
 IS_QUALIFIED = Noul(
     instructions="Does the candidate meet the job's minimum required qualifications?",
@@ -85,12 +86,6 @@ QUESTIONS = {
     "top_gap": TOP_GAP,
     "best_angle": BEST_ANGLE,
 }
-
-
-def canonical(questions: dict) -> str:
-    """The exact serialisation that goes into a fingerprint. Sorted, compact."""
-    payload = {k: q.model_dump(mode="json") for k, q in sorted(questions.items())}
-    return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
 # Changes whenever a question is added, removed or reworded — so there is no

@@ -70,7 +70,7 @@ approved by the user with the architect's changes folded in.
 - `jobmatch/research/employer.py` (built as the identify module, renamed
   2026-10-13, split 2026-10-14) asks the question through
   `jobmatch/llm/openrouter.py`, the only module that knows the OpenAI SDK, as
-  `jobmatch/matching/jev.py` is for Jev. Across the two, top to bottom:
+  `jobmatch/llm/jev.py` is for Jev. Across the two, top to bottom:
   - `Poster(name, site_url, about, posting)` — frozen dataclass, the input.
   - `Identity` — a frozen pydantic model, `extra="forbid"`, every field
     required: `employer`, `homepage`, `careers_page`, `is_agency`, `client`
