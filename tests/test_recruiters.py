@@ -209,6 +209,15 @@ def test_an_identity_names_the_target_and_gives_the_homepage_that_answered():
     )
 
 
+def test_without_a_name_homepage_or_city_in_the_answer_the_target_falls_back():
+    """Pinned on 2026-10-14 with the two above: the target is the recruiters
+    prompt, so a change makes every stored search be paid for again."""
+    bare = Employer(name="Acme", site_url="https://acme.example", raw={})
+    assert pipeline.target_of(bare, identity(True, employer=None, homepage=None)) == (
+        research.Target(name="Acme", homepage="https://acme.example", city=None)
+    )
+
+
 @pytest.mark.parametrize("homepage_ok", [False, None])
 def test_a_homepage_that_did_not_answer_falls_back_to_the_hh_link(homepage_ok):
     target = pipeline.target_of(EMPLOYER, identity(homepage_ok))

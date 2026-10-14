@@ -9,6 +9,7 @@ a unique index and the ledger row is a second transaction.
 import asyncio
 import dataclasses
 import datetime as dt
+import hashlib
 import json
 from decimal import Decimal
 
@@ -293,6 +294,72 @@ def test_the_employer_fingerprint_is_pinned():
     assert key(POSTER, MODEL) == (
         "d2fdbcbc0761aab2429fdfe17c89fbbb1e34fe49fc83004b1e228f13a62eef27"
     )
+
+
+@pytest.mark.parametrize(("target", "pinned"), [
+    (research.Target("ЭР-Телеком", "https://www.ertelecom.ru/about", "Пермь"),
+     "e14b014d8606ac559b156bd1ba073a5a760b0757f360983895e4cc1c6b9e3cc3"),
+    (research.Target("ЭР-Телеком Холдинг", None, None),     # named, not by host
+     "17dd3622893abfff974a0b804ea62f6e585e1e5a038e7ac9f15074463e7a203c"),
+])
+def test_the_recruiters_fingerprint_is_pinned(target, pinned):
+    """Pinned on 2026-10-14, before the AI code moved into its own package.
+    A changed value makes every stored `recruiter_searches` row miss the cache
+    and be paid for again: change the pin only on purpose."""
+    request = research.recruiters_request(target, "google/gemini-2.5-flash-lite:online")
+    assert research.fingerprint(request) == pinned
+
+
+def canonical_sha256(value) -> str:
+    """Hashed here, not by `research.fingerprint`, so the pin does not move
+    with the code it guards."""
+    blob = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+# The fingerprint pins above already guard the cache key; these two exist so
+# that a failure says the schema itself moved, not just some part of a request.
+def test_the_identity_schema_sent_to_the_model_is_pinned():
+    """Pinned on 2026-10-14: the `response_format` is in the employer
+    fingerprint, so a changed schema (a docstring, a description, a field)
+    makes every stored identity be paid for again. Change it only on purpose."""
+    response_format = research.employer_request(POSTER, MODEL)["response_format"]
+    assert canonical_sha256(response_format) == (
+        "d6ad63fbb69592f0731de00900130e8b57fdeb6b4914e977dd1b744ffe830a44"
+    )
+
+
+def test_the_recruiters_schema_sent_to_the_model_is_pinned():
+    """Pinned on 2026-10-14, as the identity schema: a changed schema makes
+    every stored recruiter search be paid for again. Change it only on purpose."""
+    target = research.Target("ЭР-Телеком", "https://ertelecom.ru", "Пермь")
+    response_format = research.recruiters_request(target, MODEL)["response_format"]
+    assert canonical_sha256(response_format) == (
+        "c653356b63a962eb37d19800dba9ccdd6c71bf9dd2673c6b52e32668bbc0a86d"
+    )
+
+
+@pytest.mark.parametrize(("employer", "poster"), [
+    (Employer(name="ЭР-Телеком Холдинг", site_url="http://rabotavdomru.ru",
+              raw={"city": "Пермь", "industries": "Телекоммуникации"}),
+     research.Poster(
+         name="ЭР-Телеком Холдинг", site_url="http://rabotavdomru.ru",
+         about="Пермь; Телекоммуникации",
+         posting=POSTER.posting,
+     )),
+    (Employer(name="Acme", site_url=None, raw={"industries": "IT"}),
+     research.Poster(name="Acme", site_url=None, about="IT",
+                     posting=POSTER.posting)),
+    (Employer(name="Acme", site_url=None, raw={}),
+     research.Poster(name="Acme", site_url=None, about=None,
+                     posting=POSTER.posting)),
+])
+def test_the_poster_built_from_the_hh_pages_is_pinned(employer, poster):
+    """Pinned on 2026-10-14: the poster is the employer prompt, so a change
+    makes every stored identity be paid for again. Change it only on purpose."""
+    vacancy = Vacancy(title="Python developer", company="ЭР-Телеком Холдинг",
+                      description="Мы пишем биллинг.")
+    assert pipeline.poster_of(employer, vacancy) == poster
 
 
 @pytest.mark.parametrize(("given", "stored"), [

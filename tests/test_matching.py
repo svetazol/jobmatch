@@ -10,7 +10,7 @@ from typesafe_sdk import ChoiceAnswer, NoulAnswer, ScoreAnswer
 
 from jobmatch import matching
 from jobmatch.db import SessionLocal
-from jobmatch.matching import jev
+from jobmatch.matching import jev, sanitize
 from jobmatch.models import LlmCall, MatchResult, Vacancy
 
 FINGERPRINT = "f" * 64
@@ -75,9 +75,11 @@ class FakeClient:
     def __init__(self, response=None, error=None):
         self.response, self.error = response, error
         self.calls = 0
+        self.sent: list[dict] = []   # each call's kwargs: the request Jev gets
 
     async def system_one(self, **kwargs):
         self.calls += 1
+        self.sent.append(kwargs)
         if self.error:
             raise self.error
         return self.response
@@ -129,6 +131,106 @@ def test_fingerprint_covers_every_input_that_should_invalidate():
     reworded = dict(matching.QUESTIONS)
     reworded.pop("top_gap")
     assert base != matching.inputs_fingerprint("cv", "job", reworded, "jev-1.13")
+
+
+def test_the_match_fingerprint_is_pinned():
+    """Pinned on 2026-10-14, before the AI code moved into its own package.
+    A changed value makes every stored `match_results` row miss the cache and
+    be paid for again: change the pin only on purpose."""
+    cv = "# Jane Doe\nPython developer, 6 years.\n\n- FastAPI, Postgres, asyncio"
+    job = "# Python developer\nCompany: Acme\n\nWe build billing in Python."
+    assert matching.inputs_fingerprint(cv, job, matching.QUESTIONS, "jev-1.13") == (
+        "e30e15ff0e19d1612d56e0b6d4851503cd5734af910583d7d116879aaa661b57"
+    )
+
+
+def test_the_job_text_is_pinned():
+    """Pinned on 2026-10-14: the job text is in the match fingerprint, so a
+    changed rendering makes every stored match be paid for again. Every field
+    `job_text` reads is set: each conditional line, present."""
+    vacancy = Vacancy(
+        title="Python developer", company="ЭР-Телеком Холдинг",
+        salary_raw="от 200 000 ₽ на руки", experience_raw="3–6 лет",
+        description="Мы пишем биллинг.\nНа Python.", skills=["Python", "PostgreSQL"],
+    )
+    assert matching.job_text(vacancy) == (
+        "# Python developer\n"
+        "Company: ЭР-Телеком Холдинг\n"
+        "Salary: от 200 000 ₽ на руки\n"
+        "Experience: 3–6 лет\n"
+        "\n"
+        "Мы пишем биллинг.\n"
+        "На Python.\n"
+        "\n"
+        "## Key skills\n"
+        "\n"
+        "- Python\n"
+        "- PostgreSQL"
+    )
+
+
+def test_the_job_text_of_a_title_only_vacancy_is_pinned():
+    """Pinned on 2026-10-14, as above: each conditional line, absent."""
+    assert matching.job_text(Vacancy(title="Python developer")) == "# Python developer"
+
+
+def test_the_sanitised_cv_is_pinned():
+    """Pinned on 2026-10-14: the CV is hashed after sanitising, so a changed
+    rule makes every stored match be paid for again. Change it only on purpose.
+    The blank lines a contact row leaves, and the space a tag leaves, are
+    today's output too."""
+    cv = (
+        "# CV master database\n"
+        "\n"
+        "> Tags: [CV-RULE], [TODO], [INTERNAL]. Never sent to anyone.\n"
+        "\n"
+        "---\n"
+        "\n"
+        "## Contact\n"
+        "\n"
+        "| Field | Value |\n"
+        "|---|---|\n"
+        "| Full name | Jane Doe |\n"
+        "| Email | jane@example.invalid |\n"
+        "| Location | Minsk |\n"
+        "\n"
+        "## Experience\n"
+        "\n"
+        "Backend developer at Acme, 2019–2025. [TODO: check dates]\n"
+        "Left because of the reorg. [INTERNAL]\n"
+        "`[CV-RULE]` Never mention the reorg.\n"
+        "- FastAPI, Postgres [GUESSED]\n"
+    )
+    assert sanitize.sanitize_cv(cv) == (
+        "## Contact\n"
+        "\n"
+        "| Field | Value |\n"
+        "|---|---|\n"
+        "\n"
+        "\n"
+        "| Location | Minsk |\n"
+        "\n"
+        "## Experience\n"
+        "\n"
+        "Backend developer at Acme, 2019–2025. \n"
+        "- FastAPI, Postgres"
+    )
+
+
+async def test_jev_is_sent_exactly_the_inputs_the_fingerprint_hashes():
+    """The fingerprint is computed apart from the request `_ask` builds; this
+    keeps the two the same request. A drift would make the cache key stop
+    describing what was paid for."""
+    client = FakeClient(response=FakeResponse())
+    cv, job = "the cv", "the job"
+
+    await jev.preview_vacancy(client, cv, Vacancy(title="unused"), "jev-1.13", job=job)
+
+    assert client.sent == [{
+        "state": {"cv": cv, "job_description": job},
+        "questions": matching.QUESTIONS,
+        "model": "jev-1.13",
+    }]
 
 
 # --- the answer shape -----------------------------------------------------
