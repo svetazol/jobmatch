@@ -1,10 +1,4 @@
-"""The source seam.
-
-A source owns everything about its site — URLs, headers, parsing, id
-extraction, normalisation. Outside this package only ``Listing``,
-``VacancyData`` and ``EmployerData`` are known, so adding a site is a new
-module plus one entry in ``SOURCES``.
-"""
+"""The source seam: a site is one module plus an entry in ``SOURCES``; only these dataclasses leave it."""
 from __future__ import annotations
 
 import datetime as dt
@@ -16,12 +10,7 @@ from urllib.parse import urlsplit
 
 @dataclass(frozen=True, slots=True)
 class Crawl:
-    """How hard a source may walk a paginated listing.
-
-    Not search parameters — those are opaque and go to the site verbatim.
-    These are the two knobs that stop a crawl being rude or endless, and every
-    paginated source needs both.
-    """
+    """The two knobs that stop a paginated crawl being rude or endless."""
 
     max_pages: int = 5
     delay: float = 2.5
@@ -29,25 +18,14 @@ class Crawl:
 
 @dataclass(frozen=True, slots=True)
 class Rate:
-    """How fast a source's *detail pages* may be fetched.
-
-    Per source, not global: throttling tolerance belongs to the site. The rate
-    is ``workers / delay`` a second -- each worker sleeps ``delay`` after its own
-    page, so raising workers alone raises the rate. Workers are coroutines, so
-    this is a per-process limit: two processes crawling one site double it.
-    """
+    """Detail pages per second is ``workers / delay``, per process: two processes double it."""
 
     workers: int = 1
     delay: float = 1.0
 
 
 class VacancyGone(Exception):
-    """A positive signal that the vacancy is no longer listed (404, archived).
-
-    Distinct from any other fetch failure: this one is the employer's doing and
-    is never worth retrying, so the pipeline can act on it without knowing
-    anything about HTTP.
-    """
+    """A positive 404/archived signal, never worth retrying, so the pipeline needs no HTTP."""
 
 
 class EmployerGone(Exception):
@@ -79,7 +57,7 @@ class VacancyData:
     country: str | None = None
     skills: list[str] = field(default_factory=list)
     work_formats: list[str] = field(default_factory=list)   # a set: onsite/remote/hybrid
-    # the site's own id for the employer; None when the posting hides it
+    # None when the posting hides it.
     employer_id: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)  # -> vacancies.raw
 
@@ -97,19 +75,15 @@ class EmployerData:
 
 @dataclass(frozen=True, slots=True)
 class Source:
-    """A site: a search feed, a page parser, and the limits it imposes.
-
-    ``crawl`` and ``rate`` are data, not behaviour: what this site tolerates,
-    measured against it, so no config has to restate them.
-    """
+    """A site; ``crawl`` and ``rate`` are measured against it, so no config restates them."""
 
     name: str
     hosts: tuple[str, ...]                 # which URLs this source owns
     discover: Callable[..., AsyncIterator[Listing]]
     fetch: Callable[[str], Awaitable[VacancyData]]  # a URL, not a Listing: `fetch <url>` has no feed
-    crawl: Crawl = Crawl()                 # how far its listing may be walked
-    rate: Rate = Rate()                    # how fast its pages may be fetched
-    # an employer id -> its page; None for a site without employer pages
+    crawl: Crawl = Crawl()
+    rate: Rate = Rate()
+    # None for a site without employer pages.
     fetch_employer: Callable[[str], Awaitable[EmployerData]] | None = None
 
 

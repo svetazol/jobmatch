@@ -1,14 +1,4 @@
-"""A short cover letter for one vacancy, written by `claude -p` on request.
-
-A subprocess, unlike the matcher (§8): this runs on the user's own logged-in
-Claude Code (`jobmatch/llm/claude_cli.py`), so it needs no key and spends no
-OpenRouter credit -- and it only works on a machine where `claude` is installed
-and signed in. A hosted version would call the Anthropic API with the same
-prompt instead.
-
-The note itself is not stored: it is a draft to copy and edit, and regenerating
-one is a click. The call is, like every model call, in `llm_calls`.
-"""
+"""A cover-note draft for one vacancy from `claude -p`; not stored, as regenerating is a click."""
 from __future__ import annotations
 
 import re
@@ -17,8 +7,7 @@ from .llm import claude_cli
 from .matching.questions import BEST_ANGLE, TOP_GAP
 from .models import MatchResult, Vacancy
 
-# Below this the matcher's gap is a near-tie (see VacancyDetailView's "vague"
-# rule); naming it would make the note answer an objection nobody raised.
+# Below this the gap is a near-tie, and naming it answers an objection nobody raised.
 _GAP_CONFIDENT = 0.5
 
 _SYSTEM = """\
@@ -40,8 +29,7 @@ vacancy. Rules:
 - Write in the language you are told to use.
 - Output the letter text only."""
 
-# The candidate is a woman. English grammar does not show it; Russian past
-# tense and short adjectives do ("проектировала", "готова").
+# Russian grammar shows the candidate's gender; English does not.
 _GENDER = {
     "Russian": "The candidate is a woman: use feminine forms throughout "
                "(e.g. «я проектировала», «я готова»).",
@@ -49,12 +37,7 @@ _GENDER = {
 
 
 def language_of(vacancy: Vacancy) -> str:
-    """Russian if the posting is mostly Cyrillic, else English.
-
-    Decided here rather than left to the model: hh postings mix English tech
-    terms into Russian prose, and "the vacancy's language" is then a judgment
-    call this makes the same way every time.
-    """
+    """Decided here, not by the model, so mixed-language postings get the same call every time."""
     text = " ".join(filter(None, [vacancy.title, vacancy.description]))
     cyrillic = len(re.findall(r"[А-Яа-яЁё]", text))
     latin = len(re.findall(r"[A-Za-z]", text))
@@ -88,7 +71,7 @@ def build_prompt(vacancy: Vacancy, match: MatchResult | None, cv: str) -> str:
 
 
 async def write(vacancy: Vacancy, match: MatchResult | None, cv: str, model: str) -> str:
-    """The note, from one recorded `claude -p` call; a `claude_cli.ClaudeError` when it fails."""
+    """One recorded `claude -p` call; `claude_cli.ClaudeError` when it fails."""
     return await claude_cli.ask(
         model, _SYSTEM, build_prompt(vacancy, match, cv), kind="cover_note", vacancy_id=vacancy.id
     )

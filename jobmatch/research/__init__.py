@@ -1,7 +1,4 @@
-"""Questions to a model about a company: who is behind a posting, and who recruits there.
-
-The caches are `company_research`'s; these always pay. Design: `docs/company-research.md`.
-"""
+"""Questions to a model about a company; these always pay, the caches are `company_research`'s."""
 from __future__ import annotations
 
 # Re-exported so callers hash a request beside building it, without importing llm.

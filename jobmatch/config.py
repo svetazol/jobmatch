@@ -1,10 +1,4 @@
-"""config.toml -> a frozen Settings. Secrets are in .env.
-
-Choices only: what to search for, where, and with which CV. hh's ceiling, fetch
-rate, ordering and area coverage live in ``sources/hh`` -- the line is whether
-the site itself determines the value. A setting a config must restate is a
-setting a config can contradict.
-"""
+"""config.toml -> a frozen Settings: choices only; what the site determines lives in ``sources/hh``."""
 from __future__ import annotations
 
 import dataclasses
@@ -18,21 +12,15 @@ from .sources import SOURCES, Crawl, Rate
 
 DEFAULT_PATH = Path("config.toml")
 
-# The kinds of model call, as `llm_calls.kind` names them; a typo in [models] is refused at load.
+# As `llm_calls.kind` names them; a typo in [models] is refused at load.
 MODEL_KINDS = ("match", "employer", "recruiters", "cover_note")
 
-# Keys allowed inside a [sources."<name>"] table.
 _SOURCE_KEYS = {"search", "sweeps"}
 
 
 @dataclass(frozen=True, slots=True)
 class SourceConfig:
-    """One site, its search, and the sweeps it is crawled in.
-
-    ``search`` is opaque: passed to the source verbatim. Nested under the source
-    because each site has its own query vocabulary -- and so two sweeps cannot
-    drift apart.
-    """
+    """One site; ``search`` is passed to it verbatim, shared by its sweeps so they cannot drift apart."""
 
     name: str
     search: Mapping[str, Any]
@@ -42,21 +30,18 @@ class SourceConfig:
 @dataclass(frozen=True, slots=True)
 class Settings:
     sources: tuple[SourceConfig, ...]
-    # None means "use the source's own measured value" (sources/hh RATE, CRAWL).
-    # Overrides for experiments; not needed for a correct config.
+    # None means the source's own measured RATE and CRAWL; these are for experiments.
     fetch_delay: float | None = None
     fetch_workers: int | None = None
     crawl: Crawl | None = None
-    # kind -> pinned model id; each is part of its call's fingerprint, so no defaults here to drift from config
+    # Part of each call's fingerprint, so no defaults here to drift from the config.
     models: Mapping[str, str] = dataclasses.field(default_factory=dict)
     cv_path: Path = Path("data/cv.md")
-    # A hash, not a path: answers are stored under the hash of the CV that
-    # earned them, which survives the file being edited or renamed. Empty means
-    # every CV at once -- honest only while there has been one.
+    # A hash, not a path, as it survives an edit or rename; empty means every CV at once.
     stats_cv_hash: str = ""
 
     def model_for(self, kind: str) -> str:
-        """The model for one kind of call; a config without it fails here rather than asking a default."""
+        """A config without the kind fails here rather than asking a default."""
         try:
             return self.models[kind]
         except KeyError:
@@ -103,8 +88,7 @@ def load_settings(path: Path | str = DEFAULT_PATH) -> Settings:
     except FileNotFoundError:
         raise FileNotFoundError(f"No config at {path}; copy the one in the repo root") from None
 
-    # A misspelled key is silently ignored otherwise: `fetch_worker` (no s) ran
-    # one worker and made the crawl three times slower without a word.
+    # A misspelled `fetch_worker` once ran one worker silently, three times slower.
     known = {field.name for field in dataclasses.fields(Settings)}
     if unknown := sorted(set(raw) - known):
         raise ValueError(
@@ -132,7 +116,7 @@ def load_settings(path: Path | str = DEFAULT_PATH) -> Settings:
 
 
 def _models(path: Path, table: Any) -> dict[str, str]:
-    """``[models]`` -> kind -> id, refusing what would make a fingerprint drift or a search go blind."""
+    """Refuses what would make a fingerprint drift or a search go blind."""
     if not isinstance(table, dict):
         raise ValueError(f"{path}: [models] must be a table of kind = \"model id\"")
     if unknown := sorted(set(table) - set(MODEL_KINDS)):
@@ -141,7 +125,7 @@ def _models(path: Path, table: Any) -> dict[str, str]:
         )
     models = {kind: str(model) for kind, model in table.items()}
     for kind, model in models.items():
-        # an alias ("sonnet", "jev-latest") resolves to another model over time, silently re-pricing every fingerprint
+        # An alias drifts to another model over time, silently re-pricing every fingerprint.
         if "latest" in model or not any(c.isdigit() for c in model):
             raise ValueError(f"{path}: [models] {kind} = {model!r} is an alias; pin a versioned id")
     if "recruiters" in models and not models["recruiters"].endswith(":online"):
@@ -153,11 +137,7 @@ def _models(path: Path, table: Any) -> dict[str, str]:
 
 
 def _sources(path: Path, table: Any) -> tuple[SourceConfig, ...]:
-    """``[sources."hh.ru".search]`` / ``.sweeps`` -> SourceConfig.
-
-    Fails loudly: a config that names a source, sweep or country wrongly must
-    say so before the first request, not crawl nothing and report success.
-    """
+    """Fails loudly, so a wrong name stops the run before it crawls nothing and reports success."""
     if not isinstance(table, dict) or not table:
         raise ValueError(f"{path} enables no sources; expected [sources.\"<name>\"]")
     if unknown := sorted(set(table) - set(SOURCES)):
@@ -190,11 +170,7 @@ def _sources(path: Path, table: Any) -> tuple[SourceConfig, ...]:
 
 
 def _countries(path: Path, source: str, sweep: str, countries: Any) -> tuple[str, ...]:
-    """Validated at load, so a typo costs nothing.
-
-    ``areas`` is imported here because the vocabulary is hh's specifically; with
-    a second source the check moves onto the source itself.
-    """
+    """Validated at load, so a typo costs nothing; hh's vocabulary until a second source exists."""
     from .sources.hh import areas
 
     if isinstance(countries, str) or not countries:

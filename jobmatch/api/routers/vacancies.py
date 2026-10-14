@@ -20,13 +20,7 @@ SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
 def _fit_probabilities(match: MatchResult | None) -> dict[str, float]:
-    """The five stored probabilities, projected out of `answers`.
-
-    Per §5 they stay in JSONB — read on every page load, never sorted or
-    filtered on — but they ship with every row, because without them the list
-    can only print a number, and the number alone is what the UI is trying not
-    to assert.
-    """
+    """Shipped with every row, so the list shows a distribution rather than asserting one number."""
     if match is None:
         return {}
     probs = (match.answers or {}).get("overall_fit", {}).get("probabilities", {})
@@ -34,7 +28,7 @@ def _fit_probabilities(match: MatchResult | None) -> dict[str, float]:
 
 
 def _is_stale(vacancy: Vacancy) -> bool:
-    """Derived, never stored (§6)."""
+    """Derived, never stored; see docs/architecture.md §6."""
     if vacancy.last_seen_at is None:
         return False
     return dt.datetime.now(dt.UTC) - vacancy.last_seen_at > repository.STALE_AFTER
@@ -58,13 +52,7 @@ def _summary(match: MatchResult | None) -> MatchSummary | None:
 
 
 def _row(vacancy: Vacancy, match: MatchResult | None) -> VacancyRow:
-    """Written out field by field on purpose.
-
-    These models are projections, not mirrors of the ORM (§12): `raw`, every
-    hash and `fetch_error` are absent because no screen shows them, and an
-    automatic copy would quietly start shipping whatever the next migration
-    adds.
-    """
+    """Field by field, so the next migration's columns are not shipped by accident."""
     return VacancyRow(
         id=vacancy.id,
         title=vacancy.title,
@@ -101,13 +89,7 @@ async def list_vacancies(
     cursor: str | None = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> VacancyPage:
-    """Ranked by fit (or newest first), filtered, keyset-paginated.
-
-    A cursor is only valid for the `sort` it was issued under.
-
-    `pitch` is the UI's word for `best_angle`; the column keeps its name and
-    this is the only place the two meet.
-    """
+    """Keyset-paginated; a cursor is valid only for its `sort`. `pitch` is the UI's `best_angle`."""
     parsed_cursor = _parse_cursor(cursor, sort)
     rows, total = await repository.list_vacancies(
         session,
@@ -129,9 +111,7 @@ async def list_vacancies(
     next_cursor = None
     if len(rows) == limit:
         last_vacancy, last_match = rows[-1]
-        # "null" when the page ended on an unmatched (or undated) vacancy —
-        # those sort last and still have to be pageable, so the cursor has to
-        # be able to say "I am inside the NULL tail, at this id".
+        # "null": the page ended inside the NULLS LAST tail, which must stay pageable.
         if sort == "posted":
             key = last_vacancy.published_at and last_vacancy.published_at.isoformat()
         else:
@@ -144,7 +124,7 @@ def _parse_cursor(cursor: str | None, sort: str) -> tuple[float | dt.datetime | 
     if not cursor:
         return None
     try:
-        # rsplit: an ISO timestamp has colons of its own
+        # rsplit: an ISO timestamp has colons of its own.
         key, vacancy_id = cursor.rsplit(":", 1)
         if key == "null":
             return None, int(vacancy_id)
@@ -169,20 +149,14 @@ async def get_vacancy(vacancy_id: int, session: SessionDep) -> VacancyDetail:
         skills=list(vacancy.skills),
         fetched_at=vacancy.fetched_at,
         last_seen_at=vacancy.last_seen_at,
-        # the complete record, so the client reads level descriptions from the
-        # stored legend rather than hardcoding questions.py
+        # Whole, so the client reads the stored legend rather than hardcoding questions.py.
         answers=match.answers if match else None,
     )
 
 
 @router.post("/{vacancy_id}/cover-note", response_model=CoverNote)
 async def write_cover_note(vacancy_id: int, session: SessionDep) -> CoverNote:
-    """Why the CV at `cv_path` suits this vacancy, drafted by `claude -p`.
-
-    Takes 10-30 s. A 502 means `claude` itself failed (not installed, not
-    signed in, timed out); its message is passed through so the UI can show it.
-    A 422 means the CV at `cv_path` is empty or not filled in yet.
-    """
+    """Takes 10-30 s. 502: `claude` failed, its message passed through; 422: the CV is empty."""
     found = await repository.get_vacancy(session, vacancy_id)
     if found is None:
         raise HTTPException(404, f"no vacancy {vacancy_id}")
@@ -191,7 +165,7 @@ async def write_cover_note(vacancy_id: int, session: SessionDep) -> CoverNote:
         settings = load_settings(DEFAULT_PATH)
         # Sanitised, as for Jev: the CV leaves the machine here too.
         cv = matching.load_cv(settings.cv_path)
-    except ValueError as e:     # an empty or unfilled CV: nothing to write from
+    except ValueError as e:     # an empty or unfilled CV
         raise HTTPException(422, str(e)) from None
     try:
         text = await cover_note.write(vacancy, match, cv, settings.model_for("cover_note"))

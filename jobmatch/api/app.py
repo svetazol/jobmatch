@@ -1,11 +1,4 @@
-"""FastAPI over the same database the pipeline writes.
-
-Imports `jobmatch.models` rather than re-declaring anything — `initial_task.md`
-rules out a second codebase reading this schema, and that is the whole reason
-`api/` lives inside the package.
-
-Run it:  uvicorn jobmatch.api.app:app --reload
-"""
+"""FastAPI over the pipeline's database, inside the package so the schema has one codebase."""
 from __future__ import annotations
 
 from collections.abc import AsyncIterator

@@ -1,5 +1,4 @@
-"""The on-click company operations of `docs/company-research.md`: they need a source or a
-model and the database at once, like `pipeline`, but answer a click rather than run a phase."""
+"""The on-click company operations (docs/company-research.md): a source or model plus the database."""
 from __future__ import annotations
 
 import dataclasses
@@ -18,35 +17,19 @@ log = logging.getLogger(__name__)
 
 
 class EmployerUnknown(LookupError):
-    """There is no employer to look up for this vacancy; the message says why.
-
-    A dead end, not a failure: the posting is anonymous, gone, or from a site
-    without employer pages. The API answers 404 with the message.
-    """
+    """A dead end, not a failure (anonymous, gone, no employer pages); the API answers 404."""
 
 
 class NothingToSearchFor(EmployerUnknown):
-    """The company was looked up but has neither a website nor a name, so
-    there is nothing to search the web for. A subclass so callers that only
-    care about a dead end need not know it; the API tells it from a missing
-    vacancy and answers 422.
-    """
+    """Looked up, but with neither a website nor a name to search for; the API answers 422."""
 
 
 class NotLookedUp(LookupError):
-    """The vacancy's company has not been looked up, so there is nothing to
-    tell a model about it yet. Not a dead end: `lookup_employer` first, then
-    ask again. The API answers 409.
-    """
+    """Not a dead end: `lookup_employer` first, then ask again; the API answers 409."""
 
 
 async def lookup_employer(vacancy_id: int) -> Employer:
-    """Fetch the employer page behind a vacancy and store what it says.
-
-    On demand from the UI, never from a run. A repeat call refreshes the row.
-    Like `pipeline._fetch`, no session is held across a page fetch. Anything other than
-    `EmployerUnknown` (throttled, a 5xx, a layout change) propagates.
-    """
+    """Fetch and store the employer page; no session is held across the fetch, as in `pipeline._fetch`."""
     async with SessionLocal() as session:
         vacancy = await session.get(Vacancy, vacancy_id)
     if vacancy is None:
@@ -67,18 +50,11 @@ async def lookup_employer(vacancy_id: int) -> Employer:
 
 
 async def _employer_id_from_page(source: Source, vacancy: Vacancy) -> str:
-    """Re-read the vacancy page for the one thing a row fetched before
-    `employer_external_id` existed is missing, and store only that.
-
-    An anonymous posting also lands here on every click, since its NULL looks
-    the same as an old row's -- one page per click, on a vacancy someone chose
-    to open.
-    """
+    """For a row fetched before the column existed; an anonymous posting lands here on every click too."""
     try:
         data = await source.fetch(vacancy.url)
     except VacancyGone:
         async with SessionLocal.begin() as session:
-            # a positive signal, as in pipeline._fetch
             await repository.mark_delisted(session, vacancy.id)
         raise EmployerUnknown("the posting has been removed, so its employer is unknown") from None
     if data.employer_id is None:
@@ -89,15 +65,7 @@ async def _employer_id_from_page(source: Source, vacancy: Vacancy) -> str:
 
 
 async def identify_employer(vacancy_id: int, model: str) -> EmployerIdentity:
-    """Who is behind a posting: the stored answer to this exact request, or a
-    paid one (`research.ask_employer`), its homepage checked and the answer saved.
-
-    Needs the employer row `lookup_employer` writes -- its name and link are
-    half of what the model is told -- and raises `NotLookedUp` without it. A repeat click with nothing changed is
-    free; an edited posting, a re-looked-up employer page or another model is
-    a new request and pays. As in `pipeline._fetch`, no session is held across a
-    network call. Failures of the call propagate, already in `llm_calls`.
-    """
+    """The stored answer to this exact request, else a paid one, checked and saved."""
     async with SessionLocal() as session:
         vacancy = await session.get(Vacancy, vacancy_id)
         if vacancy is None:
@@ -112,9 +80,7 @@ async def identify_employer(vacancy_id: int, model: str) -> EmployerIdentity:
             return stored
 
     identity, call_id = await research.ask_employer(request, vacancy_id=vacancy_id)
-    # Paid for from here on: a cancelled request (a closed tab) must not lose
-    # the answer, or the next click pays for it again. Shielded, and bounded by
-    # the checks' own deadlines -- one after the other, two at most.
+    # Paid for: shielded, so a closed tab cannot lose the answer and make the next click pay again.
     with anyio.CancelScope(shield=True):
         homepage_ok = await _answers(identity.homepage)
         careers_ok = await _answers(identity.careers_page)
@@ -128,14 +94,12 @@ async def identify_employer(vacancy_id: int, model: str) -> EmployerIdentity:
 
 
 async def _answers(url: str | None) -> bool | None:
-    """Whether a URL from the answer responds; None when there is no URL."""
+    """None when there is no URL."""
     return None if url is None else await research.reachable(url)
 
 
 def poster_of(employer: Employer, vacancy: Vacancy) -> research.Poster:
-    """What the model is told: the hh employer page, and the posting exactly as
-    Jev reads it. Only `job_text` is shared -- Jev's request and fingerprint
-    are untouched."""
+    """The hh employer page, and the posting exactly as Jev reads it."""
     about = "; ".join(v for key in ("city", "industries") if (v := employer.raw.get(key)))
     return research.Poster(
         name=employer.name,
@@ -146,18 +110,7 @@ def poster_of(employer: Employer, vacancy: Vacancy) -> research.Poster:
 
 
 def target_of(employer: Employer, identity: EmployerIdentity | None) -> research.Target:
-    """The company to search for recruiters at: the identity's answer where it
-    has one, else the hh employer page.
-
-    The identity's homepage only if it answered (`homepage_ok`): a homepage
-    the model made up would point the search at the wrong company. Without
-    it the website is hh's link, often a careers or landing host
-    (rabotavdomru.ru for ЭР-Телеком, l.tbank.ru for Т-Банк), and the search
-    names the company by that host. For an
-    agency posting the identity's employer is the agency, so the search is for
-    the agency's recruiters -- the people who posted the vacancy -- not the
-    client's, who is often unnamed.
-    """
+    """The identity's homepage only if it answered, as a made-up one would search the wrong company."""
     answer = identity.answer if identity is not None else {}
     homepage = answer.get("homepage") if identity is not None and identity.homepage_ok else None
     return research.Target(
@@ -167,38 +120,21 @@ def target_of(employer: Employer, identity: EmployerIdentity | None) -> research
     )
 
 
-# How long a stored search is shown instead of asked again. Recruiters change
-# jobs, so the same request is worth paying for again after this. Not config:
-# nobody tunes it per run. Outside the fingerprint, so an older search with
-# the same inputs is redone without a new request shape.
+# Recruiters change jobs, so the same request is worth paying for again after this.
 RECRUITERS_FRESH = dt.timedelta(days=30)
 
 
 async def find_recruiters(
     vacancy_id: int, model: str, *, refresh: bool = False
 ) -> RecruiterSearch:
-    """Who recruits for the company behind a posting: the stored search for
-    this request if it is younger than `RECRUITERS_FRESH`, else a paid one
-    (`research.ask_recruiters`), saved. `refresh` always pays and saves a new
-    row, fresh one or not: the user asked for it (2026-10-14), to redo a
-    search they doubt without waiting out the month.
-
-    Per employer and request: the request holds the company, not the posting,
-    so postings of one company that make the same request share a search, and
-    one never pays twice for a request (the user's rule, 2026-10-14). Needs
-    `lookup_employer` first (`NotLookedUp`); the identity is optional and only
-    sharpens the target. As in `identify_employer`, no session is held across
-    the network call, and failures of the call propagate, already in
-    `llm_calls`.
-    """
+    """The stored search if fresh, else a paid one; `refresh` always pays (the user, 2026-10-14)."""
     employer_id, target, request, fingerprint, stored = await _recruiters_request(vacancy_id, model)
     if (not refresh and stored is not None
             and dt.datetime.now(dt.UTC) - stored.created_at < RECRUITERS_FRESH):
         return stored
 
     confirmed, call_id = await research.ask_recruiters(request, vacancy_id=vacancy_id)
-    # Paid for from here on: as in `identify_employer`, a cancelled request
-    # must not lose the answer.
+    # Paid for: shielded, as in `identify_employer`.
     with anyio.CancelScope(shield=True):
         async with SessionLocal.begin() as session:
             row = await repository.save_recruiters(
@@ -212,8 +148,7 @@ async def find_recruiters(
 
 
 async def stored_recruiters(vacancy_id: int, model: str) -> RecruiterSearch | None:
-    """The search a posting's request would reuse, fresh or not; never pays.
-    What the card shows before (or instead of) a click."""
+    """The search a request would reuse, fresh or not; never pays."""
     *_, stored = await _recruiters_request(vacancy_id, model)
     return stored
 
@@ -221,10 +156,7 @@ async def stored_recruiters(vacancy_id: int, model: str) -> RecruiterSearch | No
 async def _recruiters_request(
     vacancy_id: int, model: str
 ) -> tuple[int, research.Target, dict[str, Any], str, RecruiterSearch | None]:
-    """The employer, the target, the request and its fingerprint, and its newest
-    stored search; raises as `identify_employer` does without a vacancy or a
-    lookup, and `NothingToSearchFor` for a company with neither a website nor
-    a name."""
+    """The employer, target, request, fingerprint and newest stored search; raises as `identify_employer`."""
     async with SessionLocal() as session:
         vacancy = await session.get(Vacancy, vacancy_id)
         if vacancy is None:

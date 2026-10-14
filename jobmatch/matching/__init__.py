@@ -1,4 +1,4 @@
-"""Matching a CV against vacancies: the CV, the questions, the job text, and the call through `llm.jev`."""
+"""Matching a CV against vacancies through `llm.jev`."""
 from __future__ import annotations
 
 import hashlib
@@ -34,13 +34,13 @@ def sha256(text: str) -> str:
 
 
 def load_cv(path: Path | str) -> str:
-    """Read and sanitize once per run — not once per vacancy."""
+    """Once per run, not once per vacancy."""
     return sanitize_cv(load_text(Path(path)))
 
 
-content_hash = sha256  # named for what it means at the call site
+content_hash = sha256
 
 
 def inputs_fingerprint(cv: str, job: str, questions: dict[str, Any], model: str) -> str:
-    """The match's idempotency key, for the cache check: the same hash `jev.ask` records for this request."""
+    """For the cache check: the same hash `jev.ask` records for this request."""
     return jev.fingerprint(state(cv, job), questions, model)

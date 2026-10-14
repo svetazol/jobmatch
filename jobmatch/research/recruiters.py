@@ -1,4 +1,4 @@
-"""Who recruits for a company: a web search for LinkedIn profiles, of which only the cited ones are kept."""
+"""Who recruits for a company: a web search for LinkedIn profiles, keeping only the cited ones."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -13,12 +13,7 @@ from ..llm import openrouter
 
 @dataclass(frozen=True, slots=True)
 class Target:
-    """The company to search for: its homepage, its name, and its city.
-
-    The prompt names it by the homepage's host where there is one, by the name
-    only where there is not (`recruiters_prompt`); the name is kept either way
-    for the log and the UI.
-    """
+    """The company to search for; the name is kept for the log and UI even when the host is searched."""
 
     name: str | None
     homepage: str | None
@@ -26,14 +21,11 @@ class Target:
 
     @property
     def searchable(self) -> bool:
-        """Whether there is a website or a name to search for."""
+        """A website or a name to search for."""
         return bool(_host(self.homepage) or self.name)
 
 
-# As with `Identity`, the docstrings and descriptions are prompt text, covered
-# by the fingerprint (one cache miss per stored search on any edit). Notes for
-# people: `linkedin_url` and `evidence` are what `keep_cited` checks against
-# the search's citations; nothing the model writes here is trusted unchecked.
+# Prompt text: the docstrings and Field descriptions are sent, so editing one re-pays every search.
 class Person(BaseModel):
     """Someone who works at the company now, in recruiting, HR or talent acquisition."""
 
@@ -78,13 +70,7 @@ acquisition who work there now. Search the web for their LinkedIn profiles.
 
 
 def recruiters_prompt(target: Target) -> str:
-    """Short and query-like: the web search is likely built from this text.
-
-    The company is named by its website's bare host, as a person would type
-    it, and by its name only when it has no website: a name is shared by
-    namesakes and spelt in two alphabets, a host is neither (the user,
-    2026-10-14). Only for a `searchable` target.
-    """
+    """Query-like, naming the host over the name, which namesakes share (the user, 2026-10-14)."""
     host = _host(target.homepage)
     company = f"the company whose website is {host}" if host else target.name
     if target.city:
@@ -108,7 +94,7 @@ RECRUITERS = openrouter.Question(
 
 
 def recruiters_request(target: Target, model: str) -> dict[str, Any]:
-    """The whole request, exactly as sent; the web search is the model id's `:online` suffix, not a field."""
+    """Exactly as sent; the web search is the model id's `:online` suffix, not a field."""
     return openrouter.request(RECRUITERS, target, model)
 
 
@@ -118,14 +104,14 @@ async def ask_recruiters(
     vacancy_id: int,
     http_client: httpx2.AsyncClient | None = None,   # tests pass a mocked one
 ) -> tuple[Confirmed, int]:
-    """The people the search's own citations confirm, and the call's `llm_calls` id; a failure is recorded, then raised."""
+    """The cited people and the `llm_calls` id; a failure is recorded, then raised."""
     answer, body, call_id = await openrouter.ask(
         RECRUITERS, sent, vacancy_id=vacancy_id, http_client=http_client
     )
     return keep_cited(answer, body), call_id
 
 
-# --- keeping only the cited --------------------------------------------------------
+# --- keeping only the cited ---
 
 @dataclass(frozen=True, slots=True)
 class ConfirmedPerson:
@@ -148,18 +134,7 @@ class Confirmed:
 
 
 def keep_cited(answer: Recruiters, body: dict[str, Any]) -> Confirmed:
-    """Only the people whose profile the web search itself returned. Never raises.
-
-    A model asked for LinkedIn URLs writes plausible ones from a name; a
-    citation is OpenRouter's record of a page the search really returned, so
-    it is the one check on a profile that costs nothing. Each person is kept
-    once, by slug; a repeat is not counted as dropped.
-
-    The trust boundary: a citation proves the profile exists and the search
-    returned it, not that the model's name and role belong to it. The
-    `source_title` is the search's own text for that page, which is why the
-    card shows it beside the name.
-    """
+    """A model invents plausible profile URLs; a citation proves the page exists, not the name on it."""
     citations = cited(body)
     kept: dict[str, ConfirmedPerson] = {}
     dropped = 0
@@ -185,9 +160,7 @@ def keep_cited(answer: Recruiters, body: dict[str, Any]) -> Confirmed:
 
 
 def cited(body: dict[str, Any]) -> dict[str, str | None]:
-    """LinkedIn profile slug -> the citation's title, for every profile the
-    search cited. Reads only the answer's `annotations`: a URL the model
-    wrote in its content is a claim, not a citation."""
+    """slug -> title, from `annotations` only: a URL in the content is a claim, not a citation."""
     found: dict[str, str | None] = {}
     for citation in _url_citations(body):
         url, title = citation.get("url"), citation.get("title")
@@ -213,14 +186,7 @@ def _url_citations(body: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def linkedin_slug(url: str) -> str | None:
-    """`https://ru.linkedin.com/in/Ivan-Petrov/?trk=x` -> `ivan-petrov`; None for
-    anything but a personal profile on LinkedIn's own host.
-
-    The slug is unquoted and lowercased, so a model's Cyrillic and a
-    citation's percent-encoding of it compare equal. The host must be
-    linkedin.com or a subdomain of it: `linkedin.com.evil.io` is not. A slug
-    with a slash or a blank in it, or only dots, is none.
-    """
+    """`https://ru.linkedin.com/in/Ivan-Petrov/` -> `ivan-petrov`, unquoted so Cyrillic compares equal."""
     try:
         parts = urlsplit(url.strip())
         host = parts.hostname
@@ -234,7 +200,7 @@ def linkedin_slug(url: str) -> str | None:
     if len(path) < 2 or path[0] != "in":
         return None
     slug = unquote(path[1]).lower()
-    # what a percent-encoding can smuggle in: a path of its own, or a blank
+    # What percent-encoding can smuggle in.
     if not slug or "/" in slug or any(c.isspace() for c in slug) or set(slug) == {"."}:
         return None
     return slug

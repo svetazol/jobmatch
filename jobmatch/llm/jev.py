@@ -14,8 +14,7 @@ from typesafe_sdk import AsyncTypeSafeClient
 from .. import llm
 
 BASE_URL = "https://openrouter.ai/api"  # the SDK appends /v1/systemone itself
-# Calls in flight at once. The SDK retries a 429 itself, honouring
-# Retry-After, so too high costs latency rather than answers.
+# The SDK retries a 429 itself, so too high costs latency rather than answers.
 CONCURRENCY = 4
 
 Client = AsyncTypeSafeClient   # what `open_client` yields, for callers that do not import the SDK
@@ -34,20 +33,20 @@ class JevAnswer:
 
 @asynccontextmanager
 async def open_client(api_key: str | None = None) -> AsyncIterator[AsyncTypeSafeClient]:
-    """One client per run — it holds an HTTP session, shared by every call."""
+    """One per run: it holds an HTTP session."""
     key = api_key or llm.api_key("before matching")
     async with AsyncTypeSafeClient(api_key=key, base_url=BASE_URL) as client:
         yield client
 
 
 def canonical(questions: dict) -> str:
-    """The exact serialisation that goes into a fingerprint. Sorted, compact."""
+    """The exact serialisation that goes into a fingerprint."""
     payload = {k: q.model_dump(mode="json") for k, q in sorted(questions.items())}
     return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
 def fingerprint(state: dict[str, str], questions: dict[str, Any], model: str) -> str:
-    """The idempotency key of one Jev request: its state, its questions and the model, nothing else."""
+    """The idempotency key: state, questions and model, nothing else."""
     return llm.fingerprint({"state": state, "questions": json.loads(canonical(questions)), "model": model})
 
 
@@ -60,7 +59,7 @@ async def ask(
     kind: str,
     vacancy_id: int,
 ) -> JevAnswer:
-    """One recorded call: its `llm_calls` row is written, ok or error, before this returns or raises."""
+    """Its `llm_calls` row is written, ok or error, before this returns or raises."""
     key = fingerprint(state, questions, model)
     async with llm.recorded(kind=kind, vacancy_id=vacancy_id, fingerprint=key, model=model) as call:
         response, call.usage, duration_ms = await _send(client, state, questions, model)

@@ -20,7 +20,7 @@ API_KEY_ENV = "OPENROUTER_API_KEY"   # Jev and the research questions both go th
 
 
 def api_key(purpose: str) -> str:
-    """The key, or a `ValueError` naming what it was for: "Set … in .env {purpose}."."""
+    """The key, or a `ValueError` that says what it was for."""
     key = os.environ.get(API_KEY_ENV)
     if not key:
         raise ValueError(f"Set {API_KEY_ENV} in .env {purpose}.")
@@ -28,7 +28,7 @@ def api_key(purpose: str) -> str:
 
 
 def fingerprint(payload: dict[str, Any]) -> str:
-    """sha256 of the whole request (`docs/architecture.md` §4): the idempotency key, no version constant."""
+    """sha256 of the whole request, the idempotency key; see docs/architecture.md §4."""
     blob = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
@@ -59,10 +59,7 @@ async def recorded(
     *, kind: str, vacancy_id: int, fingerprint: str, model: str,
     request: dict[str, Any] | None = None,
 ) -> AsyncIterator[Call]:
-    """Time the block and write its one `llm_calls` row, ok or error, then re-raise any error.
-
-    The write is shielded: a cancelled request (a closed tab) must not lose the record of a billed call.
-    """
+    """The block's one `llm_calls` row, ok or error; shielded, so a closed tab keeps a billed call."""
     row = {
         "kind": kind,
         "vacancy_id": vacancy_id,

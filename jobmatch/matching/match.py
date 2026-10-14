@@ -1,4 +1,4 @@
-"""Matching a CV against a vacancy: Jev's answer, flattened into plain values `save_match()` writes as is."""
+"""One match: Jev's answer, flattened into the plain values `save_match()` writes."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,14 +12,10 @@ from .questions import QUESTIONS, QUESTIONS_HASH
 
 @dataclass(frozen=True, slots=True)
 class Preview:
-    """What Jev answered, flattened — with nothing written down.
-
-    Everything a `MatchOutcome` holds except the identity of a stored call, so
-    a dry run can report exactly what a real one would have saved.
-    """
+    """A `MatchOutcome` without a stored call, so a dry run shows what a real one would save."""
 
     is_qualified_noul: float
-    overall_fit_score: float  # normalised 0-1; the raw scale value is in answers
+    overall_fit_score: float  # normalised 0-1; the raw value is in answers
     overall_fit_label: str
     overall_fit_confidence: float
     top_gap: str
@@ -41,7 +37,7 @@ class MatchOutcome:
     questions_hash: str
 
     is_qualified_noul: float
-    overall_fit_score: float  # normalised 0–1; the raw scale value is in answers
+    overall_fit_score: float  # normalised 0-1; the raw value is in answers
     overall_fit_label: str
     overall_fit_confidence: float
     top_gap: str
@@ -54,14 +50,14 @@ class MatchOutcome:
 
 
 def state(cv: str, job: str) -> dict[str, str]:
-    """What Jev is told: the CV and the job, under the names its questions refer to."""
+    """Under the names the questions refer to."""
     return {"cv": cv, "job_description": job}
 
 
 async def preview_vacancy(
     client: jev.Client, cv: str, vacancy: Vacancy, model: str, *, job: str
 ) -> Preview:
-    """Ask Jev and record nothing: a dry run's spend is in `Preview.cost_usd` only, and dies with the process."""
+    """Records nothing: a dry run's spend is in `Preview.cost_usd` only."""
     reply = await jev.preview(client, state(cv, job), QUESTIONS, model)
     return _flatten(reply.response, reply.usage.cost_usd, reply.duration_ms)
 
@@ -76,13 +72,12 @@ async def match_vacancy(
     content_hash: str,
     job: str,
 ) -> MatchOutcome:
-    """Ask Jev about one vacancy. Records the call either way, then raises or returns."""
+    """Records the call either way, then raises or returns."""
     reply = await jev.ask(
         client, state(cv, job), QUESTIONS, model, kind="match", vacancy_id=vacancy.id
     )
 
-    # Anything below here can raise on an SDK shape change; the call is already
-    # recorded, so the money spent is visible even when the answer is not.
+    # An SDK shape change raises below, but the spend is already recorded.
     preview = _flatten(reply.response, reply.usage.cost_usd, reply.duration_ms)
     assert reply.call_id is not None   # `ask` always records; only `preview` leaves it None
     return MatchOutcome(
@@ -104,15 +99,7 @@ async def match_vacancy(
 
 
 def _score_to_unit(answer: Any) -> tuple[float, str, float]:
-    """(normalised score, label, confidence) from a Score answer.
-
-    Jev returns the expected position on the legend's own index scale — 2.4 on
-    a 0..4 rubric, *not* 0–1. Normalising here keeps the sort key and any
-    min_fit threshold meaningful when a question set has a different number of
-    levels; the raw value stays in ``answers``. The label is the most probable
-    single level, not the rounded expectation: with 0.47 on "good" and 0.43 on
-    "strong", rounding 2.4 would agree by luck, and 2.6 would not.
-    """
+    """Jev scores on a 0..levels-1 scale; the label is the likeliest level, not the rounded score."""
     levels = len(answer.legend)
     top = max(answer.probabilities, key=lambda i: answer.probabilities[i])
     entry = answer.legend[top]

@@ -5,12 +5,7 @@ from ..models import Vacancy
 
 
 def job_text(vacancy: Vacancy) -> str:
-    """Render a vacancy for the model. Goes to Jev, never to disk.
-
-    Salary and skills are genuinely absent on a fair share of postings, so
-    every line is conditional — an empty "Skills:" line is noise the model
-    would have to interpret.
-    """
+    """Every line conditional: an empty "Skills:" line is noise the model would have to interpret."""
     lines = [f"# {vacancy.title}"]
     for label, value in (
         ("Company", vacancy.company),

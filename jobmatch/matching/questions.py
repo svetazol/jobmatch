@@ -1,8 +1,4 @@
-"""What we ask Jev about a (cv, job_description) pair.
-
-Each question is its own named constant so it can be read, added, removed, or
-reused on its own; QUESTIONS is just the aggregate the API call sends.
-"""
+"""What Jev is asked about a (cv, job_description) pair, one named constant per question."""
 import hashlib
 
 from typesafe_sdk import Choice, Noul, NoulCriteria, Score
@@ -38,10 +34,7 @@ TOP_GAP = Choice(
     },
 )
 
-# The six angles from the master CV's positioning bank. One angle is picked
-# per posting, never blended -- so this asks which one a vacancy calls for.
-# "none" exists because plenty of postings fit no angle at all, and forcing a
-# choice would make the answer look meaningful when it isn't.
+# The master CV's angles, one per posting; "none" so a forced choice cannot fake meaning.
 BEST_ANGLE = Choice(
     instructions=(
         "Which single professional angle should the candidate lead with when applying "
@@ -88,6 +81,5 @@ QUESTIONS = {
 }
 
 
-# Changes whenever a question is added, removed or reworded — so there is no
-# hand-maintained PROMPT_VERSION to forget to bump.
+# Changes with any rewording, so there is no PROMPT_VERSION to forget to bump.
 QUESTIONS_HASH = hashlib.sha256(canonical(QUESTIONS).encode()).hexdigest()

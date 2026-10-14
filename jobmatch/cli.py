@@ -1,9 +1,4 @@
-"""Command line entry point. A thin caller of pipeline, company_research + repository.
-
-Each command is a coroutine; ``main`` is the one place an event loop starts.
-Library code never calls ``asyncio.run`` itself, so the same functions serve
-the API's loop unchanged.
-"""
+"""The command line: thin coroutines over the library; ``main`` is the one place a loop starts."""
 from __future__ import annotations
 
 import argparse
@@ -46,7 +41,7 @@ async def cmd_run(config_path: str, limit: int | None, match: bool = True,
 
 
 async def cmd_discover(config_path: str, only: str | None, limit: int | None) -> int:
-    """Crawl and store listings. No pages pulled, nothing spent."""
+    """No pages pulled, nothing spent."""
     settings = load_settings(config_path)
     if only:
         settings = settings.only(only)
@@ -99,12 +94,7 @@ async def cmd_match(config_path: str, *, dry_run: bool, cv: str | None,
 
 
 async def _dry_run(settings: Settings, country: str | None, limit: int | None) -> int:
-    """Ask Jev and print, writing nothing at all.
-
-    No `llm_calls` row, no `match_results` row — which is the point, and also
-    the catch: the spend is invisible to the ledger afterwards, so the total is
-    printed here and nowhere else.
-    """
+    """Writes nothing, so the spend printed here is in no ledger."""
     async with SessionLocal() as session:
         vacancy_ids = (await repository.matchable_vacancy_ids(
             session, [entry.name for entry in settings.sources], country
@@ -118,7 +108,7 @@ async def _dry_run(settings: Settings, country: str | None, limit: int | None) -
 
     total = Decimal(0)
     async with matching.open_client() as client:
-        for vacancy in vacancies:          # one at a time: the output is read in order
+        for vacancy in vacancies:          # one at a time, so the output reads in order
             preview = await matching.preview_vacancy(
                 client, cv, vacancy, settings.model_for("match"), job=matching.job_text(vacancy)
             )
@@ -140,9 +130,7 @@ async def _dry_run(settings: Settings, country: str | None, limit: int | None) -
 
 
 async def cmd_cv_hash(config_path: str, cv: str | None) -> int:
-    """Print the hash a CV's answers are stored under — what `stats_cv_hash`
-    wants, and the only way to tell which of several CVs a stored match
-    belongs to. Hashed after sanitising, exactly as matching does it."""
+    """The hash a CV's answers are stored under, after sanitising, as `stats_cv_hash` wants."""
     settings = load_settings(config_path)
     path = Path(cv) if cv else settings.cv_path
     digest = matching.sha256(matching.load_cv(path))
@@ -153,7 +141,7 @@ async def cmd_cv_hash(config_path: str, cv: str | None) -> int:
 
 
 async def cmd_fetch_pending(config_path: str, limit: int | None) -> int:
-    """Drain the fetch queue. No crawling, no spending."""
+    """No crawling, no spending."""
     settings = load_settings(config_path)
     report = await pipeline.fetch_all(settings, limit=limit)
     async with SessionLocal() as session:
@@ -169,11 +157,7 @@ async def cmd_fetch_pending(config_path: str, limit: int | None) -> int:
 
 
 async def cmd_identify(config_path: str, vacancy_id: int) -> int:
-    """Who is behind one posting, with the `employer` model. Pays unless the same
-    request was answered before.
-
-    A company never looked up is looked up first (`_look_up_first`).
-    """
+    """Pays unless the same request was answered before."""
     settings = load_settings(config_path)
     try:
         await _look_up_first(vacancy_id)
@@ -197,7 +181,7 @@ async def cmd_identify(config_path: str, vacancy_id: int) -> int:
 
 
 async def _look_up_first(vacancy_id: int) -> None:
-    """Look the company up unless it already is: one free hh page, as the UI's Look up company button."""
+    """One free hh page, as the UI's Look up company button."""
     async with SessionLocal() as session:
         looked_up = await repository.employer_of(session, vacancy_id) is not None
     if not looked_up:
@@ -206,13 +190,7 @@ async def _look_up_first(vacancy_id: int) -> None:
 
 
 async def cmd_recruiters(config_path: str, vacancy_id: int, *, refresh: bool = False) -> int:
-    """Who recruits for the company behind one posting, with the `recruiters` model.
-    Pays unless the company has a fresh search with the same request
-    (`company_research.RECRUITERS_FRESH`); with `refresh`, always pays.
-
-    A company never looked up is looked up first, as in `cmd_identify`. The
-    identity is not asked for: the search uses one if it exists.
-    """
+    """Pays unless a fresh search with the same request exists; with `refresh`, always."""
     settings = load_settings(config_path)
     try:
         await _look_up_first(vacancy_id)
@@ -240,12 +218,7 @@ async def cmd_recruiters(config_path: str, vacancy_id: int, *, refresh: bool = F
 
 
 async def cmd_trace(call_id: int | None, kind: str | None, last: int) -> int:
-    """Read the LLM ledger: the last calls as a table, or one call in full.
-
-    Read-only and free. The full view is where a failed or unparseable call
-    is diagnosed: `request` and `response` are what was sent and what came
-    back. Jev rows have neither (`models.LlmCall`).
-    """
+    """The last calls as a table, or one call in full; read-only and free."""
     if call_id is not None:
         async with SessionLocal() as session:
             call = await repository.get_call(session, call_id)
@@ -273,8 +246,7 @@ def _print_calls(calls: list[LlmCall]) -> None:
 
 
 def _print_call(call: LlmCall) -> None:
-    # every column, so one added later shows up here without an edit; the two
-    # JSON bodies are printed last, in full
+    # Every column, so one added later shows up without an edit.
     for column in LlmCall.__table__.columns:
         name = column.name
         if name in ("request", "response"):
@@ -421,8 +393,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 async def _run(command: Coroutine[Any, Any, int]) -> int:
-    """Await one command, then close the pool on the loop that opened it --
-    left to GC, its connections are closed after the loop is gone."""
+    """Close the pool on the loop that opened it; left to GC, it closes after the loop is gone."""
     try:
         return await command
     finally:

@@ -1,9 +1,4 @@
-"""SQLAlchemy models — the single source of truth for the schema.
-
-Alembic follows this file; nothing calls ``create_all`` outside tests.
-Only the tables that are actually used exist here: ``MatchResult`` and
-``LlmCall`` arrive with the matching task that needs them.
-"""
+"""The schema's source of truth; Alembic follows it, and only tests call ``create_all``."""
 from __future__ import annotations
 
 import datetime as dt
@@ -33,14 +28,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-# How many times a failing page is re-asked before it leaves the fetch queue.
-#
-# Not a config setting, and deliberately not one: the same number is baked into
-# `ix_vacancies_fetch_queue`'s partial predicate below and into the query that
-# has to match it (`repository.fetch_queue`). A config knob would only be
-# honoured by `pipeline._fetch`, so raising it emptied the queue instead of
-# retrying more -- the queue query still filtered on 3. Changing it now means
-# changing it here and writing an Alembic migration to rebuild the index.
+# Baked into ix_vacancies_fetch_queue's predicate: changing it needs a migration, not a config knob.
 MAX_FETCH_ATTEMPTS = 3
 
 # Deterministic constraint names, so Alembic autogenerate stays stable.
@@ -55,22 +43,16 @@ NAMING_CONVENTION = {
 
 class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
-    # Set once here rather than DateTime(timezone=True) on a dozen columns.
     type_annotation_map = {dt.datetime: DateTime(timezone=True)}
 
 
 class Vacancy(Base):
-    """One row per vacancy per source.
-
-    Discovery and fetch are two phases, so a partially filled row (everything
-    below ``url`` still NULL) is a first-class state, not a second table.
-    """
+    """One row per vacancy per source; NULLs below ``url`` mean discovered but not yet fetched."""
 
     __tablename__ = "vacancies"
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
 
-    # natural key & location
     source: Mapped[str] = mapped_column(String(32))
     external_id: Mapped[str] = mapped_column(String(128))
     url: Mapped[str] = mapped_column(Text)
@@ -85,33 +67,22 @@ class Vacancy(Base):
         ARRAY(Text), server_default=text("'{}'::text[]")
     )
     published_at: Mapped[dt.datetime | None] = mapped_column()
-    # hh's own name for the country, as the posting states it; the ISO code
-    # stays in `raw`. Not the searched area code: the "other regions" area is
-    # a catch-all that returns real countries, so the page is the only honest
-    # source.
+    # From the page, not the searched area: "other regions" returns real countries.
     country: Mapped[str | None] = mapped_column(Text)
-    # a set, not one value: a real posting can offer on-site, remote and
-    # hybrid at once. Empty when the posting doesn't say.
+    # A set: one posting can offer on-site, remote and hybrid at once.
     work_formats: Mapped[list[str]] = mapped_column(
         ARRAY(Text), server_default=text("'{}'::text[]")
     )
-    # The site's own id for the employer, as the posting links it; NULL for an
-    # anonymous posting, and for one fetched before this column existed until
-    # someone looks its company up. Joins `employers` on (source, external_id)
-    # with no FK: the crawl writes no employer row, so it cannot race on one,
-    # and nothing deletes rows for an FK to protect.
+    # Joins employers on (source, external_id) with no FK; see docs/architecture.md §3.5.
     employer_external_id: Mapped[str | None] = mapped_column(String(128))
 
-    # source-specific payload; the escape hatch that keeps the columns above
-    # source-agnostic
+    # Source-specific payload, so the columns above stay source-agnostic.
     raw: Mapped[dict[str, Any]] = mapped_column(
         JSONB, server_default=text("'{}'::jsonb")
     )
-    # sha256 of the exact job text sent to the matcher; filled by the matching
-    # task, kept here because it describes the scrape, not the match
+    # sha256 of the job text sent to the matcher: it describes the scrape, not the match.
     content_hash: Mapped[str | None] = mapped_column(String(64))
 
-    # lifecycle
     first_seen_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
     last_seen_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
     fetched_at: Mapped[dt.datetime | None] = mapped_column()
@@ -121,7 +92,7 @@ class Vacancy(Base):
     fetch_error: Mapped[str | None] = mapped_column(Text)
     delisted_at: Mapped[dt.datetime | None] = mapped_column()
 
-    # triage (single user: columns, not a table)
+    # Triage: single user, so columns, not a table.
     seen_at: Mapped[dt.datetime | None] = mapped_column()
     starred_at: Mapped[dt.datetime | None] = mapped_column()
     hidden_at: Mapped[dt.datetime | None] = mapped_column()
@@ -159,27 +130,20 @@ class Vacancy(Base):
 
 
 class Employer(Base):
-    """One row per employer someone asked about, never written by the crawl.
-
-    Created by a "look up company" click (`company_research.lookup_employer`), so most
-    employers in the corpus have no row: the vacancy's `employer_external_id`
-    is enough until someone wants the page behind it.
-    """
+    """One row per employer someone looked up; the crawl never writes one."""
 
     __tablename__ = "employers"
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
 
-    # natural key, the same rule as vacancies: the site's id, never the name
+    # Keyed by the site's id, never the name, as vacancies are.
     source: Mapped[str] = mapped_column(String(32))
     external_id: Mapped[str] = mapped_column(String(128))
     url: Mapped[str] = mapped_column(Text)
 
     name: Mapped[str | None] = mapped_column(Text)
-    # what the employer chose to link, http(s) only; often a careers site
-    # rather than the homepage. NULL when the page lists none.
+    # What the employer links, http(s) only; often a careers site, not the homepage.
     site_url: Mapped[str | None] = mapped_column(Text)
-    # source-specific page text (hh: city, industries, category)
     raw: Mapped[dict[str, Any]] = mapped_column(
         JSONB, server_default=text("'{}'::jsonb")
     )
@@ -201,15 +165,7 @@ class Employer(Base):
 
 
 class EmployerIdentity(Base):
-    """Who is behind a posting, as one model call answered it
-    (`research.ask_employer`, `company_research.identify_employer`).
-
-    Per posting, not a column on `employers`: the posting is part of the
-    request -- it is what reveals an agency and its client -- so the answer
-    belongs to the request, and one per company would need a rule for which
-    posting's answer wins. The price is one more cheap call per further posting
-    of the same company. Append-only; the newest row for a vacancy is shown.
-    """
+    """Who is behind a posting, per posting as it is in the request; see docs/architecture.md §3.6."""
 
     __tablename__ = "employer_identities"
 
@@ -217,17 +173,11 @@ class EmployerIdentity(Base):
     vacancy_id: Mapped[int] = mapped_column(
         ForeignKey("vacancies.id", ondelete="CASCADE"), index=True
     )
-    # The cache key: sha256 of the whole request (`research.fingerprint`).
-    # Unique, unlike match_results' (vacancy_id, fingerprint): the posting is
-    # inside the request, so one fingerprint cannot belong to two vacancies
-    # unless their text, company and link are identical -- and then so is the
-    # answer.
+    # The cache key; unique because the posting is inside the request.
     inputs_fingerprint: Mapped[str] = mapped_column(String(64), unique=True)
-    # `research.Identity.model_dump()`, whole; nothing filters on its fields
+    # Whole, as nothing filters on its fields.
     answer: Mapped[dict[str, Any]] = mapped_column(JSONB)
-    # did the answer's homepage and careers page respond (`research.reachable`);
-    # NULL when the answer has none. Checked once, when the answer is stored:
-    # the UI links only a URL that answered.
+    # Checked once on store, so the UI links only a URL that answered; NULL when there is none.
     homepage_ok: Mapped[bool | None] = mapped_column(Boolean)
     careers_ok: Mapped[bool | None] = mapped_column(Boolean)
     llm_call_id: Mapped[int] = mapped_column(ForeignKey("llm_calls.id"))
@@ -239,37 +189,22 @@ class EmployerIdentity(Base):
 
 
 class RecruiterSearch(Base):
-    """Who recruits for a company, as one web-search call answered it and
-    `research.keep_cited` confirmed it (`research.ask_recruiters`,
-    `company_research.find_recruiters`).
-
-    Per employer, unlike `EmployerIdentity`'s per posting: the request holds no
-    posting text, only the company (`research.Target`), so two postings of one
-    company make the same request and share its answer. Append-only; the
-    newest row with the request's fingerprint is shown -- never the employer's
-    newest of any request, so postings whose requests differ (one identified,
-    one not) do not pay in turn for each other's searches.
-    """
+    """Who recruits for a company, per employer and request; see docs/architecture.md §3.7."""
 
     __tablename__ = "recruiter_searches"
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     employer_id: Mapped[int] = mapped_column(ForeignKey("employers.id", ondelete="CASCADE"))
-    # sha256 of the whole request (`research.fingerprint`). Not unique, unlike
-    # `employer_identities`': people change jobs, so a search older than
-    # `company_research.RECRUITERS_FRESH` is asked again with the same inputs and a
-    # second row carries the same fingerprint.
+    # Not unique: a stale search is asked again with the same inputs, as people change jobs.
     inputs_fingerprint: Mapped[str] = mapped_column(String(64))
-    # `dataclasses.asdict(research.Confirmed)`, whole: only the cited people,
-    # with the dropped and sources counts; nothing filters on its fields
+    # Only the cited people, whole, as nothing filters on its fields.
     answer: Mapped[dict[str, Any]] = mapped_column(JSONB)
     llm_call_id: Mapped[int] = mapped_column(ForeignKey("llm_calls.id"))
 
     created_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
 
     __table_args__ = (
-        # an employer's searches (`repository.latest_recruiters`); a handful per
-        # employer at most, so the fingerprint need not be in the index
+        # A handful per employer at most, so the fingerprint need not be indexed.
         Index("ix_recruiter_searches_employer_created", "employer_id", "created_at"),
     )
 
@@ -278,11 +213,7 @@ class RecruiterSearch(Base):
 
 
 class MatchResult(Base):
-    """One row per *paid* Jev call that produced a usable answer.
-
-    Append-only; the only update is setting ``superseded_at``. Operational
-    facts about the call — cost, tokens, what went wrong — live on LlmCall.
-    """
+    """One row per paid Jev call with a usable answer; append-only apart from ``superseded_at``."""
 
     __tablename__ = "match_results"
 
@@ -292,28 +223,23 @@ class MatchResult(Base):
     )
     llm_call_id: Mapped[int] = mapped_column(ForeignKey("llm_calls.id"))
 
-    # idempotency
     inputs_fingerprint: Mapped[str] = mapped_column(String(64))
-    # the three below are never looked up — they answer "why is this stale?"
+    # Never looked up: they answer "why is this stale?"
     vacancy_content_hash: Mapped[str] = mapped_column(String(64))
     cv_hash: Mapped[str] = mapped_column(String(64))
     questions_hash: Mapped[str] = mapped_column(String(64))
 
-    # promoted answers — a column only if the UI sorts, filters or lists by it
+    # A column only if the UI sorts, filters or lists by it.
     is_qualified_noul: Mapped[float] = mapped_column(Double)
     is_qualified: Mapped[bool] = mapped_column(
         Boolean, Computed("is_qualified_noul >= 0.5", persisted=True)
     )  # read-only in Python; Alembic cannot autogenerate a change to this
-    # Jev returns a position on the legend's index scale (0..levels-1, e.g.
-    # 2.4 of 0..4). Stored normalised to 0–1 so the sort key and any min_fit
-    # threshold survive a question set with a different number of levels; the
-    # raw value stays in `answers`.
+    # Normalised to 0-1 so it survives a different number of levels; the raw value is in `answers`.
     overall_fit_score: Mapped[float] = mapped_column(Double)  # THE sort key
     overall_fit_label: Mapped[str] = mapped_column(String(32))  # display only, never ORDER BY
     overall_fit_confidence: Mapped[float] = mapped_column(Double)
     top_gap: Mapped[str] = mapped_column(String(64))
     top_gap_confidence: Mapped[float] = mapped_column(Double)
-    # which of the master CV's positioning angles the posting calls for
     best_angle: Mapped[str] = mapped_column(String(32))
     best_angle_confidence: Mapped[float] = mapped_column(Double)
 
@@ -329,7 +255,7 @@ class MatchResult(Base):
         UniqueConstraint(
             "vacancy_id", "inputs_fingerprint", name="uq_match_results_vacancy_fingerprint"
         ),
-        # "the current match" is a DB-enforced fact, not a MAX(created_at) convention
+        # "The current match" is enforced by the DB, not a MAX(created_at) convention.
         Index(
             "uq_match_results_current",
             "vacancy_id",
@@ -342,8 +268,7 @@ class MatchResult(Base):
             "vacancy_id",
             postgresql_where=text("superseded_at IS NULL"),
         ),
-        # the only thing that catches an SDK shape change writing garbage into
-        # the sort key
+        # The only guard against an SDK shape change writing garbage into the sort key.
         CheckConstraint(
             "overall_fit_score BETWEEN 0 AND 1 AND is_qualified_noul BETWEEN 0 AND 1 "
             "AND overall_fit_confidence BETWEEN 0 AND 1 AND top_gap_confidence BETWEEN 0 AND 1 "
@@ -357,53 +282,37 @@ class MatchResult(Base):
 
 
 class LlmCall(Base):
-    """One row per LLM call *attempted*, including the ones that failed —
-    Jev matches, the company questions (`jobmatch/research/`) and the cover note
-    (`jobmatch/llm/claude_cli.py`); `kind` says which caller paid.
-
-    The operational ledger: what was asked, what it cost, how long it took and
-    what went wrong. Nothing reads it to decide what to do next — this is for
-    a human to read, not for the program to branch on.
-    """
+    """One row per model call attempted, failed or not: a ledger for a human, never branched on."""
 
     __tablename__ = "llm_calls"
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
-    # SET NULL, not CASCADE: deleting a vacancy must not erase what it cost
+    # SET NULL, not CASCADE: deleting a vacancy must not erase what it cost.
     vacancy_id: Mapped[int | None] = mapped_column(
         ForeignKey("vacancies.id", ondelete="SET NULL"), index=True
     )
 
-    # Which caller paid: "match" | "employer" | "recruiters" | "cover_note". Plain text, not a PG
-    # enum, so a new caller needs no migration.
-    # No default, so a new caller has to say what it is. The market view's
-    # spend sums "match" only — it reports on matching, not on lookups.
+    # Which caller paid; plain text so a new caller needs no migration, no default so it must say.
     kind: Mapped[str] = mapped_column(String(16))
     inputs_fingerprint: Mapped[str] = mapped_column(String(64))
     model_requested: Mapped[str] = mapped_column(String(64))
-    # not in the fingerprint — unknowable before paying for the call
+    # Not in the fingerprint: unknowable before paying.
     model_resolved: Mapped[str | None] = mapped_column(String(64))
     provider: Mapped[str | None] = mapped_column(String(64))
     response_id: Mapped[str | None] = mapped_column(String(128))
 
-    status: Mapped[str] = mapped_column(String(16))  # "ok" | "error"; plain text, see §11
+    status: Mapped[str] = mapped_column(String(16))  # "ok" | "error"
     http_status: Mapped[int | None] = mapped_column(SmallInteger)
     error_type: Mapped[str | None] = mapped_column(String(64))
     error_message: Mapped[str | None] = mapped_column(Text)
 
     input_tokens: Mapped[int | None] = mapped_column(Integer)
     output_tokens: Mapped[int | None] = mapped_column(Integer)
-    # Numeric, never Float: this column exists to be summed. 9 decimal places
-    # because a real call costs $0.000413616 — (12,6) would round that to
-    # $0.000414, and a cheaper call straight to zero.
+    # Numeric to be summed; 9 places because a real call costs $0.000413616.
     cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(14, 9))
     duration_ms: Mapped[int | None] = mapped_column(Integer)
 
-    # The trace, read with `jobmatch trace ID`: what was sent (messages,
-    # schema, parameters) and the body as received, kept even when it failed to
-    # parse — that body is the evidence of what was paid for. Jev rows keep
-    # only an error's body: the SDK exposes no raw request worth keeping, and
-    # Jev's answer is already whole in `match_results.answers`.
+    # The body is kept even when it failed to parse: it is the evidence of what was paid for.
     request: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     response: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 

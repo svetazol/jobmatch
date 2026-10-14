@@ -1,10 +1,4 @@
-"""The only module that writes SQL. A flat set of functions, not a layer.
-
-Persistence is two-phase, because discovery and fetching know different
-things. Discovery owns ``last_seen_at`` and never touches ``description`` or
-``fetched_at``; fetching fills the rest. A half-filled row is a valid state —
-it *is* the fetch queue.
-"""
+"""Every SQL query, as a flat module of named functions."""
 from __future__ import annotations
 
 import datetime as dt
@@ -23,18 +17,12 @@ from .models import (
 from .sources import EmployerData, Listing, VacancyData
 
 if TYPE_CHECKING:
-    # An annotation only: `matching.jev` writes its ledger rows through this
-    # module, so a runtime import here would be a cycle.
+    # A runtime import would be a cycle: matching writes its ledger rows through here.
     from .matching import MatchOutcome
 
 
 async def upsert_listing(session: AsyncSession, source: str, listing: Listing) -> Vacancy:
-    """Record that the feed just showed us this vacancy.
-
-    One statement, so there is no read-modify-write race. Anything the fetch
-    phase owns is left alone, and a value already stored wins over the feed's
-    thinner version of it.
-    """
+    """One statement, so no race; a stored value wins over the feed's thinner one."""
     stmt = insert(Vacancy).values(
         source=source,
         external_id=listing.external_id,
@@ -57,7 +45,7 @@ async def upsert_listing(session: AsyncSession, source: str, listing: Listing) -
 
 
 async def apply_fetched(session: AsyncSession, vacancy_id: int, data: VacancyData) -> Vacancy:
-    """Fill in everything the detail page knows. Clears any earlier failure."""
+    """Fill in everything the detail page knows, clearing any earlier failure."""
     vacancy = await session.get_one(Vacancy, vacancy_id)
     vacancy.url = data.url
     vacancy.title = data.title
@@ -112,18 +100,13 @@ async def mark_delisted(session: AsyncSession, vacancy_id: int) -> None:
 async def set_employer_external_id(
     session: AsyncSession, vacancy_id: int, employer_id: str
 ) -> None:
-    """The employer id alone, for a vacancy fetched before the column existed.
-
-    Deliberately not `apply_fetched`: that rewrites the whole row from the
-    fresh page, so an edited posting would change `content_hash` and a
-    "look up company" click would make the next match run pay again.
-    """
+    """Not `apply_fetched`: rewriting the row from a new page would make the next match pay."""
     vacancy = await session.get_one(Vacancy, vacancy_id)
     vacancy.employer_external_id = employer_id
 
 
 async def upsert_employer(session: AsyncSession, source: str, data: EmployerData) -> Employer:
-    """Record what the employer page says now. A repeat lookup refreshes it."""
+    """A repeat lookup refreshes the row."""
     stmt = insert(Employer).values(
         source=source,
         external_id=data.external_id,
@@ -161,16 +144,15 @@ async def employer_of(session: AsyncSession, vacancy_id: int) -> Employer | None
     )
 
 
-
 async def identity_by_fingerprint(session: AsyncSession, fingerprint: str) -> EmployerIdentity | None:
-    """The stored answer to exactly this request, if one exists: the cache."""
+    """The cache: the stored answer to exactly this request."""
     return await session.scalar(
         select(EmployerIdentity).where(EmployerIdentity.inputs_fingerprint == fingerprint)
     )
 
 
 async def latest_identity(session: AsyncSession, vacancy_id: int) -> EmployerIdentity | None:
-    """The newest answer for a vacancy -- the one shown. `id` breaks a tie."""
+    """The newest answer for a vacancy, the one shown; `id` breaks a tie."""
     return await session.scalar(
         select(EmployerIdentity)
         .where(EmployerIdentity.vacancy_id == vacancy_id)
@@ -188,9 +170,7 @@ async def save_identity(
     careers_ok: bool | None,
     llm_call_id: int,
 ) -> EmployerIdentity:
-    """Store an answer; if two clicks paid for the same request at once, the
-    first row stays and both callers get it. The second call is still in
-    `llm_calls`, which is where a spend belongs."""
+    """Two clicks that paid at once keep the first row; the spend is in `llm_calls`."""
     await session.execute(
         insert(EmployerIdentity)
         .values(
@@ -211,11 +191,7 @@ async def save_identity(
 async def latest_recruiters(
     session: AsyncSession, employer_id: int, fingerprint: str
 ) -> RecruiterSearch | None:
-    """The newest search for this employer and this exact request -- the one
-    shown, and the one the pipeline reuses while it is fresh. The employer is
-    in the filter because the request is not: two hh employers with the same
-    name, homepage and city make the same request, and must not share people.
-    `id` breaks a tie."""
+    """By employer too: two employers can make one request and must not share people."""
     return await session.scalar(
         select(RecruiterSearch)
         .where(
@@ -234,10 +210,7 @@ async def save_recruiters(
     answer: dict[str, Any],
     llm_call_id: int,
 ) -> RecruiterSearch:
-    """Store a search. A plain insert:
-    the fingerprint is not unique, and two clicks that paid at once leave two
-    rows, the newer one shown. `RETURNING` hands back `created_at` too, which
-    the caller reads after the session is gone."""
+    """A plain insert, as the fingerprint is not unique; RETURNING hands back `created_at` too."""
     return (await session.scalars(
         insert(RecruiterSearch)
         .values(
@@ -253,17 +226,7 @@ async def save_recruiters(
 async def matchable_vacancy_ids(
     session: AsyncSession, sources: Sequence[str], country: str | None = None
 ) -> list[int]:
-    """Every vacancy worth asking about — *not* only the ones in today's feed.
-
-    The feed is a rolling 20-item window, so the corpus outgrows it by design.
-    Matching from the table instead of from the discovery loop is what makes
-    "editing the CV re-matches everything" true of the whole corpus rather
-    than of the last twenty. Costs nothing when nothing changed: the
-    fingerprint lookup downstream is a single indexed read per vacancy.
-
-    Scoped to the sources config currently enables, so disabling a source
-    stops the spending on it rather than quietly continuing.
-    """
+    """The whole stored corpus, not today's feed, so a CV edit re-matches everything."""
     query = (
         select(Vacancy.id)
         .where(
@@ -285,16 +248,7 @@ async def matchable_vacancy_ids(
 async def fetch_queue(
     session: AsyncSession, sources: Sequence[str], limit: int | None = None
 ) -> list[tuple[int, str]]:
-    """Every vacancy still waiting for its detail page, as (id, url).
-
-    The counterpart to ``matchable_vacancy_ids``: that one drives the paid
-    phase over stored rows, this one drives the free phase, so neither needs
-    the crawl to have just run. ``fetched_at IS NULL`` *is* the queue, which is
-    why a failed fetch needs no retry table — the row simply stays in it.
-
-    Matches the predicate on ``ix_vacancies_fetch_queue``, oldest first so a
-    backlog drains in the order it arrived.
-    """
+    """(id, url) still awaiting a detail page; must match ix_vacancies_fetch_queue's predicate."""
     query = (
         select(Vacancy.id, Vacancy.url)
         .where(
@@ -311,14 +265,7 @@ async def fetch_queue(
 
 
 async def make_current(session: AsyncSession, vacancy_id: int, fingerprint: str) -> bool:
-    """Is this exact request already answered? If so, make that answer current.
-
-    The whole of "never pay twice", and a little more: an answer is looked up
-    by fingerprint regardless of whether it is the current one, so reverting a
-    CV to an earlier version *revives* the matching row instead of buying it
-    again. Without the revival the old answer would be found and skipped while
-    a row computed from a different CV stayed flagged as current.
-    """
+    """Make an existing answer current, so reverting a CV revives it rather than re-buying."""
     existing = await session.scalar(
         select(MatchResult).where(
             MatchResult.vacancy_id == vacancy_id,
@@ -345,13 +292,7 @@ async def _supersede_current(session: AsyncSession, vacancy_id: int) -> None:
 
 
 async def save_match(session: AsyncSession, vacancy_id: int, outcome: MatchOutcome) -> MatchResult:
-    """Supersede whatever was current, then insert. Append-only otherwise.
-
-    Only ever called after a paid call — an answer that already exists is
-    handled by ``make_current``. A partial unique index makes "one current row
-    per vacancy" the database's problem, so two concurrent runs cannot both
-    leave a current row; the loser gets an IntegrityError.
-    """
+    """Supersede, then insert; a partial unique index fails a concurrent loser."""
     await _supersede_current(session, vacancy_id)
     result = MatchResult(
         vacancy_id=vacancy_id,
@@ -371,18 +312,12 @@ async def save_match(session: AsyncSession, vacancy_id: int, outcome: MatchOutco
         answers=outcome.answers,
     )
     session.add(result)
-    # the cheap pre-check for "the employer edited the posting"
     (await session.get_one(Vacancy, vacancy_id)).content_hash = outcome.vacancy_content_hash
     return result
 
 
 async def record_call(**values: Any) -> int:
-    """Write the ledger row in its *own* session, so it survives the caller's
-    rollback. A log that disappears when things go wrong is worse than none.
-
-    The one writer of `llm_calls`, shared by every caller that pays a model;
-    `values` are `LlmCall` columns, `kind` among them.
-    """
+    """Its own session, so the ledger row survives the caller's rollback."""
     async with SessionLocal.begin() as session:
         call = LlmCall(**values)
         session.add(call)
@@ -434,23 +369,14 @@ async def count_current_matches(session: AsyncSession, cv_hash: str) -> int:
     )
 
 
-# --------------------------------------------------------------------------
-# Read paths for the API. Still the only module writing SQL — the routers do
-# no querying of their own, they shape what these return.
-# --------------------------------------------------------------------------
+# --- Read paths for the API ---
 
-# The current match, as a correlated subquery-free join condition. Every read
-# below reuses it, so "current" is defined exactly once.
 _CURRENT = MatchResult.superseded_at.is_(None)
 
-# How long a vacancy can go unseen by discovery before the UI calls it stale.
-# Derived, never stored (§6): a stored flag needs a job to maintain it and is
-# wrong between runs.
+# Derived, never stored: a stored flag is wrong between runs (docs/architecture.md §6).
 STALE_AFTER = dt.timedelta(days=14)
 
-# The keys the list can be ordered by, each DESC NULLS LAST with `id` as the
-# tie-break. Fit is the default; "posted" is newest first, and an undated
-# posting sinks to the bottom the way an unmatched one does under fit.
+# Each DESC NULLS LAST, `id` breaking ties.
 SORT_KEYS = {"fit": MatchResult.overall_fit_score, "posted": Vacancy.published_at}
 
 
@@ -471,16 +397,7 @@ async def list_vacancies(
     cursor: tuple[float | dt.datetime | None, int] | None = None,
     limit: int = 50,
 ) -> tuple[list[tuple[Vacancy, MatchResult | None]], int]:
-    """The ranked list, plus the total the same filters would return.
-
-    `sort` is a key of `SORT_KEYS`; `cursor` holds that key's value and the id
-    of the last row on the previous page.
-
-    A LEFT JOIN, deliberately: a fetched-but-unmatched vacancy is a real state
-    the UI shows as "not matched yet", not a row to drop. That is also why the
-    sort takes NULLS LAST — unmatched rows sit at the bottom rather than
-    pretending to score zero.
-    """
+    """A LEFT JOIN: an unmatched vacancy is shown as "not matched yet", sorted last, not dropped."""
     stmt = (
         select(Vacancy, MatchResult)
         .outerjoin(MatchResult, and_(MatchResult.vacancy_id == Vacancy.id, _CURRENT))
@@ -490,9 +407,7 @@ async def list_vacancies(
     if source:
         stmt = stmt.where(Vacancy.source == source)
     if min_fit is not None:
-        # A threshold on the score, never on the label: the labels overlap
-        # (weak spans .13-.56, good .43-.62) because the label is the most
-        # probable level while the score is the expectation.
+        # Never on the label: labels overlap (weak spans .13-.56, good .43-.62).
         stmt = stmt.where(MatchResult.overall_fit_score >= min_fit)
     if qualified_only:
         stmt = stmt.where(MatchResult.is_qualified.is_(True))
@@ -501,8 +416,7 @@ async def list_vacancies(
     if unapplied_only:
         stmt = stmt.where(Vacancy.applied_at.is_(None))
     if posted_days:
-        # the DB clock, like every other timestamp here (§6); an undated
-        # posting cannot be shown to be recent, so it drops out
+        # The DB clock, like every timestamp; an undated posting drops out.
         stmt = stmt.where(
             Vacancy.published_at >= func.now() - dt.timedelta(days=posted_days)
         )
@@ -518,8 +432,7 @@ async def list_vacancies(
             or_(
                 Vacancy.title.ilike(pattern),
                 Vacancy.company.ilike(pattern),
-                # a skill match, without a GIN index: array_to_string keeps it
-                # one expression and the corpus is small enough to scan
+                # No GIN index: the corpus is small enough to scan.
                 func.array_to_string(Vacancy.skills, " ").ilike(pattern),
             )
         )
@@ -529,16 +442,10 @@ async def list_vacancies(
     ) or 0
 
     if cursor is not None:
-        # Keyset on the same (key DESC NULLS LAST, id) the ORDER BY uses.
-        #
-        # The NULL arm is not a nicety: an unmatched vacancy has no score, so
-        # `score < last_score` is NULL for it, and a naive predicate drops
-        # every unmatched row from page two onwards -- silently, since they
-        # simply never appear. Undated postings under "posted" are the same.
+        # Without the NULL arm, unmatched rows silently vanish from page two onwards.
         last_score, last_id = cursor
         score = SORT_KEYS[sort]
         if last_score is None:
-            # already inside the NULL block: only later ids remain
             stmt = stmt.where(and_(score.is_(None), Vacancy.id > last_id))
         else:
             stmt = stmt.where(
@@ -565,11 +472,7 @@ async def get_vacancy(session: AsyncSession, vacancy_id: int) -> tuple[Vacancy, 
 
 
 async def set_triage(session: AsyncSession, vacancy_id: int, field: str, on: bool) -> bool:
-    """Set or clear one triage timestamp. False when the id is unknown.
-
-    Clearing is a first-class operation, not an afterthought: it is what the
-    UI's Undo sends after a hide.
-    """
+    """Set or clear one triage timestamp (clearing is Undo); False when the id is unknown."""
     column = {"seen": Vacancy.seen_at, "starred": Vacancy.starred_at,
               "hidden": Vacancy.hidden_at, "applied": Vacancy.applied_at}[field]
     result = await session.execute(
@@ -581,13 +484,7 @@ async def set_triage(session: AsyncSession, vacancy_id: int, field: str, on: boo
 
 
 def _cv_scope(cv_hash: str):
-    """The one row this CV holds for each vacancy: its latest.
-
-    A CV can answer the same vacancy more than once — a reworded question set
-    is a new fingerprint under the same CV — and the market view wants one
-    answer per posting either way, so the newest wins. `id` breaks a tie on
-    `created_at`, which a bulk insert can hand out identically.
-    """
+    """This CV's newest row per vacancy, as a reworded question set is a second row under one CV."""
     return MatchResult.id.in_(
         select(MatchResult.id)
         .where(MatchResult.cv_hash == cv_hash)
@@ -606,29 +503,12 @@ async def stats(
     country: Sequence[str] | None = None,
     cv_hash: str | None = None,
 ) -> dict[str, Any]:
-    """Everything the market view shows, in four queries rather than eight.
-
-    Scoped to current matches only; a superseded row answered a different
-    question set and must not be counted beside the answers that replaced it.
-
-    ``cv_hash`` replaces that scope rather than narrowing it: one CV's answers
-    to the whole corpus, current or superseded. Superseded does not mean
-    wrong — it means another CV answered afterwards — and only one row per
-    vacancy can be current, so without this a finished re-match would leave
-    the older CV with nothing to show and a running one would split the corpus
-    between the two, averaging a median over answers from neither.
-
-    ``country`` narrows every aggregate to postings in those countries — the
-    one exception is the country breakdown itself, which stays over the whole
-    corpus so the filter's own options do not disappear as soon as one is
-    picked.
-    """
+    """The market view, over current matches or one CV's answers current or not."""
     where = [_cv_scope(cv_hash) if cv_hash else _CURRENT]
     if country:
         where.append(Vacancy.country.in_(list(country)))
 
-    # The join is unconditional: MatchResult.vacancy_id is a non-null FK, so it
-    # adds no rows, and one shape is easier to trust than two.
+    # Always joined: a non-null FK adds no rows, and one shape is easier to trust.
     def matched(*columns):
         return (
             select(*columns)
@@ -653,8 +533,7 @@ async def stats(
         .group_by(MatchResult.overall_fit_label)
     )).all()
 
-    # One pass for both the per-pitch totals and their fit breakdown: the
-    # counts have to agree, and two queries are two chances to disagree.
+    # One pass for totals and breakdown, so the counts cannot disagree.
     pitch_rows = (await session.execute(
         matched(
             MatchResult.best_angle,
@@ -670,26 +549,18 @@ async def stats(
         func.count(), func.coalesce(func.sum(LlmCall.cost_usd), 0), func.avg(LlmCall.duration_ms)
     ).where(LlmCall.kind == "match")  # the view reports on matching, not on lookups
     if cv_hash:
-        # llm_calls has no cv_hash of its own — it records the request, not
-        # what the request was about — so the spend for one CV is the spend on
-        # the calls its matches point at. A call that errored produced no match
-        # row and so cannot be attributed to any CV; it drops out here rather
-        # than being guessed at.
+        # A CV's spend is its matches' calls; an errored call has no match, so drops out.
         spend_stmt = spend_stmt.where(
             LlmCall.id.in_(select(MatchResult.llm_call_id).where(_cv_scope(cv_hash)))
         )
     if country:
-        # An inner join, so calls not tied to a vacancy drop out — which is
-        # what the filter asks for: spend *on these postings*.
+        # Inner join: spend on these postings only.
         spend_stmt = spend_stmt.join(Vacancy, Vacancy.id == LlmCall.vacancy_id).where(
             Vacancy.country.in_(list(country))
         )
     spend = (await session.execute(spend_stmt)).one()
 
-    # Deliberately unfiltered by country — see the docstring — but still over
-    # this CV's current matches, so these counts add up to `total` instead of
-    # quietly counting postings that were never matched, or matched for
-    # somebody else's CV.
+    # Not filtered by country, so the filter's options stay; still scoped so they add up to `total`.
     country_where = [
         _cv_scope(cv_hash) if cv_hash else _CURRENT,
         Vacancy.country.is_not(None),
@@ -726,20 +597,7 @@ async def stats(
 
 
 async def cv_hashes(session: AsyncSession) -> list[tuple[str, int, dt.datetime]]:
-    """Every CV the stored corpus has been matched against: (hash, vacancies
-    answered, when it was last matched).
-
-    Over every stored row, not only the current ones: a CV that has been
-    re-matched away holds no current row at all, and it is still one of the
-    CVs this corpus has an answer for — which is the whole point of being able
-    to pick it.
-
-    The database knows a CV only as the hash its answers were stored under —
-    there is no `cvs` table and there should not be one, because the file is
-    not the record: it gets edited, renamed and deleted, while the answers it
-    earned stay true about the text that earned them. Putting a name back on
-    a hash is the API's job, and only for the files still on disk.
-    """
+    """(hash, vacancies, last matched) over every row; no `cvs` table, as CV files change."""
     return [
         (cv_hash, count, last)
         for cv_hash, count, last in (await session.execute(

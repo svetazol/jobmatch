@@ -1,11 +1,4 @@
-"""Regenerate ``areas.json`` from hh's area tree.
-
-    python -m jobmatch.sources.hh._refresh
-
-Run it when hh adds or renames an area. Separate from ``areas.py`` so that
-importing the source never reaches the network. Synchronous on purpose: a
-one-off script with one request has nothing to overlap.
-"""
+"""Regenerate ``areas.json`` when hh adds or renames an area; separate so importing never hits the network."""
 from __future__ import annotations
 
 import datetime as dt

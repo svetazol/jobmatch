@@ -13,10 +13,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..llm import openrouter
 
-REACH_DEADLINE = 10     # one reachability check, whole, redirects included
+REACH_DEADLINE = 10     # one reachability check, redirects included
 MAX_REDIRECTS = 3       # followed by hand, so each hop's address is checked
-# A browser's, because some homepages answer a library's User-Agent with 403
-# and would read as "did not answer".
+# A browser's: some homepages answer a library's User-Agent with 403.
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -35,15 +34,7 @@ class Poster:
     posting: str            # the vacancy as Jev reads it (`matching.job_text`)
 
 
-# The docstring and every Field description are sent: pydantic puts them in the
-# schema, so they are written for the model, and editing one changes every
-# employer fingerprint (one cache miss per stored identity). Notes for people
-# go here instead:
-# every field is required and nothing extra is allowed, which OpenAI-style
-# `strict` structured output demands; pydantic already writes `X | None` as
-# `anyOf` with null and `extra="forbid"` as `additionalProperties: false`, so
-# the generated schema is sent unchanged (`tests/test_research.py` holds it to
-# that).
+# Prompt text: the docstring and Field descriptions are sent, so editing one re-pays every identity.
 class Identity(BaseModel):
     """Who is behind the posting. Null means unknown, never "there is none"."""
 
@@ -66,12 +57,7 @@ class Identity(BaseModel):
     @field_validator("homepage", "careers_page")
     @classmethod
     def _with_scheme(cls, url: str | None) -> str | None:
-        """`ertelecom.ru` -> `https://ertelecom.ru`, so the stored answer, the
-        reachability check and the UI's link are one URL. A model asked for a
-        full URL still answers with a bare domain at times; the raw answer stays
-        in `llm_calls.response`. Anything that is not then http(s) -- a
-        `javascript://` the UI would run on click -- is stored as unknown, as
-        hh's `_web_url` does for its link. The schema is unchanged by this."""
+        """A bare domain gains https://; anything not then http(s) (`javascript:`) becomes unknown."""
         if url and "://" not in url:
             url = f"https://{url}"
         if url and urlsplit(url).scheme in ("http", "https"):
@@ -114,7 +100,7 @@ EMPLOYER = openrouter.Question(
 
 
 def employer_request(poster: Poster, model: str) -> dict[str, Any]:
-    """The whole request, exactly as sent: stored as `llm_calls.request`, and what the fingerprint hashes."""
+    """Exactly as sent: stored as `llm_calls.request`, and what the fingerprint hashes."""
     return openrouter.request(EMPLOYER, poster, model)
 
 
@@ -124,23 +110,17 @@ async def ask_employer(
     vacancy_id: int,
     http_client: httpx2.AsyncClient | None = None,   # tests pass a mocked one
 ) -> tuple[Identity, int]:
-    """Who is behind a posting: the answer and its `llm_calls` id; a failure is recorded, then raised."""
+    """The answer and its `llm_calls` id; a failure is recorded, then raised."""
     identity, _, call_id = await openrouter.ask(
         EMPLOYER, sent, vacancy_id=vacancy_id, http_client=http_client
     )
     return identity, call_id
 
 
-# --- checks on an answer ----------------------------------------------------------
+# --- checks on an answer ---
 
 async def reachable(url: str, *, http_client: httpx2.AsyncClient | None = None) -> bool:
-    """Does `url` answer below 400, within `REACH_DEADLINE`, in at most
-    `MAX_REDIRECTS` hops, each of them public? Never raises.
-
-    A hallucinated homepage usually does not resolve; this is what keeps it
-    from being shown as a link. It does not check that the page is about the
-    employer: a Cyrillic name against a Latin site would fail real homepages.
-    """
+    """Keeps a hallucinated homepage from being linked; never raises, and never checks the content."""
     try:
         async with asyncio.timeout(REACH_DEADLINE):
             async with http_client or httpx2.AsyncClient(
@@ -164,14 +144,7 @@ async def _answers(client: httpx2.AsyncClient, url: str) -> bool:
 
 
 async def _public(url: str) -> bool:
-    """http(s), and every address the host resolves to is public.
-
-    The URL comes from a model's answer, and this machine answers on localhost
-    with CV-derived data (the API on :8000). The check resolves the name
-    itself, so a public hostname pointing at 127.0.0.1 is refused too. (The
-    HTTP client resolves again on connect; a rebinding DNS server could slip
-    between the two, which is beyond what a single-user tool needs to stop.)
-    """
+    """The model's URL must not reach localhost, which serves CV data; resolved here, as names can lie."""
     parts = urlsplit(url)
     host = parts.hostname
     if parts.scheme not in ("http", "https") or not host:

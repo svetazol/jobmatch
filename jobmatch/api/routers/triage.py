@@ -17,13 +17,7 @@ SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 @router.patch("/{vacancy_id}/triage", status_code=204)
 async def set_triage(vacancy_id: int, patch: TriagePatch, session: SessionDep) -> None:
-    """Set or clear one of seen / starred / hidden / applied.
-
-    `false` clears the timestamp rather than storing a false — that is what
-    Undo sends after a hide, and it is why these are nullable timestamps
-    instead of booleans (§3.1): you get "when" for free and clearing is the
-    same statement.
-    """
+    """Set or clear one of seen / starred / hidden / applied; `false` clears it, as Undo sends."""
     fields = {k: v for k, v in patch.model_dump().items() if v is not None}
     if len(fields) != 1:
         raise HTTPException(422, "set exactly one of seen, starred, hidden, applied")

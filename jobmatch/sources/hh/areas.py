@@ -1,8 +1,4 @@
-"""hh's area tree, and how many queries it takes to cover a country.
-
-``areas.json`` is generated -- see ``_refresh.py``. This module only reads it,
-so importing the source never touches the network.
-"""
+"""hh's area tree (``areas.json``, from ``_refresh.py``), and the queries that cover a country."""
 from __future__ import annotations
 
 import json
@@ -12,8 +8,7 @@ from typing import Any
 
 AREAS_PATH = Path(__file__).with_name("areas.json")
 
-# What the config may name. A closed vocabulary so a typo is an error rather
-# than a silent empty crawl.
+# Closed, so a typo is an error rather than a silent empty crawl.
 COUNTRIES = {
     "russia": 113,
     "ukraine": 5,
@@ -28,18 +23,15 @@ COUNTRIES = {
 
 MOSCOW = 1
 
-# Over RESULT_CEILING, so reachable only region by region. 2026-09-29: Russia
-# ~4 350; Belarus ~155, Georgia 36 and the rest fit one query.
+# Over RESULT_CEILING, so split by region. Measured 2026-09-29: Russia ~4 350, the rest fit one query.
 OVERSIZED_COUNTRIES = frozenset({"russia"})
 
-# hh's spellings. The only facet that partitions cleanly -- the four buckets sum
-# to the area's total, where `schedule` overlaps.
+# The only facet whose buckets sum to the area's total; `schedule` overlaps.
 EXPERIENCE_BUCKETS = (
     "noExperience", "between1And3", "between3And6", "moreThan6",
 )
 
-# Over the cap with no child areas to split into. Moscow ~2 716 on 2026-09-29;
-# its buckets read 113 / ~864 / 1 427 / 320.
+# Over the cap with no child areas. Measured 2026-09-29: Moscow ~2 716, buckets 113/~864/1 427/320.
 OVERSIZED_REGIONS = {MOSCOW: EXPERIENCE_BUCKETS}
 
 
@@ -74,14 +66,7 @@ def regions_of(country: str | int) -> list[int]:
 
 
 def coverage(country: str) -> list[dict[str, Any]]:
-    """The queries that together reach every posting in ``country``.
-
-    hh caps a query at ``RESULT_CEILING`` however many it reports finding, so
-    this is a property of the cap, not a preference. Most countries are one
-    query; Russia is 92 -- 88 regions plus Moscow's four buckets.
-
-    Each dict is merged over the configured search, carrying only what differs.
-    """
+    """Queries reaching every posting under hh's cap, each merged over the configured search."""
     name = country.strip().lower()
     area = country_id(name)
     if name not in OVERSIZED_COUNTRIES:
@@ -101,8 +86,7 @@ def main(argv: list[str] | None = None) -> int:
     """The queries a country name expands to."""
     import sys
 
-    # local: the package imports this module, so it cannot be imported back at
-    # module level
+    # Local: the package imports this module.
     from . import ORDER_BY, SEARCH_URL
 
     args = argv if argv is not None else sys.argv[1:]

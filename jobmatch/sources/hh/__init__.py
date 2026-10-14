@@ -1,10 +1,4 @@
-"""hh.ru — everything hh-shaped lives in this module.
-
-Parsing is the prototype's ``data-qa`` approach with a JSON-LD fallback for
-branded layouts. The JSON-LD ``JobPosting`` block is present alongside the
-normal layout too, so it is always read: it carries ``datePosted`` and is kept
-whole in ``VacancyData.raw``.
-"""
+"""hh.ru: search, vacancy and employer pages, parsed by ``data-qa`` with a JSON-LD fallback."""
 from __future__ import annotations
 
 import asyncio
@@ -28,38 +22,24 @@ log = logging.getLogger(__name__)
 
 NAME = "hh.ru"
 
-# What hh tolerates -- measured, not configured. Rate is workers/delay per
-# second; 2026-09-24 at 6 workers hh answered 200 with a stripped page and 597
-# vacancies came back empty. 3 at 1.0s held. workers=1 is sequential.
+# Measured 2026-09-24: 6 workers got stripped pages for 597 vacancies; 3 at 1.0s held.
 RATE = Rate(workers=3, delay=1.0)
 
-# 2026-09-29: search pages 0-39 at 50 results, 404 from page 40 -- 2 000 per
-# query, so 40 asks for all hh will give. Result pages are ~1.2MB, hence the
-# larger delay than for vacancy pages.
+# Measured 2026-09-29: pages 0-39 of 50, 404 from page 40; pages are ~1.2MB, hence the delay.
 CRAWL = Crawl(max_pages=40, delay=2.5)
 RESULT_CEILING = 2000
 
-# Coverage, not preference: under the cap, ordering decides *which* 2 000 you
-# get, and newest-first is the only ordering a repeated crawl converges under.
-# A configured `order_by` still wins.
+# Coverage, not preference: newest-first is the only order a repeated crawl converges under.
 ORDER_BY = "publication_time"
-# The paginated HTML results, not the RSS feed: RSS serves only the newest 20
-# per query, where the same filter has thousands here. 50 per page,
-# `page=0,1,...`; `items_on_page` is ignored. (The *markup* shows only the first
-# 20 -- see `_listings` -- but the embedded state carries all 50.)
+# HTML results, not RSS: RSS serves only the newest 20 per query.
 SEARCH_URL = "https://hh.ru/search/vacancy"
-# Present on any real results page, including the one past the last result.
-# Its *absence* is how a throttled response gives itself away -- see _search_page.
+# On every real results page; its absence gives a throttled response away.
 SEARCH_HEADER = "vacancies-search-header"
 SEARCH_ITEM = "serp-item__title"
 SEARCH_ATTEMPTS = 3
-FETCH_ATTEMPTS = 3       # a vacancy page re-asked past the throttling stub
-THROTTLE_BACKOFF = 3.0   # seconds, multiplied by the attempt number
-# One HeadHunter, several domains: headhunter.ge (Georgia) serves the same
-# engine, the same layout and the same vacancy ids as hh.ru, so a vacancy
-# reached through either domain is one row. Which country's vacancies you get
-# is the `area` search param, not the domain — the .ge feed without it returns
-# Moscow. Only verified domains are listed; add others when one is needed.
+FETCH_ATTEMPTS = 3       # past the throttling stub
+THROTTLE_BACKOFF = 3.0   # seconds, times the attempt number
+# One engine and one id space, so either domain gives one row; the country is `area`, not the domain.
 HOSTS = ("hh.ru", "headhunter.ge")
 TIMEOUT = 20
 HEADERS = {
@@ -71,21 +51,13 @@ HEADERS = {
 }
 
 _VACANCY_ID = re.compile(r"/vacancy/(\d+)")
-# The company name on a vacancy page links to `/employer/<id>?hhtmFrom=vacancy`;
-# an anonymous posting has the name without the link.
+# An anonymous posting has the company name without this link.
 _EMPLOYER_ID = re.compile(r"/employer/(\d+)")
 EMPLOYER_URL = "https://hh.ru/employer/{}"
-# The site prints work formats as one comma-and-"or" separated line, which can
-# name up to three at once. The keys below are the site's own wording and must
-# stay spelled as it spells them; an unrecognised phrase is kept verbatim
-# rather than dropped, so a new one shows up in the data instead of vanishing.
+# The site's own wording; an unknown phrase is kept verbatim so it shows up rather than vanishing.
 _WORK_FORMAT_PREFIX = "Формат работы:"
 _WORK_FORMAT_SPLIT = re.compile(r",\s*|\s+или\s+")
-# The site names the country in its own language; the JSON-LD also carries an
-# ISO 3166-1 alpha-2 code, which is what this maps to an English name. These
-# are hh's nine top-level areas. A country outside them — the "other regions"
-# area can return any — is stored as its bare ISO code, which is visible and
-# obviously unmapped rather than silently wrong.
+# JSON-LD's ISO code -> English; an unmapped country stays a bare code, visibly rather than wrongly.
 COUNTRY_NAMES = {
     "RU": "Russia",
     "UA": "Ukraine",
@@ -114,13 +86,7 @@ class ParseError(RuntimeError):
 
 
 def _client() -> httpx2.AsyncClient:
-    """One HTTP client per walk or per page; the only place they are made.
-
-    ``follow_redirects`` keeps what ``requests`` did by default. A function
-    rather than a module-level client, because a client belongs to the event
-    loop it was opened on -- and so tests can hand back one on a
-    ``MockTransport``.
-    """
+    """A function, not a module client: a client belongs to its event loop, and tests swap it."""
     return httpx2.AsyncClient(headers=HEADERS, timeout=TIMEOUT, follow_redirects=True)
 
 
@@ -138,11 +104,7 @@ def vacancy_id(url: str) -> str:
 
 
 def _clean(value: str | None, *, inline: bool = False) -> str | None:
-    """Collapse nbsp and runs of whitespace; scraped text is full of both.
-
-    ``inline=True`` folds newlines too, for one-line fields like the salary
-    (``'\u0434\u043e\\n5\\xa0500\\n$\\n\u0437\u0430\\xa0\u043c\u0435\u0441\u044f\u0446'``).
-    """
+    """Collapse nbsp and whitespace runs; ``inline=True`` folds newlines too, for one-line fields."""
     if value is None:
         return None
     text = value.replace("\u00a0", " ").replace("\r\n", "\n").replace("\r", "\n")
@@ -184,14 +146,7 @@ def _work_formats(value: str | None) -> list[str]:
 
 
 def _country(ld: dict) -> str | None:
-    """The country as an English name, from the posting's own ISO code.
-
-    ``jobLocation.address.addressCountry`` is ISO alpha-2. It cannot be
-    replaced by the searched area code: the "other regions" area is a catch-all
-    that returns whichever country the job is actually in. Both the raw code
-    and hh's own localised name stay in ``raw`` for anything that wants a flag
-    or the original wording.
-    """
+    """From the posting's ISO code, not the searched area: "other regions" returns any country."""
     address = (ld.get("jobLocation") or {}).get("address") or {}
     code = _clean(address.get("addressCountry"), inline=True)
     if not code:
@@ -217,7 +172,7 @@ def parse(html: str, url: str) -> VacancyData:
     company = _clean(_text_of(soup, "vacancy-company-name"), inline=True)
     description = _clean(_text_of(soup, "vacancy-description"))
 
-    # Branded vacancies use a different layout; JSON-LD is the fallback.
+    # Branded layouts drop the markers; JSON-LD is the fallback.
     if not description and ld:
         title = title or _clean(ld.get("title"), inline=True)
         company = company or _clean(
@@ -262,28 +217,14 @@ def _info(soup: BeautifulSoup, qa: str) -> str | None:
 
 
 def _web_url(href: str | None) -> str | None:
-    """`href` when it is an http(s) URL, else None.
-
-    The employer types this link into hh, and the UI renders it as a link: a
-    `javascript:` URL would run on click, and Vue does not block it.
-    """
+    """http(s) only: the UI renders it as a link, and Vue does not block `javascript:`."""
     if href and urlsplit(href).scheme in ("http", "https"):
         return href
     return None
 
 
 def parse_employer(html: str, employer_id: str) -> EmployerData | None:
-    """An employer page, or None when it is the throttling stub.
-
-    Verified 2026-10-07 on three employers (Okko, Яндекс, СБЕР): the name is
-    `company-header-title-name`, the site is the `href` of
-    `sidebar-company-site`, and that site is whatever the employer chose to
-    link -- for Яндекс and СБЕР a careers site, not the homepage.
-
-    The stub is told apart the way `_is_real_page` does it, by having no
-    `data-qa` markers at all. A real page without the name is a layout change
-    and raises, rather than being retried as throttling.
-    """
+    """None for the stub (no `data-qa` at all). Markers verified 2026-10-07 on Okko, Яндекс, СБЕР."""
     soup = BeautifulSoup(html, "lxml")
     if soup.find(attrs={"data-qa": True}) is None:
         return None
@@ -305,7 +246,7 @@ def parse_employer(html: str, employer_id: str) -> EmployerData | None:
     return EmployerData(
         external_id=employer_id,
         url=EMPLOYER_URL.format(employer_id),
-        # the first string only: a trusted employer's name is followed by a badge
+        # The first string only: a trusted employer's name is followed by a badge.
         name=_clean(next(iter(name_el.stripped_strings), None), inline=True),
         site_url=_web_url(site["href"] if site else None),
         raw=raw,
@@ -313,14 +254,10 @@ def parse_employer(html: str, employer_id: str) -> EmployerData | None:
 
 
 class Throttled(RuntimeError):
-    """hh served its stripped page instead of content, repeatedly.
-
-    Raised for both a search page and a vacancy page: same 200-with-no-content
-    behaviour, same meaning — slow down.
-    """
+    """hh kept serving its stripped 200 page instead of content: slow down."""
 
 
-# the search path's older name, kept so nothing importing it breaks
+# The search path's older name.
 SearchThrottled = Throttled
 
 
@@ -329,16 +266,7 @@ async def discover(
     crawl: Crawl | None = None,
     countries: Sequence[str] = (),
 ) -> AsyncIterator[Listing]:
-    """Walk the search results, one query at a time.
-
-    ``countries`` holds plain names like ``russia``, each expanded by
-    ``areas.coverage`` into the queries it takes to get under ``RESULT_CEILING``.
-    Without them, an ``area`` in ``params`` is walked directly, one query per
-    entry -- the path the parser tests use. ``crawl`` defaults to ``CRAWL``.
-
-    Yields each vacancy once: queries overlap when postings shift between
-    requests, and counting one twice would misreport the corpus.
-    """
+    """Walk each country's queries (else ``params``' areas), yielding a vacancy once as queries overlap."""
     crawl = crawl or CRAWL
     base: dict[str, Any] = {"order_by": ORDER_BY, **dict(params)}
     if countries:
@@ -349,7 +277,7 @@ async def discover(
         queries = [{} if area is None else {"area": area} for area in listed]
 
     seen: set[str] = set()
-    async with _client() as client:     # one connection pool for the whole sweep
+    async with _client() as client:
         for query in queries:
             async for listing in _walk(client, {**base, **query}, crawl):
                 if listing.external_id not in seen:
@@ -366,9 +294,7 @@ async def _walk(
         if not listings:
             return                      # a real page with no results: past the end
         total += len(listings)
-        # One line per page. Without it a 40-page walk is ~4 minutes of silence
-        # before the first fetch, which is indistinguishable from a hang --
-        # discovery is collected in full before fetching starts.
+        # Otherwise a 40-page walk is ~4 minutes of silence that looks like a hang.
         log.info("area=%s page %d/%d: %d listings (%d so far)",
                  params.get("area"), page + 1, crawl.max_pages, len(listings), total)
         for listing in listings:
@@ -383,31 +309,15 @@ async def _walk(
 async def _search_page(
     client: httpx2.AsyncClient, params: Mapping[str, Any], crawl: Crawl
 ) -> list[Listing]:
-    """One page of results, or an empty list once past the last one.
-
-    The whole reason this is its own function: **an exhausted search and a
-    throttled request are both HTTP 200 with no vacancies on the page.**
-    (Past hh's 40-page ceiling the answer is a 404 instead, handled below.)
-    Ending the walk on "no results" would truncate the crawl at a random page
-    whenever hh decided to throttle, and the run would still report success.
-    A real results page always carries the search header; the throttling page
-    -- a stripped "enable JavaScript" stub -- never does. So: header and no
-    items means the end; no header means try again.
-    """
+    """Exhausted and throttled are both an empty 200; only the search header tells end from retry."""
     for attempt in range(1, SEARCH_ATTEMPTS + 1):
         await asyncio.sleep(crawl.delay * attempt)      # also the politeness delay
         resp = await client.get(SEARCH_URL, params=dict(params))
-        # Verified 2026-09-24, re-checked 2026-09-29: hh serves pages 0-39 and
-        # answers 404 from page 40 on -- and page 39 is a *full* 50, so the cap
-        # is 2 000 results per query, not a page count that runs out.
-        # That is the end of the results, not an error -- raising here
-        # would abort the walk, and because `discover` is one generator across
-        # every area, it would take the areas after this one with it.
+        # The end, not an error (404 from page 40, 2026-09-29): raising would abort every later area.
         if resp.status_code == 404:
             return []
         resp.raise_for_status()
-        # ~1.2MB of HTML: parsed off the event loop, or every other coroutine
-        # waits for BeautifulSoup
+        # ~1.2MB, so off the event loop.
         listings = await asyncio.to_thread(_results, resp.text)
         if listings is not None:
             return listings
@@ -428,19 +338,7 @@ def _results(html: str) -> list[Listing] | None:
 
 
 def _listings(soup: BeautifulSoup) -> list[Listing]:
-    """Every result on the page -- from the embedded state, not the markup.
-
-    Verified 2026-09-24, re-checked 2026-09-29: hh serves **50 results per page**
-    but renders only the first 20 as ``data-qa`` anchors; the rest are drawn
-    lazily, so reading the DOM silently takes 20 and calls the page done.
-    Georgia is the clearest case -- one page, no paging block, and the walk
-    stopped at 20 having seen a perfectly valid page (36 were there). The
-    `<template>` blob is the same payload the page itself renders from, and it
-    carries all 50 with ids, titles and links.
-
-    The anchor scan stays as the fallback: it is what the saved test pages have,
-    and it is the honest answer if hh ever drops the blob.
-    """
+    """From the embedded state, not the markup: measured 2026-09-29, 50 per page but 20 anchors."""
     listings = _listings_from_state(soup)
     if listings:
         return listings
@@ -496,14 +394,7 @@ def _listings_from_anchors(soup: BeautifulSoup) -> list[Listing]:
 
 
 def _is_real_page(soup: BeautifulSoup) -> bool:
-    """Is this an actual vacancy page, or hh's throttling stub?
-
-    Under load hh answers **200 with a stripped page** — same trick it plays on
-    search results — and that stub has no `data-qa` markers and no JSON-LD.
-    Parsing it raises "No description found", which reads like a layout change
-    and is nothing of the sort. A real page always has the title marker or the
-    JobPosting block (branded layouts drop the markers but keep the JSON-LD).
-    """
+    """The throttling stub has neither the title marker nor JSON-LD; a real page has one."""
     return (
         soup.find(attrs={"data-qa": "vacancy-title"}) is not None
         or _json_ld(soup) is not None
@@ -518,12 +409,7 @@ def _vacancy(html: str, url: str) -> VacancyData | None:
 
 
 async def fetch(url: str) -> VacancyData:
-    """One vacancy page, retried past the throttling stub.
-
-    The retry is the same shape as `_search_page`'s: a stub is not a failure of
-    the page, it is hh asking us to slow down, so back off and ask again rather
-    than spending one of the vacancy's three attempts on it.
-    """
+    """Retried past the stub, which must not spend one of the vacancy's fetch attempts."""
     url = canonical_url(url)
     async with _client() as client:
         for attempt in range(1, FETCH_ATTEMPTS + 1):
@@ -540,11 +426,7 @@ async def fetch(url: str) -> VacancyData:
 
 
 async def fetch_employer(employer_id: str) -> EmployerData:
-    """One employer page, retried past the throttling stub like `fetch`.
-
-    Asked for on demand from the UI, one page at a time, so it needs no rate of
-    its own. Employer pages are 1-3MB.
-    """
+    """Retried past the stub like `fetch`; on demand, one at a time, so it needs no rate."""
     url = EMPLOYER_URL.format(employer_id)
     async with _client() as client:
         for attempt in range(1, FETCH_ATTEMPTS + 1):

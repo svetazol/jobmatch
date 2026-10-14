@@ -1,4 +1,4 @@
-"""One prompt to the user's signed-in Claude Code (`claude -p`), so no key is needed; the only module that runs it."""
+"""The only runner of `claude -p`, the user's signed-in Claude Code, so no key is needed."""
 from __future__ import annotations
 
 import asyncio
@@ -18,7 +18,7 @@ class ClaudeError(RuntimeError):
 
 
 async def ask(model: str, system: str, prompt: str, *, kind: str, vacancy_id: int) -> str:
-    """Run `claude -p` once and record the call; the answer's text."""
+    """Run `claude -p` once, recorded; the answer's text."""
     exe = shutil.which("claude")
     if exe is None:     # before the ledger: nothing was sent, so nothing was paid for
         raise ClaudeError("the `claude` CLI is not on PATH")
@@ -35,7 +35,7 @@ async def ask(model: str, system: str, prompt: str, *, kind: str, vacancy_id: in
 
 
 async def _run(exe: str, request: dict[str, Any]) -> tuple[dict[str, Any], int | None]:
-    """The JSON `claude` printed and its exit code; run in a temp dir to keep the project's CLAUDE.md out, prompt on stdin as it can outgrow argv."""
+    """In a temp dir to keep the project's CLAUDE.md out; the prompt on stdin, as it can outgrow argv."""
     proc = await asyncio.create_subprocess_exec(
         exe, "-p",
         "--output-format", "json",

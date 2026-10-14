@@ -1,14 +1,8 @@
-"""Loading input files and stripping private CV data before it leaves the machine.
-
-Moved from ``cv_match/``. The one change: a failure raises ``ValueError``, not
-``SystemExit`` — a library must not decide the process's exit code.
-"""
+"""Loading the CV, and stripping its private data before it leaves the machine."""
 import re
 from pathlib import Path
 
-# data/cv.md is a private master database ("never sent to anyone" — see its own
-# header) with contact info and internal-only notes. Strip that before it leaves
-# the machine; only job-relevant facts go to Jev.
+# The master CV holds contact rows and internal notes; only job-relevant facts may leave.
 CONTACT_ROW = re.compile(r"^\|\s*(Full name|Email|Phone|LinkedIn|GitHub|Personal site.*)\s*\|.*$", re.MULTILINE)
 INTERNAL_LINE = re.compile(r"^.*\[INTERNAL\].*$\n?", re.MULTILINE)
 CV_RULE_LINE = re.compile(r"^\s*`?\[CV-RULE\]`?.*$\n?", re.MULTILINE)

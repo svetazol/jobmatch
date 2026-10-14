@@ -1,10 +1,4 @@
-"""Response models: projections shaped for one screen, not a second schema.
-
-§13 rejects "pydantic domain models mirroring the ORM models", and these do not
-mirror them — they deliberately omit `raw`, every hash, `fetch_error` and the
-rest of what the UI never shows. Field names match the columns so there is
-nothing to translate on the client side.
-"""
+"""Response models: per-screen projections, not mirrors of the ORM (docs/architecture.md §11)."""
 from __future__ import annotations
 
 import datetime as dt
@@ -14,13 +8,7 @@ from pydantic import BaseModel, ConfigDict
 
 
 class MatchSummary(BaseModel):
-    """The promoted answers, each with the confidence that qualifies it.
-
-    Confidence is not optional decoration. In the live corpus the top-scoring
-    vacancy holds `top_gap = 'none'` at confidence .17 with the four choices
-    near-tied; an API that returned the winner alone would make it impossible
-    for the client to refuse to print it as a fact.
-    """
+    """Each answer with its confidence, so the client can refuse to print a near-tie as a fact."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -55,8 +43,7 @@ class VacancyRow(BaseModel):
     applied_at: dt.datetime | None
     delisted_at: dt.datetime | None
     stale: bool
-    # None when the vacancy is fetched but not matched yet — a first-class
-    # state (§3.1), not a score of zero.
+    # None when fetched but not matched yet, not a score of zero.
     match: MatchSummary | None
 
 
@@ -68,8 +55,7 @@ class VacancyDetail(VacancyRow):
     description: str | None
     skills: list[str]
     fetched_at: dt.datetime | None
-    # when discovery last saw it in search: what `stale` is measured from, so
-    # the UI can say since when, not only that
+    # What `stale` is measured from, so the UI can say since when.
     last_seen_at: dt.datetime
     answers: dict[str, Any] | None
 
@@ -85,7 +71,7 @@ class PitchStat(BaseModel):
     n: int
     mean_fit: float
     qualified: int
-    # counts per fit level in ladder order, poor -> excellent
+    # Counts per fit level, poor -> excellent.
     distribution: list[int]
 
 
@@ -95,13 +81,7 @@ class NameCount(BaseModel):
 
 
 class CvOption(BaseModel):
-    """One CV the corpus has answers from.
-
-    `name` is the file it came from when that file is still on disk, and the
-    truncated hash when it is not — a CV that has been renamed or deleted
-    still owns its answers, and hiding it would hide the matches with it.
-    `name` is also what `?cv=` takes, so the picker round-trips.
-    """
+    """`name` is the file, or the short hash once it is gone; it is also what `?cv=` takes."""
 
     name: str
     cv_hash: str
@@ -111,23 +91,16 @@ class CvOption(BaseModel):
 
 
 class Search(BaseModel):
-    """What produced this corpus.
-
-    The whole point of showing it: at a 9.6% signal rate the search terms are
-    the highest-leverage thing on the screen, and a reader who cannot see them
-    has no way to know why two thirds of the postings are irrelevant.
-    """
+    """Shown because at a 9.6% signal rate the search terms explain the irrelevant postings."""
 
     source: str
     keyword: str            # hh's `text` param
-    fields: list[str]       # where it looked — title, description
-    excluded: list[str]     # terms that disqualify a posting outright
+    fields: list[str]
+    excluded: list[str]
 
 
 class Stats(BaseModel):
-    # Which CV these numbers answer for, and which others could be asked.
-    # Never absent: every figure below is about one CV, and a page that does
-    # not say which is a page that cannot be checked.
+    # Every figure is about one CV, so the page must say which.
     cv: CvOption | None
     cvs: list[CvOption]
     total: int
@@ -160,13 +133,7 @@ class CoverNote(BaseModel):
 
 
 class CompanyIdentity(BaseModel):
-    """Who is behind the posting, as a model answered it: the stored answer
-    (`research.Identity`, None = the model did not know), whether each link
-    answered, and which `llm_calls` row paid for it.
-
-    `model` is the model that actually answered when OpenRouter says so, else
-    the one asked for.
-    """
+    """The stored `research.Identity` (None = unknown), whether each link answered, and its call."""
 
     employer: str | None
     homepage: str | None
@@ -183,13 +150,7 @@ class CompanyIdentity(BaseModel):
 
 
 class RecruiterPerson(BaseModel):
-    """One person the search cited (`research.ConfirmedPerson`, as stored).
-
-    `linkedin_url` is always `https://www.linkedin.com/in/<slug>`:
-    `research.keep_cited` rebuilds it from the slug, so the model's own text
-    never reaches an href. `source_title` is the search's title for that page,
-    shown beside the model's name and role because only the page is proven.
-    """
+    """`linkedin_url` is rebuilt from the slug, so the model's own text never reaches an href."""
 
     name: str
     role: str | None
@@ -199,11 +160,7 @@ class RecruiterPerson(BaseModel):
 
 
 class CompanyRecruiters(BaseModel):
-    """The search a posting's request would reuse (`company_research.stored_recruiters`):
-    the cited people, how many the model named without a citation (`dropped`),
-    and how many pages the search cited (`sources`). Model and cost are in the
-    trace, not on the card.
-    """
+    """The search a posting's request would reuse; model and cost are in the trace, not the card."""
 
     people: list[RecruiterPerson]
     dropped: int
@@ -212,16 +169,7 @@ class CompanyRecruiters(BaseModel):
 
 
 class Company(BaseModel):
-    """The employer behind a vacancy, as its page said when last looked up.
-
-    `url` is the employer's page on the source; `site_url` is whatever the
-    employer links from it, often a careers site rather than the homepage.
-    `city`, `category` and `industries` are the page's own text, verbatim
-    from `employer.raw` (`industries` one comma-separated string, as hh
-    prints it). `identity` is the newest answer for this vacancy, if one was
-    asked for; `recruiters` the search its request would reuse, if one was
-    made, however old.
-    """
+    """The employer as its page said when last looked up; `city` and the rest are hh's own text."""
 
     name: str | None
     url: str

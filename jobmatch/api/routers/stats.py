@@ -1,4 +1,4 @@
-"""The market view: aggregates over the current matches only."""
+"""The market view: aggregates over one CV's matches."""
 from __future__ import annotations
 
 import asyncio
@@ -16,32 +16,21 @@ router = APIRouter(prefix="/api/stats", tags=["stats"])
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
-# The ladder, in order. Not sorted alphabetically anywhere, ever — that is the
-# enum trap §5 avoids by never making the label a sort key.
+# The ladder in order; never sort it alphabetically.
 FIT_LEVELS = ("poor", "weak", "good", "strong", "excellent")
 
-
-# hh spells search fields `name` / `description`; nobody outside hh calls a
-# job title a "name".
+# hh's search field names, as a person would say them.
 _FIELD_NAMES = {"name": "title", "description": "description",
                 "company_name": "company", "skills": "skills"}
 
 
 def _split_terms(raw: str) -> list[str]:
-    """hh's excluded_text is one comma-separated string, quoted where a term
-    must match exactly (`"QA"` so it does not strike words containing those
-    letters). The quotes are hh syntax, not part of the word, so they come off
-    before display."""
+    """hh's comma-separated excluded_text, its exact-match quotes removed for display."""
     return [term.strip().strip('"').strip() for term in raw.split(",") if term.strip()]
 
 
 def _search() -> Search:
-    """What the corpus was filtered by.
-
-    Read from config.toml at request time rather than stored: a source's search
-    is opaque everywhere else in this codebase (§2), and this is the one place
-    that is allowed to look inside it — to describe it, never to act on it.
-    """
+    """The one place that looks inside a source's opaque search: to describe it, never to act on it."""
     empty = Search(source="", keyword="", fields=[], excluded=[])
     try:
         settings = load_settings(DEFAULT_PATH)
@@ -65,9 +54,7 @@ def _search() -> Search:
 
 
 def _settings() -> Settings | None:
-    """Read at request time like `_search()`, with the same fallback: if the
-    config cannot be read, fall back to showing everything rather than
-    nothing."""
+    """None if the config cannot be read, so the view shows everything rather than nothing."""
     try:
         return load_settings(DEFAULT_PATH)
     except (FileNotFoundError, ValueError, OSError):
@@ -75,30 +62,17 @@ def _settings() -> Settings | None:
 
 
 def _cv_hash() -> str | None:
-    """The CV the market view reports on when the request names none.
-
-    Empty means no filter, which is honest only while one CV has ever been
-    matched. Once a re-match is underway the corpus is split between two, and
-    an average over both describes neither.
-    """
+    """The default CV; empty means every CV, honest only while there has been one."""
     settings = _settings()
     return (settings.stats_cv_hash or None) if settings else None
 
 
-# Hashing three small files per request would be silly; hashing them once and
-# never again would be worse, because editing a CV is exactly what changes the
-# answer. Keyed on what an edit changes.
+# Keyed on what an edit changes, so an edited CV is hashed again.
 _names: dict[tuple[str, int, int], str] = {}
 
 
 def _disk_names(settings: Settings | None) -> dict[str, str]:
-    """hash -> file name, for the CVs still sitting next to the configured one.
-
-    The directory is walked rather than configured: a CV is whatever file was
-    once passed to `jobmatch match --cv`, and nothing records which those
-    were. A file that is not a CV simply hashes to something no match_results
-    row holds, so it never reaches the catalogue.
-    """
+    """hash -> file name beside the configured CV; a non-CV file matches no row, so it is harmless."""
     if settings is None:
         return {}
     found: dict[str, str] = {}
@@ -120,12 +94,7 @@ def _disk_names(settings: Settings | None) -> dict[str, str]:
 
 
 async def _catalogue(session: AsyncSession, settings: Settings | None) -> list[CvOption]:
-    """Every CV with current answers, newest run first.
-
-    Driven by the database, named from the disk — never the other way round.
-    A CV file with no matches is not an option (there is nothing to show), and
-    a hash whose file is gone still is (its answers are still the corpus).
-    """
+    """Driven by the database, named from the disk, so a deleted file's answers are still listed."""
     names = await asyncio.to_thread(_disk_names, settings)
     return [
         CvOption(
@@ -141,12 +110,7 @@ async def _catalogue(session: AsyncSession, settings: Settings | None) -> list[C
 
 def _select(catalogue: list[CvOption], requested: str | None,
             default_hash: str | None) -> CvOption | None:
-    """Resolve `?cv=` against the catalogue, by file name or by hash.
-
-    An unknown name is a 404 rather than a silent fall-back to everything:
-    asking for one CV and being shown the average of all of them is the one
-    answer that cannot be told apart from a correct one.
-    """
+    """An unknown CV is a 404: the average of all CVs would look like a correct answer."""
     if requested:
         for option in catalogue:
             if requested in (option.name, option.cv_hash):
@@ -167,13 +131,7 @@ async def get_stats(
     country: Annotated[list[str] | None, Query()] = None,
     cv: Annotated[str | None, Query(description="CV file name, or its hash")] = None,
 ) -> Stats:
-    """Every number here answers for one CV — `?cv=` by file name, or
-    `stats_cv_hash` from config.toml when the request names none — and for the
-    countries asked for, except the `countries` breakdown, which ignores the
-    country filter so it keeps its own options.
-
-    The config and the CV directory are disk reads, so they run in a thread:
-    on the event loop they would stall every other request while they ran."""
+    """For one CV (`?cv=`, else `stats_cv_hash`); disk reads run in a thread, off the event loop."""
     settings = await asyncio.to_thread(_settings)
     catalogue = await _catalogue(session, settings)
     selected = _select(catalogue, cv, settings.stats_cv_hash if settings else None)
@@ -184,9 +142,7 @@ async def get_stats(
 
     fit_distribution = {level: 0 for level in FIT_LEVELS}
     for label, count in raw["fit_rows"]:
-        # An unexpected label is stored and shown, never dropped: §11 is
-        # explicit that the DB has no business rejecting what Jev returned,
-        # and neither does this.
+        # An unexpected label is shown, never dropped; see docs/architecture.md §10.
         fit_distribution[label] = fit_distribution.get(label, 0) + count
 
     pitches: dict[str, dict] = {}
@@ -210,9 +166,7 @@ async def get_stats(
         )
         for angle, entry in pitches.items()
     ]
-    # Ordered by how well the pitch does, not by how many postings it has —
-    # in the live corpus the smallest real lane is the strongest one. "none"
-    # is not a pitch, so it sorts last however big it gets.
+    # By fit, not size: the smallest lane is the strongest; "none" is not a pitch, so it goes last.
     pitch_stats.sort(key=lambda p: (p.pitch == "none", -p.mean_fit))
 
     calls, spend, avg_ms = raw["spend"]

@@ -1,17 +1,4 @@
-"""discover -> persist -> fetch -> persist -> match -> persist. With
-`company_research`, the only module allowed to know about sources, the matcher
-and the database at once.
-
-Failure isolation is structural: each stage of each vacancy is its own
-transaction, and one bad page or one failed API call costs a warning, not the
-run. Nothing here remembers where it got to, because every guard is
-state-based — the next run resumes by looking at the rows, not at a cursor.
-
-The on-click company operations, which need the same three, live there.
-
-Async throughout, on one event loop: the overlap that matters — pages in
-flight, Jev calls in flight — is waiting, and coroutines wait for free.
-"""
+"""The three phases (docs/pipeline.md); each stage of each vacancy is its own transaction."""
 from __future__ import annotations
 
 import asyncio
@@ -32,12 +19,7 @@ log = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class RunReport:
-    """Counters for one run.
-
-    Bumped directly from concurrent workers, with no lock: they are coroutines
-    on one thread, and `self.fetched += 1` holds no `await`, so nothing can
-    interleave inside it.
-    """
+    """Bumped by concurrent workers with no lock: `+= 1` holds no `await`."""
 
     discovered: int = 0
     added: int = 0            # rows the feed had not shown us before
@@ -45,7 +27,7 @@ class RunReport:
     skipped: int = 0          # already fetched, delisted, or out of attempts
     delisted: int = 0
     matched: int = 0          # calls actually paid for
-    already_matched: int = 0  # the free case; the point of the fingerprint
+    already_matched: int = 0  # the free case
     cost: Decimal = Decimal(0)
     failures: list[tuple[str, Exception]] = field(default_factory=list)
 
@@ -62,19 +44,7 @@ class RunReport:
 async def run(
     settings: Settings, limit: int | None = None, *, match: bool = True
 ) -> RunReport:
-    """Two phases, deliberately separate.
-
-    Discovery and fetching walk today's feed. Matching walks the *table*,
-    because the feed is a rolling window and the corpus outgrows it — a
-    vacancy stored last week still needs an answer when the CV changes.
-
-    ``limit`` caps the matching phase, which is the phase that costs money:
-    the sane way to try a change against 2–3 vacancies before twenty.
-
-    ``match=False`` skips that phase entirely — crawl and fetch now, decide
-    what to pay for later. Nothing is lost by splitting them: the stored rows
-    are the queue, and `jobmatch match` picks up exactly where this stopped.
-    """
+    """Crawl today's feed, then match the whole table; ``limit`` caps the paid phase only."""
     report = RunReport()
     for entry, sweep, countries in settings.crawls():
         source = SOURCES[entry.name]     # validated at load
@@ -89,16 +59,7 @@ async def run(
 
 
 async def discover_all(settings: Settings, *, limit: int | None = None) -> RunReport:
-    """Phase 1 alone: store what the sweeps find, fetch nothing.
-
-    The honest completion of the state-based design -- discovery already leaves
-    rows that are a valid state (`fetched_at IS NULL` *is* the fetch queue), so
-    stopping here loses nothing and `jobmatch fetch --pending` resumes.
-
-    What it is for: seeing what a changed search or a new country actually
-    yields, without then pulling thousands of pages. ``limit`` stops the walk
-    early, so that costs a page rather than a sweep.
-    """
+    """Phase 1 alone, to see what a changed search yields; `fetch --pending` resumes."""
     report = RunReport()
     for entry, sweep, countries in settings.crawls():
         if limit is not None and report.discovered >= limit:
@@ -120,16 +81,7 @@ async def match_all(
     limit: int | None = None,
     country: str | None = None,
 ) -> RunReport:
-    """The paid phase on its own, over what is already stored.
-
-    `run()` calls this after crawling; `jobmatch match` calls it without
-    crawling at all, which is how you re-match after editing the CV or the
-    questions without touching the site.
-
-    `matching.CONCURRENCY` calls are in flight at once. ``limit`` is still
-    exact under that: a slot is taken *before* a call goes out, not counted
-    after it lands, so N workers cannot all see "one left" and spend N.
-    """
+    """The paid phase over what is stored; ``limit`` is exact, as a slot is taken before the call."""
     report = report if report is not None else RunReport()
     async with SessionLocal() as session:
         candidates = await repository.matchable_vacancy_ids(
@@ -138,9 +90,9 @@ async def match_all(
     if not candidates:
         return report
 
-    cv = matching.load_cv(settings.cv_path)   # read and sanitized once per run
+    cv = matching.load_cv(settings.cv_path)
     budget = _Budget(limit)
-    async with matching.open_client() as client:    # one HTTP session per run
+    async with matching.open_client() as client:
         async def match_one(vacancy_id: int) -> None:
             await _match(vacancy_id, cv, client, settings, report, budget)
 
@@ -155,9 +107,7 @@ async def match_all(
 
 
 class _Budget:
-    """How many paid calls are left. ``take`` and ``give_back`` hold no
-    ``await``, so a check and its reservation cannot be split by another
-    worker."""
+    """Paid calls left; no ``await`` inside, so a check and its reservation cannot be split."""
 
     def __init__(self, limit: int | None) -> None:
         self.left = limit
@@ -174,7 +124,7 @@ class _Budget:
         return True
 
     def give_back(self) -> None:
-        """A failed call does not count against ``--limit``, as before."""
+        """A failed call does not count against ``--limit``."""
         if self.left is not None:
             self.left += 1
 
@@ -187,17 +137,7 @@ async def _drain[T](
     failed: Callable[[T, Exception], None],
     stop: Callable[[], bool] = lambda: False,
 ) -> None:
-    """Run ``handle`` over ``work`` with at most ``workers`` in flight.
-
-    Workers share one iterator, so each item is taken exactly once; ``next()``
-    holds no ``await``, which is what makes sharing it safe.
-
-    An error ``handle`` did not catch costs that item, never its neighbours.
-    Left to reach the TaskGroup it would cancel every other worker, and a
-    cancelled Jev call is billed yet never reaches `llm_calls` --
-    ``CancelledError`` is not an ``Exception``, so the ledger write is skipped.
-    Two concurrent runs make this real: the loser's `save_match` raises.
-    """
+    """Errors are caught per item: one reaching the TaskGroup would cancel billed calls in flight."""
     items = iter(work)
 
     async def worker() -> None:
@@ -221,14 +161,7 @@ async def fetch_all(
     report: RunReport | None = None,
     limit: int | None = None,
 ) -> RunReport:
-    """Drain the fetch queue over what is already stored, without crawling.
-
-    The free-phase twin of `match_all`. Useful whenever discovery already ran
-    and the fetches did not: a throttled run, or a dropped connection.
-    Re-running is safe because `fetched_at IS NULL` is the queue, so anything
-    that succeeded simply is not in it any more -- and anything that failed
-    `MAX_FETCH_ATTEMPTS` times has left it for good.
-    """
+    """Drain the stored fetch queue without crawling; safe to re-run, as the rows are the queue."""
     report = report if report is not None else RunReport()
     async with SessionLocal() as session:
         pending = await repository.fetch_queue(
@@ -257,19 +190,10 @@ async def _safe_discover(
     report: RunReport,
     limit: int | None = None,
 ) -> list[Listing]:
-    """A source being down costs one warning, not the other sources' work.
-
-    Consumed item by item rather than with ``list()`` so that a crawl which
-    dies on page four keeps the three pages it already walked. The failure is
-    still recorded — a partial crawl must not pass for a complete one.
-
-    ``limit`` stops the walk rather than trimming the result, so trying a config
-    change costs a page or two instead of the whole sweep.
-    """
+    """Item by item, so a crawl dying on page four keeps three; the failure is still recorded."""
     listings: list[Listing] = []
     try:
-        # aclosing: breaking out of an async generator does not close it, and
-        # an unclosed walk would hold its HTTP client open until GC
+        # Breaking out does not close an async generator; its HTTP client would stay open.
         async with aclosing(
             source.discover(entry.search, settings.crawl, countries)
         ) as walk:
@@ -287,17 +211,11 @@ async def _safe_discover(
 async def _process_all(
     source: Source, listings: list[Listing], settings: Settings, report: RunReport
 ) -> None:
-    """Upsert every listing, then fetch the outstanding ones concurrently.
-
-    Fetching is almost entirely waiting on hh, so it is the one phase worth
-    overlapping: `rate.workers` pages are in flight at once, each worker still
-    sleeping `rate.delay` after its own page, so the rate is `workers / delay`
-    per second. The source states its own measured value (`sources/hh` RATE).
-    """
+    """Upsert every listing sequentially (cheap), then fetch the outstanding ones concurrently."""
     pending: list[tuple[int, Listing]] = []
-    for listing in listings:                       # upserts stay sequential:
-        vacancy_id = await _persist_listing(source, listing, report)   # one row
-        if vacancy_id is not None:                 # each, and they are cheap
+    for listing in listings:
+        vacancy_id = await _persist_listing(source, listing, report)
+        if vacancy_id is not None:
             pending.append((vacancy_id, listing))
 
     await _fetch_concurrently(source, pending, settings, report)
@@ -322,12 +240,10 @@ async def _fetch_concurrently(
 
 
 async def _persist_listing(source: Source, listing: Listing, report: RunReport) -> int | None:
-    """Committed before any network call, so a failure downstream still has a
-    row to be recorded against. Returns None when there is nothing more to do."""
+    """Committed before any network call, so a failure has a row; None when nothing is left to do."""
     async with SessionLocal.begin() as session:
         vacancy = await repository.upsert_listing(session, source.name, listing)
-        # one statement sets both from the same transaction clock on insert and
-        # only last_seen_at on conflict, so equal means this row is new
+        # One transaction clock sets both on insert, so equal means new.
         if vacancy.first_seen_at == vacancy.last_seen_at:
             report.added += 1
         if vacancy.delisted_at is not None:
@@ -339,9 +255,7 @@ async def _persist_listing(source: Source, listing: Listing, report: RunReport) 
 async def _fetch(
     source: Source, listing: Listing, vacancy_id: int, rate: Rate, report: RunReport
 ) -> None:
-    # No session is held across the page fetch: under AsyncSession an open
-    # session pins a pooled connection, and the pool would have to be as wide
-    # as the number of pages in flight.
+    # No session across the fetch: each would pin a pooled connection per page in flight.
     async with SessionLocal() as session:
         vacancy = await session.get_one(Vacancy, vacancy_id)
         if (
@@ -369,16 +283,14 @@ async def _fetch(
         report.fetched += 1
         log.info("fetched %s — %s", listing.url, data.title)
     finally:
-        # per worker: with N workers the rate is N/delay per second. Pages are
-        # ~700KB. The number is the source's own -- see sources/hh RATE.
+        # Per worker, so N workers fetch N/delay pages a second.
         await asyncio.sleep(rate.delay)
 
 
 async def _match(
     vacancy_id: int, cv: str, client, settings: Settings, report: RunReport, budget: _Budget
 ) -> None:
-    # one transaction: make_current may revive a superseded row, which is a
-    # write, and the commonest case (already current) writes nothing at all
+    # One transaction: make_current may revive a superseded row.
     async with SessionLocal.begin() as session:
         vacancy = await session.get_one(Vacancy, vacancy_id)
         if not vacancy.description:
@@ -402,8 +314,7 @@ async def _match(
             job=job,
         )
     except Exception as exc:
-        # the llm_calls row is already committed, in its own session, so the
-        # spend and the reason are on record even though this raised
+        # The llm_calls row is already committed in its own session.
         budget.give_back()
         report.failures.append((vacancy.url, exc))
         log.warning("match failed for %s: %s", vacancy.url, exc)

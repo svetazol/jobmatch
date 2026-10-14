@@ -1,5 +1,4 @@
-"""The employer behind a vacancy: read what is stored, or look it up on click,
-ask a model who is behind the posting, and search for who recruits there."""
+"""The employer behind a vacancy: what is stored, the lookup, the identity and the recruiter search."""
 from __future__ import annotations
 
 import logging
@@ -17,14 +16,10 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/vacancies", tags=["company"])
 
+
 @router.get("/{vacancy_id}/company", response_model=Company | None)
 async def get_company(vacancy_id: int) -> Company | None:
-    """What is stored, with no request to the source or a model; null until
-    looked up.
-
-    No `SessionDep`: `company_research.stored_recruiters` opens its own session, so it
-    runs first and this one opens after, rather than holding two connections.
-    """
+    """Free; null until looked up. No `SessionDep`, so two connections are never held at once."""
     recruiters = await _stored_recruiters(vacancy_id)
     async with SessionLocal() as session:
         employer = await repository.employer_of(session, vacancy_id)
@@ -35,13 +30,7 @@ async def get_company(vacancy_id: int) -> Company | None:
 
 @router.post("/{vacancy_id}/company", response_model=Company)
 async def look_up_company(vacancy_id: int) -> Company:
-    """Fetch the employer page (and, for an old row, the vacancy page first).
-
-    No `SessionDep`: `company_research.lookup_employer` opens short sessions around
-    its page fetches, so no pooled connection waits on hh. 404 means there is
-    no employer to find, with the reason; 502 means the source failed. The
-    identity is whatever is already stored: asking a model is its own request.
-    """
+    """No `SessionDep`, so no pooled connection waits on hh. 404: no employer; 502: the source failed."""
     try:
         employer = await company_research.lookup_employer(vacancy_id)
     except company_research.EmployerUnknown as e:
@@ -56,15 +45,8 @@ async def look_up_company(vacancy_id: int) -> Company:
 
 @router.post("/{vacancy_id}/company/identity", response_model=CompanyIdentity)
 async def identify_company(vacancy_id: int) -> CompanyIdentity:
-    """Ask the `employer` model who is behind the posting; free when this exact
-    request was answered before (`company_research.identify_employer`).
-
-    No `SessionDep`, as above: no pooled connection waits on the model. 409
-    means the company must be looked up first, 503 that there is no API key,
-    502 that the call failed -- it is in `llm_calls` either way.
-    """
-    # Checked here, not left to `research.ask_employer`, so a missing key reads as the
-    # server's setup (503) rather than the model failing (502).
+    """409: look up first; 503: no API key; 502: the call failed, recorded in `llm_calls`."""
+    # Checked here, so a missing key reads as setup (503), not the model failing (502).
     try:
         llm.api_key("to identify employers")
     except ValueError as e:
@@ -85,15 +67,7 @@ async def identify_company(vacancy_id: int) -> CompanyIdentity:
 
 @router.post("/{vacancy_id}/company/recruiters", response_model=CompanyRecruiters)
 async def search_recruiters(vacancy_id: int, refresh: bool = False) -> CompanyRecruiters:
-    """Ask the `recruiters` model to search the web for who recruits at the company;
-    free when the same request was answered within `company_research.RECRUITERS_FRESH`,
-    unless `?refresh=true`, which always pays.
-
-    No `SessionDep`, as above. 409 means the company must be looked up first,
-    422 that it has neither a website nor a name to search for, 503 that
-    there is no API key, 502 that the call failed -- it is in `llm_calls`
-    either way.
-    """
+    """Free while fresh unless `?refresh=true`. 409, 503, 502 as above; 422: nothing to search for."""
     try:
         llm.api_key("to search for recruiters")
     except ValueError as e:     # 503 rather than 502, as above
@@ -114,11 +88,7 @@ async def search_recruiters(vacancy_id: int, refresh: bool = False) -> CompanyRe
 
 
 async def _stored_recruiters(vacancy_id: int) -> CompanyRecruiters | None:
-    """The search the card would show; None when there is none, or nothing to
-    search for yet (no lookup, no website or name) -- the POST says why when clicked.
-
-    The section is optional on a free read, so no failure here fails the card.
-    """
+    """None for no search or nothing to search for; optional on a free read, so it never fails the card."""
     try:
         model = load_settings(DEFAULT_PATH).model_for("recruiters")
         row = await company_research.stored_recruiters(vacancy_id, model)
@@ -136,12 +106,7 @@ async def _company(
     vacancy_id: int,
     recruiters: CompanyRecruiters | None,
 ) -> Company:
-    """The employer, with the newest identity asked for this vacancy and the
-    recruiter search already read.
-
-    Written out field by field: three of them live in `raw`, which
-    `model_validate` cannot see into.
-    """
+    """Field by field, as three of them live in `raw`, where `model_validate` cannot see."""
     row = await repository.latest_identity(session, vacancy_id)
     raw = employer.raw or {}
     return Company(
@@ -158,7 +123,7 @@ async def _company(
 
 
 async def _identity(session: AsyncSession, row: EmployerIdentity) -> CompanyIdentity:
-    """The stored answer, flattened, with what its ledger row says it cost."""
+    """The stored answer, with what its ledger row says it cost."""
     call = await repository.get_call(session, row.llm_call_id)   # an FK: always there
     return CompanyIdentity(
         **row.answer,
@@ -172,5 +137,5 @@ async def _identity(session: AsyncSession, row: EmployerIdentity) -> CompanyIden
 
 
 def _recruiters(row: RecruiterSearch) -> CompanyRecruiters:
-    """The stored answer (`dataclasses.asdict(research.Confirmed)`), as is."""
+    """The stored answer, as is."""
     return CompanyRecruiters(**row.answer, created_at=row.created_at)
