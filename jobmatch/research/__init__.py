@@ -1,6 +1,6 @@
 """Questions to a model about a company: who is behind a posting, and who recruits there.
 
-The caches are `pipeline`'s; these always pay. Design: `docs/company-research.md`.
+The caches are `company_research`'s; these always pay. Design: `docs/company-research.md`.
 """
 from __future__ import annotations
 

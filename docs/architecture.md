@@ -17,15 +17,16 @@ Nothing here restates a value that lives in code. hh's measured limits are in
 ## 1. Layout
 
 Three leaf areas that know nothing about each other — `sources/` (the web),
-`matching/` (the LLM), `models.py`+`repository.py` (the DB) — and one module,
-`pipeline.py`, allowed to know all three. `cli.py` and later `api/` are both
+`matching/` (the LLM), `models.py`+`repository.py` (the DB) — and two modules,
+`pipeline.py` (the run phases) and `company_research.py` (the on-click company
+operations), allowed to know all three. `cli.py` and later `api/` are both
 thin callers of that same core.
 
 `research/` is a second LLM leaf beside `matching/`, not a part of it:
 structured-output questions about a company, sent by `jobmatch/llm/openrouter.py`,
 the only module that imports the OpenAI SDK, as `jobmatch/llm/jev.py` alone calls
 Jev's. It asks who is behind a posting and who recruits there
-(`docs/company-research.md` §2, §3); `pipeline` is its caller.
+(`docs/company-research.md` §2, §3); `company_research` is its caller.
 
 No `src/` layout (buys import hygiene that matters for distributed libraries,
 not for one app) and no `core/` subpackage (a path segment, nothing more).
@@ -296,7 +297,7 @@ crawl keeps only `vacancies.employer_external_id`, the id the posting links to,
 and the two join on `(source, external_id)` with no FK: the crawl's three
 concurrent workers never touch an employer row, so there is nothing to race on,
 and nothing deletes rows for an FK to protect. A "look up company" click
-(`pipeline.lookup_employer`) fetches the employer page and upserts the row; a
+(`company_research.lookup_employer`) fetches the employer page and upserts the row; a
 second click refreshes it. Columns and the reason for each:
 `jobmatch/models.py`. The design, and what comes next on top of it:
 `docs/company-research.md`.
@@ -327,7 +328,7 @@ employer's newest of any request: one posting identified and one not make two
 requests, and each is paid for once, not on every switch between them. The
 employer stays in the lookup because it is not in the request -- two hh
 employers with the same name, link and city must not share people. A row is
-reused while it is younger than `pipeline.RECRUITERS_FRESH`, so the
+reused while it is younger than `company_research.RECRUITERS_FRESH`, so the
 fingerprint is not unique: a stale search is asked again with the same
 inputs, because people change jobs. The design: `docs/company-research.md` §3.
 
@@ -464,10 +465,9 @@ transaction, so one bad page or one failed API call costs a warning
 rather than the run — and nothing records progress, because every guard
 is a condition on the rows.
 
-`pipeline.py` also answers two clicks: `lookup_employer` and
-`identify_employer`. They are not phases and no run calls them; they live
-there because each needs a source or a model and the database at once, which
-is what that module is for.
+The clicks -- `lookup_employer`, `identify_employer` and `find_recruiters` --
+are not phases and no run calls them, so they live in `company_research.py`,
+which needs a source or a model and the database at once for the same reason.
 
 ## 8. Matcher integration
 
@@ -650,7 +650,7 @@ SDK's typed answers give it for free at write time.
 ## 11. The HTTP API
 
 FastAPI over the same `Session`, importing `jobmatch.models`. Nine routes,
-all of them thin: every one is a `repository` or `pipeline` call plus a
+all of them thin: every one is a `repository` or `company_research` call plus a
 response model (the cover note adds one `claude -p` call).
 
 | Route | Purpose |
@@ -662,8 +662,8 @@ response model (the cover note adds one `claude -p` call).
 | `POST /api/vacancies/{id}/cover-note` | a draft cover letter from `claude -p`, in the posting's language; never stored (`jobmatch/cover_note.py`) |
 | `GET /api/vacancies/{id}/company` | the looked-up employer, or `null`, with the newest stored `identity` for this vacancy and the `recruiters` search its request would reuse, however old (each `null` when there is none); no request to the source or a model |
 | `POST /api/vacancies/{id}/company` | look the employer up (again): 404 with the reason when there is none to find, 502 when the source fails (`jobmatch/api/routers/company.py`); `identity` and `recruiters` are whatever is already stored |
-| `POST /api/vacancies/{id}/company/identity` | ask `research_model` who is behind the posting (`pipeline.identify_employer`), free when the same request was answered before: 409 before the lookup, 503 without `OPENROUTER_API_KEY`, 502 when the call fails |
-| `POST /api/vacancies/{id}/company/recruiters[?refresh=true]` | ask `people_model` to search the web for who recruits at the company (`pipeline.find_recruiters`), free when the same request was answered within `pipeline.RECRUITERS_FRESH` unless `refresh=true`, which always pays: 409 before the lookup, 404 for an unknown vacancy, 422 when the company has neither a website nor a name, 503 without `OPENROUTER_API_KEY`, 502 when the call fails |
+| `POST /api/vacancies/{id}/company/identity` | ask `research_model` who is behind the posting (`company_research.identify_employer`), free when the same request was answered before: 409 before the lookup, 503 without `OPENROUTER_API_KEY`, 502 when the call fails |
+| `POST /api/vacancies/{id}/company/recruiters[?refresh=true]` | ask `people_model` to search the web for who recruits at the company (`company_research.find_recruiters`), free when the same request was answered within `company_research.RECRUITERS_FRESH` unless `refresh=true`, which always pays: 409 before the lookup, 404 for an unknown vacancy, 422 when the company has neither a website nor a name, 503 without `OPENROUTER_API_KEY`, 502 when the call fails |
 
 **Response models are Pydantic, and they are not a second schema.** This section's
 rejection of "pydantic domain models mirroring the ORM models" stands: these

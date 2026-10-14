@@ -1,5 +1,5 @@
-"""The recruiter search, kept: `recruiter_searches`, `pipeline.target_of`,
-`pipeline.find_recruiters` and its API route on the real database, with
+"""The recruiter search, kept: `recruiter_searches`, `company_research.target_of`,
+`company_research.find_recruiters` and its API route on the real database, with
 `research.ask_recruiters` stubbed -- nothing here reaches OpenRouter. The call
 itself and `keep_cited` are tested in `test_research.py`.
 """
@@ -15,7 +15,7 @@ import httpx2
 import pytest
 from sqlalchemy import delete, select, update
 
-from jobmatch import cli, llm, pipeline, repository, research
+from jobmatch import cli, company_research, llm, repository, research
 from jobmatch.api.app import app
 from jobmatch.db import SessionLocal
 from jobmatch.models import Employer, EmployerIdentity, LlmCall, RecruiterSearch, Vacancy
@@ -98,7 +98,7 @@ def searches(monkeypatch):
 
 
 def request(target: research.Target) -> dict:
-    """The request the pipeline sends for `target` under `MODEL`."""
+    """The request company_research sends for `target` under `MODEL`."""
     return research.recruiters_request(target, MODEL)
 
 
@@ -199,13 +199,13 @@ def identity(homepage_ok: bool | None, **answer) -> EmployerIdentity:
 
 
 def test_without_an_identity_the_target_is_the_hh_page():
-    assert pipeline.target_of(EMPLOYER, None) == research.Target(
+    assert company_research.target_of(EMPLOYER, None) == research.Target(
         name="ЭР-Телеком Холдинг", homepage="http://rabotavdomru.ru", city="Пермь",
     )
 
 
 def test_an_identity_names_the_target_and_gives_the_homepage_that_answered():
-    assert pipeline.target_of(EMPLOYER, identity(True)) == research.Target(
+    assert company_research.target_of(EMPLOYER, identity(True)) == research.Target(
         name="ЭР-Телеком", homepage="https://ertelecom.ru", city="Пермь",
     )
 
@@ -214,26 +214,26 @@ def test_without_a_name_homepage_or_city_in_the_answer_the_target_falls_back():
     """Pinned on 2026-10-14 with the two above: the target is the recruiters
     prompt, so a change makes every stored search be paid for again."""
     bare = Employer(name="Acme", site_url="https://acme.example", raw={})
-    assert pipeline.target_of(bare, identity(True, employer=None, homepage=None)) == (
+    assert company_research.target_of(bare, identity(True, employer=None, homepage=None)) == (
         research.Target(name="Acme", homepage="https://acme.example", city=None)
     )
 
 
 @pytest.mark.parametrize("homepage_ok", [False, None])
 def test_a_homepage_that_did_not_answer_falls_back_to_the_hh_link(homepage_ok):
-    target = pipeline.target_of(EMPLOYER, identity(homepage_ok))
+    target = company_research.target_of(EMPLOYER, identity(homepage_ok))
     assert (target.name, target.homepage) == ("ЭР-Телеком", "http://rabotavdomru.ru")
 
 
 def test_an_unknown_name_falls_back_to_the_hh_name():
-    target = pipeline.target_of(EMPLOYER, identity(True, employer=None))
+    target = company_research.target_of(EMPLOYER, identity(True, employer=None))
     assert target.name == "ЭР-Телеком Холдинг"
 
 
-# --- the pipeline: freshness, on the real database ---------------------------------------
+# --- company_research: freshness, on the real database -----------------------------
 
 async def test_a_search_is_saved_as_the_confirmed_people(vacancy_id, searches):
-    row = await pipeline.find_recruiters(vacancy_id, MODEL)
+    row = await company_research.find_recruiters(vacancy_id, MODEL)
 
     (sent,) = searches
     # as JSON: the people tuple comes back a list
@@ -245,40 +245,40 @@ async def test_a_search_is_saved_as_the_confirmed_people(vacancy_id, searches):
 
 async def test_the_search_uses_the_identity_when_there_is_one(vacancy_id, searches):
     await _identify(vacancy_id, homepage_ok=True)
-    await pipeline.find_recruiters(vacancy_id, MODEL)
+    await company_research.find_recruiters(vacancy_id, MODEL)
 
     assert searches == [request(research.Target("ЭР-Телеком", "https://ertelecom.ru", "Пермь"))]
 
 
 async def test_a_fresh_search_with_the_same_request_is_free(vacancy_id, searches):
-    first = await pipeline.find_recruiters(vacancy_id, MODEL)
-    again = await pipeline.find_recruiters(vacancy_id, MODEL)
+    first = await company_research.find_recruiters(vacancy_id, MODEL)
+    again = await company_research.find_recruiters(vacancy_id, MODEL)
 
     assert again.id == first.id
     assert len(searches) == 1
 
 
 async def test_a_refresh_pays_even_with_a_fresh_search(vacancy_id, searches):
-    first = await pipeline.find_recruiters(vacancy_id, MODEL)
-    again = await pipeline.find_recruiters(vacancy_id, MODEL, refresh=True)
+    first = await company_research.find_recruiters(vacancy_id, MODEL)
+    again = await company_research.find_recruiters(vacancy_id, MODEL, refresh=True)
 
     assert again.id != first.id
     assert again.inputs_fingerprint == first.inputs_fingerprint
     assert len(searches) == 2
     assert [s.id for s in await _searches()] == [first.id, again.id]
     # and a plain click after it reuses the refreshed one
-    assert (await pipeline.find_recruiters(vacancy_id, MODEL)).id == again.id
+    assert (await company_research.find_recruiters(vacancy_id, MODEL)).id == again.id
     assert len(searches) == 2
 
 
 async def test_a_search_older_than_fresh_is_asked_again(vacancy_id, searches):
-    first = await pipeline.find_recruiters(vacancy_id, MODEL)
+    first = await company_research.find_recruiters(vacancy_id, MODEL)
     async with SessionLocal.begin() as session:
         await session.execute(
             update(RecruiterSearch).where(RecruiterSearch.id == first.id)
-            .values(created_at=RecruiterSearch.created_at - pipeline.RECRUITERS_FRESH)
+            .values(created_at=RecruiterSearch.created_at - company_research.RECRUITERS_FRESH)
         )
-    again = await pipeline.find_recruiters(vacancy_id, MODEL)
+    again = await company_research.find_recruiters(vacancy_id, MODEL)
 
     assert again.id != first.id
     assert again.inputs_fingerprint == first.inputs_fingerprint
@@ -293,7 +293,7 @@ async def test_two_postings_with_different_requests_each_pay_once(vacancy_id, se
     await _identify(vacancy_id, homepage_ok=True)
 
     for posting in (vacancy_id, other, vacancy_id, other):
-        await pipeline.find_recruiters(posting, MODEL)
+        await company_research.find_recruiters(posting, MODEL)
 
     assert len(searches) == 2
     assert len(await _searches()) == 2
@@ -301,17 +301,17 @@ async def test_two_postings_with_different_requests_each_pay_once(vacancy_id, se
 
 async def test_two_postings_with_the_same_request_share_a_search(vacancy_id, searches):
     other = await _another_posting()
-    first = await pipeline.find_recruiters(vacancy_id, MODEL)
+    first = await company_research.find_recruiters(vacancy_id, MODEL)
 
-    assert (await pipeline.find_recruiters(other, MODEL)).id == first.id
+    assert (await company_research.find_recruiters(other, MODEL)).id == first.id
     assert len(searches) == 1
 
 
 async def test_twin_employers_do_not_share_a_search(vacancy_id, searches):
     """Same name, link and city, so the same request -- but another company."""
     twin = await _another_posting("e-2")
-    first = await pipeline.find_recruiters(vacancy_id, MODEL)
-    second = await pipeline.find_recruiters(twin, MODEL)
+    first = await company_research.find_recruiters(vacancy_id, MODEL)
+    second = await company_research.find_recruiters(twin, MODEL)
 
     assert second.inputs_fingerprint == first.inputs_fingerprint
     assert second.employer_id != first.employer_id
@@ -319,17 +319,17 @@ async def test_twin_employers_do_not_share_a_search(vacancy_id, searches):
 
 
 async def test_the_stored_search_is_read_without_paying(vacancy_id, searches):
-    assert await pipeline.stored_recruiters(vacancy_id, MODEL) is None
-    row = await pipeline.find_recruiters(vacancy_id, MODEL)
+    assert await company_research.stored_recruiters(vacancy_id, MODEL) is None
+    row = await company_research.find_recruiters(vacancy_id, MODEL)
 
-    assert (await pipeline.stored_recruiters(vacancy_id, MODEL)).id == row.id
-    assert await pipeline.stored_recruiters(vacancy_id, "perplexity/sonar") is None
+    assert (await company_research.stored_recruiters(vacancy_id, MODEL)).id == row.id
+    assert await company_research.stored_recruiters(vacancy_id, "perplexity/sonar") is None
     assert len(searches) == 1
 
 
 async def test_another_model_is_another_request(vacancy_id, searches):
-    first = await pipeline.find_recruiters(vacancy_id, MODEL)
-    other = await pipeline.find_recruiters(vacancy_id, "perplexity/sonar")
+    first = await company_research.find_recruiters(vacancy_id, MODEL)
+    other = await company_research.find_recruiters(vacancy_id, "perplexity/sonar")
 
     assert other.id != first.id and other.inputs_fingerprint != first.inputs_fingerprint
     assert len(searches) == 2
@@ -337,9 +337,9 @@ async def test_another_model_is_another_request(vacancy_id, searches):
 
 async def test_a_new_identity_changes_the_request(vacancy_id, searches):
     """The identity sharpens the target, so a search made before it is redone."""
-    first = await pipeline.find_recruiters(vacancy_id, MODEL)
+    first = await company_research.find_recruiters(vacancy_id, MODEL)
     await _identify(vacancy_id, homepage_ok=True)
-    again = await pipeline.find_recruiters(vacancy_id, MODEL)
+    again = await company_research.find_recruiters(vacancy_id, MODEL)
 
     assert again.id != first.id
     assert len(searches) == 2
@@ -349,8 +349,8 @@ async def test_without_a_looked_up_employer_there_is_nothing_to_search(vacancy_i
     async with SessionLocal.begin() as session:
         await session.execute(delete(Employer).where(Employer.source == SOURCE_NAME))
 
-    with pytest.raises(pipeline.NotLookedUp, match="looked up"):
-        await pipeline.find_recruiters(vacancy_id, MODEL)
+    with pytest.raises(company_research.NotLookedUp, match="looked up"):
+        await company_research.find_recruiters(vacancy_id, MODEL)
     assert searches == []
 
 
@@ -360,7 +360,7 @@ async def test_a_company_with_a_website_but_no_name_is_searched_by_it(vacancy_id
             update(Employer).where(Employer.source == SOURCE_NAME).values(name=None)
         )
 
-    await pipeline.find_recruiters(vacancy_id, MODEL)
+    await company_research.find_recruiters(vacancy_id, MODEL)
 
     assert searches == [request(research.Target(None, "http://rabotavdomru.ru", "Пермь"))]
 
@@ -374,8 +374,8 @@ async def test_a_company_with_neither_a_website_nor_a_name_is_not_searched(
             .values(name=None, site_url=None)
         )
 
-    with pytest.raises(pipeline.NothingToSearchFor, match="neither a website nor a name"):
-        await pipeline.find_recruiters(vacancy_id, MODEL)
+    with pytest.raises(company_research.NothingToSearchFor, match="neither a website nor a name"):
+        await company_research.find_recruiters(vacancy_id, MODEL)
     assert searches == []
 
 
@@ -385,13 +385,13 @@ async def test_a_failed_search_raises_and_stores_nothing(vacancy_id, monkeypatch
 
     monkeypatch.setattr(research, "ask_recruiters", fails)
     with pytest.raises(RuntimeError, match="said no"):
-        await pipeline.find_recruiters(vacancy_id, MODEL)
+        await company_research.find_recruiters(vacancy_id, MODEL)
     assert await _searches() == []
 
 
 async def test_an_unknown_vacancy_is_employer_unknown(searches):
-    with pytest.raises(pipeline.EmployerUnknown, match="no vacancy"):
-        await pipeline.find_recruiters(0, MODEL)
+    with pytest.raises(company_research.EmployerUnknown, match="no vacancy"):
+        await company_research.find_recruiters(0, MODEL)
 
 
 async def test_a_search_paid_for_is_saved_even_if_the_click_is_cancelled(
@@ -408,12 +408,12 @@ async def test_a_search_paid_for_is_saved_even_if_the_click_is_cancelled(
 
     monkeypatch.setattr(repository, "save_recruiters", slow_save)
     async with anyio.create_task_group() as tg:
-        tg.start_soon(pipeline.find_recruiters, vacancy_id, MODEL)
+        tg.start_soon(company_research.find_recruiters, vacancy_id, MODEL)
         await saving.wait()
         tg.cancel_scope.cancel()
 
     assert len(await _searches()) == 1
-    await pipeline.find_recruiters(vacancy_id, MODEL)
+    await company_research.find_recruiters(vacancy_id, MODEL)
     assert len(searches) == 1
 
 
@@ -455,9 +455,9 @@ def test_the_command_takes_refresh(monkeypatch):
 
 async def test_the_command_reports_why_it_cannot_search(vacancy_id, monkeypatch, capsys):
     async def fails(*args, **kwargs):
-        raise pipeline.NotLookedUp("the company has not been looked up yet")
+        raise company_research.NotLookedUp("the company has not been looked up yet")
 
-    monkeypatch.setattr(pipeline, "find_recruiters", fails)
+    monkeypatch.setattr(company_research, "find_recruiters", fails)
     assert await cli.cmd_recruiters("config.toml", vacancy_id) == 1
     assert "has not been looked up" in capsys.readouterr().out
 
@@ -578,7 +578,7 @@ async def test_a_failed_read_of_the_search_leaves_the_card_whole(
     async def fails(*args):
         raise RuntimeError("database hiccup")
 
-    monkeypatch.setattr(pipeline, "stored_recruiters", fails)
+    monkeypatch.setattr(company_research, "stored_recruiters", fails)
     resp = await client.get(f"/api/vacancies/{vacancy_id}/company")
 
     assert resp.status_code == 200

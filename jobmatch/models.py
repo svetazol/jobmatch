@@ -161,7 +161,7 @@ class Vacancy(Base):
 class Employer(Base):
     """One row per employer someone asked about, never written by the crawl.
 
-    Created by a "look up company" click (`pipeline.lookup_employer`), so most
+    Created by a "look up company" click (`company_research.lookup_employer`), so most
     employers in the corpus have no row: the vacancy's `employer_external_id`
     is enough until someone wants the page behind it.
     """
@@ -202,7 +202,7 @@ class Employer(Base):
 
 class EmployerIdentity(Base):
     """Who is behind a posting, as one model call answered it
-    (`research.ask_employer`, `pipeline.identify_employer`).
+    (`research.ask_employer`, `company_research.identify_employer`).
 
     Per posting, not a column on `employers`: the posting is part of the
     request -- it is what reveals an agency and its client -- so the answer
@@ -241,7 +241,7 @@ class EmployerIdentity(Base):
 class RecruiterSearch(Base):
     """Who recruits for a company, as one web-search call answered it and
     `research.keep_cited` confirmed it (`research.ask_recruiters`,
-    `pipeline.find_recruiters`).
+    `company_research.find_recruiters`).
 
     Per employer, unlike `EmployerIdentity`'s per posting: the request holds no
     posting text, only the company (`research.Target`), so two postings of one
@@ -257,7 +257,7 @@ class RecruiterSearch(Base):
     employer_id: Mapped[int] = mapped_column(ForeignKey("employers.id", ondelete="CASCADE"))
     # sha256 of the whole request (`research.fingerprint`). Not unique, unlike
     # `employer_identities`': people change jobs, so a search older than
-    # `pipeline.RECRUITERS_FRESH` is asked again with the same inputs and a
+    # `company_research.RECRUITERS_FRESH` is asked again with the same inputs and a
     # second row carries the same fingerprint.
     inputs_fingerprint: Mapped[str] = mapped_column(String(64))
     # `dataclasses.asdict(research.Confirmed)`, whole: only the cited people,

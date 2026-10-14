@@ -45,7 +45,7 @@ GONE = {
     "identify.Identity": "research.Identity",
     "identify.Poster": "research.Poster",
     # renamed 2026-10-14, when a website alone became enough to search by
-    "NoCompanyName": "pipeline.NothingToSearchFor",
+    "NoCompanyName": "company_research.NothingToSearchFor",
     # split 2026-10-14; not bare "research.py", which company_research.py contains
     "jobmatch/research.py": "jobmatch/research/ and jobmatch/llm/openrouter.py",
     "`research.py`": "`research/` and `llm/openrouter.py`",
@@ -55,6 +55,18 @@ GONE = {
     "matching/jev.py": "llm/jev.py and matching/match.py",
     "`jev.py`": "`llm/jev.py` and `matching/match.py`",
     "fingerprint, cv_hash, content_hash, job": "match_vacancy no longer takes a fingerprint",
+    # moved 2026-10-14: pipeline.py keeps only the run phases
+    "pipeline.lookup_employer": "company_research.lookup_employer",
+    "pipeline.identify_employer": "company_research.identify_employer",
+    "pipeline.find_recruiters": "company_research.find_recruiters",
+    "pipeline.stored_recruiters": "company_research.stored_recruiters",
+    "pipeline.EmployerUnknown": "company_research.EmployerUnknown",
+    "pipeline.NothingToSearchFor": "company_research.NothingToSearchFor",
+    "pipeline.NotLookedUp": "company_research.NotLookedUp",
+    "pipeline.poster_of": "company_research.poster_of",
+    "pipeline.target_of": "company_research.target_of",
+    "pipeline.RECRUITERS_FRESH": "company_research.RECRUITERS_FRESH",
+    "pipeline._recruiters_request": "company_research._recruiters_request",
 }
 
 # Prose that happens to contain a dead string for a legitimate reason: the

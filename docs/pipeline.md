@@ -173,7 +173,7 @@ maintain it and would be wrong between runs.
 ## On demand: looking up an employer
 
 Not a phase: nothing in a run calls it. The **Look up company** button on a
-vacancy calls `pipeline.lookup_employer`, which fetches the employer's page and
+vacancy calls `company_research.lookup_employer`, which fetches the employer's page and
 upserts an `employers` row (`docs/architecture.md` §3.5).
 
 A vacancy fetched before `employer_external_id` existed has no id yet. Its
@@ -187,13 +187,13 @@ and sets `delisted_at`, as in the fetch phase.
 | look a company up | every vacancy column but `employer_external_id` is untouched |
 | look it up again | still one `employers` row, refreshed |
 
-After a lookup, `pipeline.identify_employer` asks a model who is behind the
+After a lookup, `company_research.identify_employer` asks a model who is behind the
 posting (`jobmatch identify --vacancy N`, which looks the company up first if
 nobody has). It pays once per distinct request and stores an
 `employer_identities` row; asking again with nothing changed is free
 (`docs/architecture.md` §3.6).
 
-`pipeline.find_recruiters` asks a model with web search who recruits for the
+`company_research.find_recruiters` asks a model with web search who recruits for the
 company (`jobmatch recruiters --vacancy N`, the same lookup first). It uses the
 identity if there is one, pays once per company and request -- two postings
 whose requests differ do not pay for each other's -- and stores a

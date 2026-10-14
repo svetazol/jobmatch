@@ -88,7 +88,8 @@ jobmatch/
   llm/         what every model call shares (key, fingerprint, ledger); jev.py and openrouter.py alone know their SDKs
   models.py    the schema (SQLAlchemy 2.0)
   repository.py  flat module of named queries, keeps SQL out of pipeline.py
-  pipeline.py  the only module allowed to know all three areas above
+  pipeline.py  the run phases; it and company_research.py are the only modules allowed to know all three areas above
+  company_research.py  the on-click company operations: look up, identify, find recruiters
   cli.py       thin caller; the one place asyncio.run happens
   api/         FastAPI, thin: each route is a repository call plus a response model
   config.py    loads and validates config.toml

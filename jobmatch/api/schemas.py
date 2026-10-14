@@ -199,7 +199,7 @@ class RecruiterPerson(BaseModel):
 
 
 class CompanyRecruiters(BaseModel):
-    """The search a posting's request would reuse (`pipeline.stored_recruiters`):
+    """The search a posting's request would reuse (`company_research.stored_recruiters`):
     the cited people, how many the model named without a citation (`dropped`),
     and how many pages the search cited (`sources`). Model and cost are in the
     trace, not on the card.

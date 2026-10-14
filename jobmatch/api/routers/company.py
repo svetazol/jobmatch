@@ -7,7 +7,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ... import llm, pipeline, repository
+from ... import company_research, llm, repository
 from ...config import DEFAULT_PATH, load_settings
 from ...db import SessionLocal
 from ...models import Employer, EmployerIdentity, RecruiterSearch
@@ -22,7 +22,7 @@ async def get_company(vacancy_id: int) -> Company | None:
     """What is stored, with no request to the source or a model; null until
     looked up.
 
-    No `SessionDep`: `pipeline.stored_recruiters` opens its own session, so it
+    No `SessionDep`: `company_research.stored_recruiters` opens its own session, so it
     runs first and this one opens after, rather than holding two connections.
     """
     recruiters = await _stored_recruiters(vacancy_id)
@@ -37,14 +37,14 @@ async def get_company(vacancy_id: int) -> Company | None:
 async def look_up_company(vacancy_id: int) -> Company:
     """Fetch the employer page (and, for an old row, the vacancy page first).
 
-    No `SessionDep`: `pipeline.lookup_employer` opens short sessions around
+    No `SessionDep`: `company_research.lookup_employer` opens short sessions around
     its page fetches, so no pooled connection waits on hh. 404 means there is
     no employer to find, with the reason; 502 means the source failed. The
     identity is whatever is already stored: asking a model is its own request.
     """
     try:
-        employer = await pipeline.lookup_employer(vacancy_id)
-    except pipeline.EmployerUnknown as e:
+        employer = await company_research.lookup_employer(vacancy_id)
+    except company_research.EmployerUnknown as e:
         raise HTTPException(404, str(e)) from None
     except Exception as e:  # noqa: BLE001 -- throttled, 5xx, layout change: all the source's
         log.warning("employer lookup failed for vacancy %d: %s", vacancy_id, e)
@@ -57,7 +57,7 @@ async def look_up_company(vacancy_id: int) -> Company:
 @router.post("/{vacancy_id}/company/identity", response_model=CompanyIdentity)
 async def identify_company(vacancy_id: int) -> CompanyIdentity:
     """Ask `research_model` who is behind the posting; free when this exact
-    request was answered before (`pipeline.identify_employer`).
+    request was answered before (`company_research.identify_employer`).
 
     No `SessionDep`, as above: no pooled connection waits on the model. 409
     means the company must be looked up first, 503 that there is no API key,
@@ -71,10 +71,10 @@ async def identify_company(vacancy_id: int) -> CompanyIdentity:
         raise HTTPException(503, str(e)) from None
     model = load_settings(DEFAULT_PATH).research_model
     try:
-        row = await pipeline.identify_employer(vacancy_id, model)
-    except pipeline.NotLookedUp:
+        row = await company_research.identify_employer(vacancy_id, model)
+    except company_research.NotLookedUp:
         raise HTTPException(409, "look up the company first") from None
-    except pipeline.EmployerUnknown as e:
+    except company_research.EmployerUnknown as e:
         raise HTTPException(404, str(e)) from None
     except Exception as e:  # noqa: BLE001 -- timeout, refusal, invalid JSON, OpenRouter's error
         log.warning("identifying the employer failed for vacancy %d: %s", vacancy_id, e)
@@ -86,7 +86,7 @@ async def identify_company(vacancy_id: int) -> CompanyIdentity:
 @router.post("/{vacancy_id}/company/recruiters", response_model=CompanyRecruiters)
 async def search_recruiters(vacancy_id: int, refresh: bool = False) -> CompanyRecruiters:
     """Ask `people_model` to search the web for who recruits at the company;
-    free when the same request was answered within `pipeline.RECRUITERS_FRESH`,
+    free when the same request was answered within `company_research.RECRUITERS_FRESH`,
     unless `?refresh=true`, which always pays.
 
     No `SessionDep`, as above. 409 means the company must be looked up first,
@@ -100,12 +100,12 @@ async def search_recruiters(vacancy_id: int, refresh: bool = False) -> CompanyRe
         raise HTTPException(503, str(e)) from None
     model = load_settings(DEFAULT_PATH).people_model
     try:
-        row = await pipeline.find_recruiters(vacancy_id, model, refresh=refresh)
-    except pipeline.NotLookedUp:
+        row = await company_research.find_recruiters(vacancy_id, model, refresh=refresh)
+    except company_research.NotLookedUp:
         raise HTTPException(409, "look up the company first") from None
-    except pipeline.NothingToSearchFor as e:   # before EmployerUnknown: it is one
+    except company_research.NothingToSearchFor as e:   # before EmployerUnknown: it is one
         raise HTTPException(422, str(e)) from None
-    except pipeline.EmployerUnknown as e:
+    except company_research.EmployerUnknown as e:
         raise HTTPException(404, str(e)) from None
     except Exception as e:  # noqa: BLE001 -- timeout, refusal, invalid JSON, OpenRouter's error
         log.warning("searching for recruiters failed for vacancy %d: %s", vacancy_id, e)
@@ -121,8 +121,8 @@ async def _stored_recruiters(vacancy_id: int) -> CompanyRecruiters | None:
     """
     try:
         model = load_settings(DEFAULT_PATH).people_model
-        row = await pipeline.stored_recruiters(vacancy_id, model)
-    except (pipeline.NotLookedUp, pipeline.EmployerUnknown):
+        row = await company_research.stored_recruiters(vacancy_id, model)
+    except (company_research.NotLookedUp, company_research.EmployerUnknown):
         return None
     except Exception as e:  # noqa: BLE001 -- a bad config.toml, a database hiccup
         log.warning("reading the recruiter search failed for vacancy %d: %s", vacancy_id, e)

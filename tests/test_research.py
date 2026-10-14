@@ -1,5 +1,5 @@
 """Who is behind a posting: the call on a mocked OpenRouter, the homepage check,
-the pipeline's cache on the real database, and the API's card.
+company_research's cache on the real database, and the API's card.
 
 Nothing here reaches OpenRouter or a live site: the OpenAI SDK runs over an
 `httpx2.MockTransport`, and `reachable` gets a mocked transport and IP
@@ -20,7 +20,7 @@ import pydantic
 import pytest
 from sqlalchemy import delete, select
 
-from jobmatch import cli, llm, matching, pipeline, repository, research
+from jobmatch import cli, company_research, llm, matching, repository, research
 from jobmatch.api.app import app
 from jobmatch.config import load_settings
 from jobmatch.db import SessionLocal
@@ -69,7 +69,7 @@ def completion(content: str, cost: float | None = 0.00021) -> dict:
 
 
 def key(poster: research.Poster, model: str) -> str:
-    """The employer cache key, as the pipeline computes it."""
+    """The employer cache key, as company_research computes it."""
     return research.fingerprint(research.employer_request(poster, model))
 
 
@@ -363,7 +363,7 @@ def test_the_poster_built_from_the_hh_pages_is_pinned(employer, poster):
     makes every stored identity be paid for again. Change it only on purpose."""
     vacancy = Vacancy(title="Python developer", company="ЭР-Телеком Холдинг",
                       description="Мы пишем биллинг.")
-    assert pipeline.poster_of(employer, vacancy) == poster
+    assert company_research.poster_of(employer, vacancy) == poster
 
 
 @pytest.mark.parametrize(("given", "stored"), [
@@ -472,7 +472,7 @@ async def test_a_connection_failure_is_not_reachable():
     )
 
 
-# --- the pipeline: the cache, on the real database -----------------------------------
+# --- company_research: the cache, on the real database ------------------------------
 
 @pytest.fixture
 def model_calls(monkeypatch):
@@ -501,7 +501,7 @@ def model_calls(monkeypatch):
 
 
 async def test_identifying_saves_the_answer_and_its_homepage_check(vacancy_id, model_calls):
-    row = await pipeline.identify_employer(vacancy_id, MODEL)
+    row = await company_research.identify_employer(vacancy_id, MODEL)
 
     assert row.answer == ANSWER
     assert row.homepage_ok is True
@@ -513,16 +513,16 @@ async def test_identifying_saves_the_answer_and_its_homepage_check(vacancy_id, m
 
 
 async def test_the_same_request_twice_is_answered_from_the_database(vacancy_id, model_calls):
-    first = await pipeline.identify_employer(vacancy_id, MODEL)
-    second = await pipeline.identify_employer(vacancy_id, MODEL)
+    first = await company_research.identify_employer(vacancy_id, MODEL)
+    second = await company_research.identify_employer(vacancy_id, MODEL)
 
     assert second.id == first.id
     assert len(model_calls) == 1
 
 
 async def test_another_model_is_another_request(vacancy_id, model_calls):
-    first = await pipeline.identify_employer(vacancy_id, MODEL)
-    other = await pipeline.identify_employer(vacancy_id, "mistralai/mistral-small")
+    first = await company_research.identify_employer(vacancy_id, MODEL)
+    other = await company_research.identify_employer(vacancy_id, "mistralai/mistral-small")
 
     assert other.id != first.id
     assert len(model_calls) == 2
@@ -531,7 +531,7 @@ async def test_another_model_is_another_request(vacancy_id, model_calls):
 
 
 async def test_the_poster_is_the_hh_page_and_the_posting_as_jev_reads_it(vacancy_id, model_calls):
-    await pipeline.identify_employer(vacancy_id, MODEL)
+    await company_research.identify_employer(vacancy_id, MODEL)
 
     (sent,) = model_calls
     async with SessionLocal() as session:
@@ -548,14 +548,14 @@ async def test_without_a_looked_up_employer_there_is_nothing_to_ask(vacancy_id, 
     async with SessionLocal.begin() as session:
         await session.execute(delete(Employer).where(Employer.source == SOURCE_NAME))
 
-    with pytest.raises(pipeline.NotLookedUp, match="looked up"):
-        await pipeline.identify_employer(vacancy_id, MODEL)
+    with pytest.raises(company_research.NotLookedUp, match="looked up"):
+        await company_research.identify_employer(vacancy_id, MODEL)
     assert model_calls == []
 
 
 async def test_an_unknown_vacancy_is_employer_unknown(model_calls):
-    with pytest.raises(pipeline.EmployerUnknown, match="no vacancy"):
-        await pipeline.identify_employer(0, MODEL)
+    with pytest.raises(company_research.EmployerUnknown, match="no vacancy"):
+        await company_research.identify_employer(0, MODEL)
 
 
 async def test_saving_the_same_fingerprint_twice_keeps_the_first_row(vacancy_id):
@@ -601,26 +601,26 @@ async def test_an_answer_paid_for_is_saved_even_if_the_click_is_cancelled(
 
     monkeypatch.setattr(research, "reachable", slow_reachable)
     async with anyio.create_task_group() as tg:
-        tg.start_soon(pipeline.identify_employer, vacancy_id, MODEL)
+        tg.start_soon(company_research.identify_employer, vacancy_id, MODEL)
         await checking.wait()
         tg.cancel_scope.cancel()
 
     async with SessionLocal() as session:
         saved = await repository.latest_identity(session, vacancy_id)
     assert saved is not None and saved.homepage_ok is True
-    await pipeline.identify_employer(vacancy_id, MODEL)
+    await company_research.identify_employer(vacancy_id, MODEL)
     assert len(model_calls) == 1
 
 
 @pytest.mark.parametrize("error", [
-    pipeline.NotLookedUp("the company has not been looked up yet"),
-    pipeline.EmployerUnknown("this posting does not name its employer"),
+    company_research.NotLookedUp("the company has not been looked up yet"),
+    company_research.EmployerUnknown("this posting does not name its employer"),
 ])
 async def test_the_command_reports_why_it_cannot_identify(vacancy_id, monkeypatch, capsys, error):
     async def fails(*args):
         raise error
 
-    monkeypatch.setattr(pipeline, "identify_employer", fails)
+    monkeypatch.setattr(company_research, "identify_employer", fails)
     assert await cli.cmd_identify("config.toml", vacancy_id) == 1
     assert str(error) in capsys.readouterr().out
 
@@ -662,7 +662,7 @@ async def test_the_company_carries_its_newest_identity(client, vacancy_id, model
     async def lookup(vid):
         async with SessionLocal() as session:
             return await repository.employer_of(session, vid)
-    monkeypatch.setattr(pipeline, "lookup_employer", lookup)
+    monkeypatch.setattr(company_research, "lookup_employer", lookup)
     looked_up = (await client.post(f"/api/vacancies/{vacancy_id}/company")).json()
     assert looked_up["identity"] == posted
     assert len(model_calls) == 1

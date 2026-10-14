@@ -1,4 +1,4 @@
-"""Command line entry point. A thin caller of pipeline + repository.
+"""Command line entry point. A thin caller of pipeline, company_research + repository.
 
 Each command is a coroutine; ``main`` is the one place an event loop starts.
 Library code never calls ``asyncio.run`` itself, so the same functions serve
@@ -20,7 +20,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from . import matching, pipeline, repository
+from . import company_research, matching, pipeline, repository
 from .config import DEFAULT_PATH, Settings, load_settings
 from .db import SessionLocal, engine
 from .models import LlmCall, MatchResult, Vacancy
@@ -197,10 +197,10 @@ async def cmd_identify(config_path: str, vacancy_id: int) -> int:
     try:
         if not looked_up:
             print("looking the company up on hh first")
-            await pipeline.lookup_employer(vacancy_id)
+            await company_research.lookup_employer(vacancy_id)
         started = dt.datetime.now(dt.UTC)
-        row = await pipeline.identify_employer(vacancy_id, settings.research_model)
-    except (pipeline.EmployerUnknown, pipeline.NotLookedUp) as e:
+        row = await company_research.identify_employer(vacancy_id, settings.research_model)
+    except (company_research.EmployerUnknown, company_research.NotLookedUp) as e:
         print(f"cannot identify the employer of vacancy {vacancy_id}: {e}")
         return 1
     async with SessionLocal() as session:
@@ -220,7 +220,7 @@ async def cmd_identify(config_path: str, vacancy_id: int) -> int:
 async def cmd_recruiters(config_path: str, vacancy_id: int, *, refresh: bool = False) -> int:
     """Who recruits for the company behind one posting, with `people_model`.
     Pays unless the company has a fresh search with the same request
-    (`pipeline.RECRUITERS_FRESH`); with `refresh`, always pays.
+    (`company_research.RECRUITERS_FRESH`); with `refresh`, always pays.
 
     A company never looked up is looked up first, as in `cmd_identify`. The
     identity is not asked for: the search uses one if it exists.
@@ -231,10 +231,10 @@ async def cmd_recruiters(config_path: str, vacancy_id: int, *, refresh: bool = F
     try:
         if not looked_up:
             print("looking the company up on hh first")
-            await pipeline.lookup_employer(vacancy_id)
+            await company_research.lookup_employer(vacancy_id)
         started = dt.datetime.now(dt.UTC)
-        row = await pipeline.find_recruiters(vacancy_id, settings.people_model, refresh=refresh)
-    except (pipeline.EmployerUnknown, pipeline.NotLookedUp) as e:
+        row = await company_research.find_recruiters(vacancy_id, settings.people_model, refresh=refresh)
+    except (company_research.EmployerUnknown, company_research.NotLookedUp) as e:
         print(f"cannot search for the recruiters of vacancy {vacancy_id}: {e}")
         return 1
     async with SessionLocal() as session:

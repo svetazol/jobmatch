@@ -24,7 +24,7 @@ deleted on 2026-10-12, after the parts worth keeping moved into what is now `job
 A **Look up company** button in the vacancy page's Company card
 (`frontend/src/components/CompanyPanel.vue`) calls
 `POST /api/vacancies/{id}/company` (`jobmatch/api/routers/company.py`), which
-runs `pipeline.lookup_employer` (`jobmatch/pipeline.py`):
+runs `company_research.lookup_employer` (`jobmatch/company_research.py`):
 
 1. The vacancy's `employer_external_id` — kept by every fetch from the
    posting's `/employer/<id>` link. A row fetched before that column existed
@@ -98,7 +98,7 @@ approved by the user with the architect's changes folded in.
     redirects, http(s) and public addresses only; true below status 400. No
     "page mentions the name" check: a Cyrillic name against a Latin site
     would fail real homepages.
-- `jobmatch/pipeline.py` — `poster_of(employer, vacancy)` (name and link from
+- `jobmatch/company_research.py` — `poster_of(employer, vacancy)` (name and link from
   the employer row, `about` from its city and industries, `posting` =
   `matching.job_text(vacancy)` as is — Jev's questions and fingerprint are not
   touched) and `identify_employer(vacancy_id, model)`: load the vacancy and
@@ -247,10 +247,10 @@ A **RecruitersBlock** under the identity on the Company card
     filter that never raises and returns `Confirmed(people, dropped, sources)`,
     keeping only people whose profile slug was cited, each URL rewritten in
     its canonical form.
-- `jobmatch/pipeline.py`: `target_of(employer, identity | None)` beside
+- `jobmatch/company_research.py`: `target_of(employer, identity | None)` beside
   `poster_of`; `find_recruiters(vacancy_id, model, *, refresh=False)` returns
   the newest search for this employer and this request's fingerprint, free,
-  when it is younger than `RECRUITERS_FRESH` (30 days, in the pipeline, not
+  when it is younger than `RECRUITERS_FRESH` (30 days, in `company_research`, not
   config: recruiters change jobs), else asks and saves; `refresh` always asks
   and saves a new row. `stored_recruiters(vacancy_id, model)`
   reads the same row without asking, for the card.
@@ -258,7 +258,7 @@ A **RecruitersBlock** under the identity on the Company card
   Perplexity's sonar is the alternative, by config.
 - API: `POST /api/vacancies/{id}/company/recruiters[?refresh=true]` (409 /
   404 / 503 / 502 as for the identity, and 422 when the company has neither a
-  website nor a name to search for: `pipeline.NothingToSearchFor`); `GET /company` gains `recruiters`, shaped
+  website nor a name to search for: `company_research.NothingToSearchFor`); `GET /company` gains `recruiters`, shaped
   `CompanyRecruiters(people, dropped, sources, created_at)` only.
 
 ### Data
@@ -287,7 +287,7 @@ fingerprint within the employer.
 - **Which website.** Without an identity whose homepage answered
   (`homepage_ok`), the website is hh's link, often a careers or landing host
   (rabotavdomru.ru for ЭР-Телеком, l.tbank.ru for Т-Банк); an identity with
-  a homepage that answered is what replaces it (`pipeline.target_of`).
+  a homepage that answered is what replaces it (`company_research.target_of`).
 - **Chosen knowing the cost.** The user chose website-only knowing the
   search text then holds no name. Unmeasured: the first refreshes will show
   whether LinkedIn profiles still come back from a host-only search.
@@ -311,7 +311,7 @@ No committed eval file: it would hold recruiters' names.
 2. **The question and the citation check** (built 2026-10-13, nothing calls
    it yet): the recruiters question (now `jobmatch/research/recruiters.py`) and its checks,
    with offline tests.
-3. **The search, kept** (built 2026-10-13): the table, the pipeline function,
+3. **The search, kept** (built 2026-10-13): the table, the `company_research` function,
    `people_model` in config, and `jobmatch recruiters --vacancy N` for the
    first real search from the terminal.
 4. **The block** (built 2026-10-14): the route, `CompanyRecruiters` on `GET`
