@@ -7,6 +7,7 @@ behaviour, and a mock would only test itself.
 
 Nothing here can reach Jev: no code path in `api/` calls the matcher.
 """
+import dataclasses
 import datetime as dt
 from decimal import Decimal
 
@@ -16,7 +17,9 @@ from sqlalchemy import delete, func, select
 
 from jobmatch import cover_note
 from jobmatch.api.app import app
+from jobmatch.api.routers import vacancies
 from jobmatch.api.routers.stats import _cv_hash
+from jobmatch.config import DEFAULT_PATH, load_settings
 from jobmatch.db import SessionLocal
 from jobmatch.models import LlmCall, MatchResult, Vacancy
 
@@ -427,7 +430,21 @@ async def test_stats_refuses_an_unknown_cv(client, rows):
     assert "nope.md" in response.json()["detail"]
 
 
-async def test_cover_note_returns_what_claude_wrote(client, rows, monkeypatch):
+@pytest.fixture
+def cv_file(monkeypatch, tmp_path):
+    """The CV the cover-note route reads, in tmp_path rather than data/."""
+    path = tmp_path / "cv.md"
+    path.write_text(
+        "> never sent\n---\n| Email | jane@example.invalid |\n"
+        "Backend developer. [INTERNAL]\nPython, FastAPI.\n",
+        encoding="utf-8",
+    )
+    settings = dataclasses.replace(load_settings(DEFAULT_PATH), cv_path=path)
+    monkeypatch.setattr(vacancies, "load_settings", lambda _: settings)
+    return path
+
+
+async def test_cover_note_returns_what_claude_wrote(client, rows, cv_file, monkeypatch):
     async def fake_write(vacancy, match, cv):
         assert match is not None and cv
         return "I fit because."
@@ -437,13 +454,36 @@ async def test_cover_note_returns_what_claude_wrote(client, rows, monkeypatch):
     assert response.json() == {"text": "I fit because.", "language": "English"}
 
 
-async def test_cover_note_passes_claudes_failure_through(client, rows, monkeypatch):
+async def test_cover_note_passes_claudes_failure_through(client, rows, cv_file, monkeypatch):
     async def failing_write(vacancy, match, cv):
         raise cover_note.CoverNoteError("`claude` failed: not logged in")
     monkeypatch.setattr(cover_note, "write", failing_write)
     response = await client.post(f"/api/vacancies/{rows[0]}/cover-note")
     assert response.status_code == 502
     assert "not logged in" in response.json()["detail"]
+
+
+async def test_cover_note_is_given_the_sanitised_cv(client, rows, cv_file, monkeypatch):
+    """The CV leaves the machine for `claude` as it does for Jev, so it goes
+    through the same `load_cv`: no contact rows, no internal notes."""
+    given = []
+
+    async def fake_write(vacancy, match, cv):
+        given.append(cv)
+        return "I fit because."
+    monkeypatch.setattr(cover_note, "write", fake_write)
+
+    assert (await client.post(f"/api/vacancies/{rows[0]}/cover-note")).status_code == 200
+    assert given == ["Python, FastAPI."]
+
+
+async def test_cover_note_from_an_empty_cv_is_a_422(client, rows, cv_file, monkeypatch):
+    """Nothing to write from, and nothing is sent."""
+    cv_file.write_text("", encoding="utf-8")
+    monkeypatch.setattr(cover_note, "write", lambda *a: pytest.fail("sent"))
+    response = await client.post(f"/api/vacancies/{rows[0]}/cover-note")
+    assert response.status_code == 422
+    assert "looks empty" in response.json()["detail"]
 
 
 async def test_cover_note_404(client):

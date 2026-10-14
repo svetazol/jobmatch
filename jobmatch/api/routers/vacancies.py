@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ... import cover_note, repository
+from ... import cover_note, matching, repository
 from ...config import DEFAULT_PATH, load_settings
 from ...models import MatchResult, Vacancy
 from ..deps import get_session
@@ -180,12 +180,17 @@ async def write_cover_note(vacancy_id: int, session: SessionDep) -> CoverNote:
 
     Takes 10-30 s. A 502 means `claude` itself failed (not installed, not
     signed in, timed out); its message is passed through so the UI can show it.
+    A 422 means the CV at `cv_path` is empty or not filled in yet.
     """
     found = await repository.get_vacancy(session, vacancy_id)
     if found is None:
         raise HTTPException(404, f"no vacancy {vacancy_id}")
     vacancy, match = found
-    cv = load_settings(DEFAULT_PATH).cv_path.read_text(encoding="utf-8")
+    try:
+        # Sanitised, as for Jev: the CV leaves the machine here too.
+        cv = matching.load_cv(load_settings(DEFAULT_PATH).cv_path)
+    except ValueError as e:     # an empty or unfilled CV: nothing to write from
+        raise HTTPException(422, str(e)) from None
     try:
         text = await cover_note.write(vacancy, match, cv)
     except cover_note.CoverNoteError as e:
