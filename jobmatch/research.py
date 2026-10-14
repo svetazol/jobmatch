@@ -22,21 +22,18 @@ search).
 from __future__ import annotations
 
 import asyncio
-import datetime as dt
 import ipaddress
 import socket
-import time
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 from urllib.parse import quote, unquote, urljoin, urlsplit
 
-import anyio
 import httpx2
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from . import llm, repository
+from . import llm
 # The hashing rule is llm's; callers still say `research.fingerprint`.
 from .llm import fingerprint
 
@@ -487,39 +484,19 @@ async def _call[T: BaseModel](
     vacancy_id: int,
     http_client: httpx2.AsyncClient | None = None,
 ) -> tuple[T, dict[str, Any], int]:
-    """Send once, validate into `answer`, and record the call. Returns the
-    answer, the response body as received, and its `llm_calls` id; on any
-    failure the row is written, then the error raised.
+    """Send once, validate into `answer`, record the call; the answer, the body as received, and its row id.
 
-    `create`, not the SDK's `parse`: the body is read and validated here, so
-    when validation fails the body that was paid for is still in hand for the
-    trace. The write is shielded: under anyio (FastAPI) a cancelled request --
-    a closed browser tab -- re-raises cancellation at every await, which would
-    otherwise lose the record of a call that was billed. Hence `BaseException`.
-    The shield holds against one cancellation; a second, while the row is being
-    written, still interrupts it -- an accepted gap for a single-user tool.
+    `create`, not the SDK's `parse`: a body that fails validation was still paid for, so it is kept for the trace.
     """
     key = llm.api_key("before asking a model about a company")
-
-    row = {
-        "kind": kind,
-        "vacancy_id": vacancy_id,
-        "inputs_fingerprint": fingerprint(request),
-        "model_requested": request["model"],
-        "request": request,
-        "started_at": dt.datetime.now(dt.UTC),
-    }
-    clock = time.monotonic()
-    body: dict[str, Any] | None = None
-    try:
+    async with llm.recorded(
+        kind=kind, vacancy_id=vacancy_id, fingerprint=fingerprint(request),
+        model=request["model"], request=request,
+    ) as call:
         body = await _send(request, key, http_client)
+        call.response, call.usage = body, _usage(body)
         parsed = answer.model_validate_json(_content(body))
-    except BaseException as exc:
-        with anyio.CancelScope(shield=True):
-            await _record(row, clock, body, exc)
-        raise
-    with anyio.CancelScope(shield=True):
-        return parsed, body, await _record(row, clock, body, None)
+    return parsed, body, call.id
 
 
 async def _send(
@@ -558,35 +535,17 @@ def _content(body: dict[str, Any]) -> str:
     return content
 
 
-async def _record(
-    row: dict[str, Any], clock: float, body: dict[str, Any] | None, exc: BaseException | None
-) -> int:
-    """The ledger row, from whatever the call got as far as.
-
-    An HTTP error carries OpenRouter's error body, which is stored as the
-    response when no successful body exists.
-    """
-    if body is None and isinstance(error_body := getattr(exc, "body", None), dict):
-        response = error_body
-    else:
-        response = body
-    usage = (body or {}).get("usage") or {}
+def _usage(body: dict[str, Any]) -> llm.Usage:
+    """OpenRouter's usage, from the body: the cost is its own field, not the SDK's."""
+    usage = body.get("usage") or {}
     cost = usage.get("cost")
-    return await repository.record_call(
-        **row,
-        response=response,
-        status="ok" if exc is None else "error",
-        http_status=getattr(exc, "status_code", None),
-        error_type=None if exc is None else type(exc).__name__,
-        error_message=None if exc is None else str(exc)[:2000],
-        model_resolved=(body or {}).get("model"),
-        provider=(body or {}).get("provider"),   # the upstream OpenRouter routed to
-        response_id=(body or {}).get("id"),
+    return llm.Usage(
+        model=body.get("model"),
+        provider=body.get("provider"),
+        response_id=body.get("id"),
         input_tokens=usage.get("prompt_tokens"),
         output_tokens=usage.get("completion_tokens"),
         cost_usd=None if cost is None else Decimal(str(cost)),
-        duration_ms=int((time.monotonic() - clock) * 1000),
-        finished_at=dt.datetime.now(dt.UTC),
     )
 
 
