@@ -4,9 +4,11 @@ No network — a fake client stands in for Jev. The database is real, because
 the point of `llm_calls` is that a row survives a failure, and only a real
 transaction can show that.
 """
+import httpx2
 import pytest
 from sqlalchemy import delete, select
 from typesafe_sdk import ChoiceAnswer, NoulAnswer, ScoreAnswer
+from typesafe_sdk._core.errors import TypeSafeRateLimitError
 
 from jobmatch import matching
 from jobmatch.db import SessionLocal
@@ -322,6 +324,35 @@ async def test_a_failed_call_is_recorded_and_re_raised(vacancy):
     assert call.error_type == "RuntimeError"
     assert call.error_message == "boom"
     assert call.cost_usd is None
+
+
+async def test_an_sdk_error_keeps_jevs_error_body(vacancy):
+    error = TypeSafeRateLimitError(429, {"error": {"message": "slow down"}}, httpx2.Headers())
+
+    with pytest.raises(TypeSafeRateLimitError):
+        await jev.match_vacancy(
+            FakeClient(error=error), "cv", await load(vacancy), "jev-1.13",
+            fingerprint=FINGERPRINT, cv_hash="a" * 64, content_hash="b" * 64, job="job",
+        )
+
+    (call,) = await calls_for(vacancy)
+    assert (call.status, call.http_status) == ("error", 429)
+    assert call.response == {"error": {"message": "slow down"}}
+
+
+async def test_an_answer_of_an_unknown_shape_is_still_recorded_as_paid(vacancy):
+    """The SDK changing its answer shape must not hide what the call cost."""
+    response = FakeResponse()
+    del response.answers["overall_fit"]
+
+    with pytest.raises(KeyError):
+        await jev.match_vacancy(
+            FakeClient(response=response), "cv", await load(vacancy), "jev-1.13",
+            fingerprint=FINGERPRINT, cv_hash="a" * 64, content_hash="b" * 64, job="job",
+        )
+
+    (call,) = await calls_for(vacancy)
+    assert call.status == "ok" and str(call.cost_usd) == "0.000413616"
 
 
 async def test_the_job_text_leaves_out_what_the_posting_doesnt_have(vacancy):

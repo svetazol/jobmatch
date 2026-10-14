@@ -401,8 +401,8 @@ class LlmCall(Base):
 
     # The trace, read with `jobmatch trace ID`: what was sent (messages,
     # schema, parameters) and the body as received, kept even when it failed to
-    # parse — that body is the evidence of what was paid for. Jev rows leave
-    # both NULL: the TypeSafe SDK exposes no raw request worth keeping, and
+    # parse — that body is the evidence of what was paid for. Jev rows keep
+    # only an error's body: the SDK exposes no raw request worth keeping, and
     # Jev's answer is already whole in `match_results.answers`.
     request: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     response: Mapped[dict[str, Any] | None] = mapped_column(JSONB)

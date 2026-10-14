@@ -159,7 +159,7 @@ erDiagram
         numeric cost_usd
         int duration_ms
         jsonb request "what was sent; NULL for Jev"
-        jsonb response "the body as received; NULL for Jev"
+        jsonb response "the body as received; for Jev, only an error's"
         timestamptz started_at
         timestamptz finished_at
     }
@@ -220,9 +220,9 @@ it took, and what went wrong.
 `kind` says which caller paid, with no default so a new caller must name
 itself; the market view's spend sums `match` only. `request` and `response`
 are the trace — what was sent and the body as received, kept even when it
-failed to parse — read with `jobmatch trace ID`. Jev rows leave both NULL: its
-SDK exposes no raw request worth keeping, and its answer is already whole in
-`match_results.answers`. Every row goes through `repository.record_call`, in
+failed to parse — read with `jobmatch trace ID`. Jev rows keep only an
+error's body: its SDK exposes no raw request worth keeping, and its answer is
+already whole in `match_results.answers`. Every row goes through `repository.record_call`, in
 its own transaction.
 
 `match_results` only ever records a call that succeeded *and* parsed. Without

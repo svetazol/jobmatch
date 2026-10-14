@@ -94,7 +94,7 @@ async def _record(row: dict[str, Any], clock: float, call: Call, exc: BaseExcept
         **row,
         response=response,
         status="ok" if exc is None else "error",
-        http_status=getattr(exc, "status_code", None),
+        http_status=getattr(exc, "status_code", getattr(exc, "status", None)),   # OpenAI's name, then TypeSafe's
         error_type=None if exc is None else type(exc).__name__,
         error_message=None if exc is None else str(exc)[:2000],
         model_resolved=usage.model,

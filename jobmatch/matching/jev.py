@@ -6,7 +6,6 @@ dumb column write.
 """
 from __future__ import annotations
 
-import datetime as dt
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -17,7 +16,7 @@ from typing import Any
 
 from typesafe_sdk import AsyncTypeSafeClient
 
-from .. import llm, repository
+from .. import llm
 from ..models import Vacancy
 from .questions import QUESTIONS, QUESTIONS_HASH
 
@@ -190,44 +189,20 @@ async def match_vacancy(
     content_hash: str,
     job: str,
 ) -> MatchOutcome:
-    """Ask Jev about one vacancy. Records the call either way, then raises or
-    returns."""
-    started = dt.datetime.now(dt.UTC)
-    clock = time.monotonic()
-    common = {
-        "kind": "match",
-        "vacancy_id": vacancy.id,
-        "inputs_fingerprint": fingerprint,
-        "model_requested": model,
-        "started_at": started,
-    }
-    try:
+    """Ask Jev about one vacancy. Records the call either way, then raises or returns."""
+    async with llm.recorded(
+        kind="match", vacancy_id=vacancy.id, fingerprint=fingerprint, model=model
+    ) as call:
         response, meta, duration_ms = await _ask(client, cv, job, model)
-    except Exception as exc:
-        await repository.record_call(
-            **common,
-            status="error",
-            http_status=getattr(exc, "status", None),
-            error_type=type(exc).__name__,
-            error_message=str(exc)[:2000],
-            duration_ms=int((time.monotonic() - clock) * 1000),
-            finished_at=dt.datetime.now(dt.UTC),
+        cost = Decimal(str(meta["cost"])) if meta.get("cost") is not None else None
+        call.usage = llm.Usage(
+            model=response.model,
+            provider=meta.get("provider"),
+            response_id=meta.get("response_id"),
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            cost_usd=cost,
         )
-        raise
-
-    cost = Decimal(str(meta["cost"])) if meta.get("cost") is not None else None
-    call_id = await repository.record_call(
-        **common,
-        status="ok",
-        model_resolved=response.model,
-        provider=meta.get("provider"),
-        response_id=meta.get("response_id"),
-        input_tokens=response.usage.input_tokens,
-        output_tokens=response.usage.output_tokens,
-        cost_usd=cost,
-        duration_ms=duration_ms,
-        finished_at=dt.datetime.now(dt.UTC),
-    )
 
     # Anything below here can raise on an SDK shape change; the call is already
     # recorded, so the money spent is visible even when the answer is not.
@@ -246,5 +221,5 @@ async def match_vacancy(
         best_angle=preview.best_angle,
         best_angle_confidence=preview.best_angle_confidence,
         answers=preview.answers,
-        call_id=call_id,
+        call_id=call.id,
     )
