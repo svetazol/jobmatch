@@ -18,12 +18,10 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select
-
 from . import company_research, matching, pipeline, repository
 from .config import DEFAULT_PATH, Settings, load_settings
 from .db import SessionLocal, engine
-from .models import LlmCall, MatchResult, Vacancy
+from .models import LlmCall
 from .sources import source_for_url
 
 log = logging.getLogger(__name__)
@@ -111,18 +109,8 @@ async def _dry_run(settings: Settings, country: str | None, limit: int | None) -
         vacancy_ids = (await repository.matchable_vacancy_ids(
             session, [entry.name for entry in settings.sources], country
         ))[: limit or 10]
-        vacancies = list(
-            await session.scalars(select(Vacancy).where(Vacancy.id.in_(vacancy_ids)))
-        )
-        stored = {
-            m.vacancy_id: m
-            for m in await session.scalars(
-                select(MatchResult).where(
-                    MatchResult.vacancy_id.in_(vacancy_ids),
-                    MatchResult.superseded_at.is_(None),
-                )
-            )
-        }
+        vacancies = await repository.vacancies_by_ids(session, vacancy_ids)
+        stored = await repository.current_matches(session, vacancy_ids)
 
     cv = matching.load_cv(settings.cv_path)
     print(f"dry run — {settings.cv_path} ({len(cv)} chars), model {settings.model_for('match')}, "
@@ -159,11 +147,7 @@ async def cmd_cv_hash(config_path: str, cv: str | None) -> int:
     path = Path(cv) if cv else settings.cv_path
     digest = matching.sha256(matching.load_cv(path))
     async with SessionLocal() as session:
-        current = await session.scalar(
-            select(func.count())
-            .select_from(MatchResult)
-            .where(MatchResult.cv_hash == digest, MatchResult.superseded_at.is_(None))
-        )
+        current = await repository.count_current_matches(session, digest)
     print(f"{digest}  {path}  ({current} current matches)")
     return 0
 
@@ -188,16 +172,11 @@ async def cmd_identify(config_path: str, vacancy_id: int) -> int:
     """Who is behind one posting, with the `employer` model. Pays unless the same
     request was answered before.
 
-    A company never looked up is looked up first: one free hh page, the same
-    thing the UI's Look up company button does.
+    A company never looked up is looked up first (`_look_up_first`).
     """
     settings = load_settings(config_path)
-    async with SessionLocal() as session:
-        looked_up = await repository.employer_of(session, vacancy_id) is not None
     try:
-        if not looked_up:
-            print("looking the company up on hh first")
-            await company_research.lookup_employer(vacancy_id)
+        await _look_up_first(vacancy_id)
         started = dt.datetime.now(dt.UTC)
         row = await company_research.identify_employer(vacancy_id, settings.model_for("employer"))
     except (company_research.EmployerUnknown, company_research.NotLookedUp) as e:
@@ -217,6 +196,15 @@ async def cmd_identify(config_path: str, vacancy_id: int) -> int:
     return 0
 
 
+async def _look_up_first(vacancy_id: int) -> None:
+    """Look the company up unless it already is: one free hh page, as the UI's Look up company button."""
+    async with SessionLocal() as session:
+        looked_up = await repository.employer_of(session, vacancy_id) is not None
+    if not looked_up:
+        print("looking the company up on hh first")
+        await company_research.lookup_employer(vacancy_id)
+
+
 async def cmd_recruiters(config_path: str, vacancy_id: int, *, refresh: bool = False) -> int:
     """Who recruits for the company behind one posting, with the `recruiters` model.
     Pays unless the company has a fresh search with the same request
@@ -226,12 +214,8 @@ async def cmd_recruiters(config_path: str, vacancy_id: int, *, refresh: bool = F
     identity is not asked for: the search uses one if it exists.
     """
     settings = load_settings(config_path)
-    async with SessionLocal() as session:
-        looked_up = await repository.employer_of(session, vacancy_id) is not None
     try:
-        if not looked_up:
-            print("looking the company up on hh first")
-            await company_research.lookup_employer(vacancy_id)
+        await _look_up_first(vacancy_id)
         started = dt.datetime.now(dt.UTC)
         row = await company_research.find_recruiters(
             vacancy_id, settings.model_for("recruiters"), refresh=refresh

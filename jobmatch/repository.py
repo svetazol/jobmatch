@@ -410,6 +410,30 @@ async def count_vacancies(session: AsyncSession) -> tuple[int, int, int]:
     return stored, fetched, matched
 
 
+async def vacancies_by_ids(session: AsyncSession, vacancy_ids: Sequence[int]) -> list[Vacancy]:
+    """The rows behind a list of ids, in no particular order; what `match --dry-run` previews."""
+    return list(await session.scalars(select(Vacancy).where(Vacancy.id.in_(vacancy_ids))))
+
+
+async def current_matches(session: AsyncSession, vacancy_ids: Sequence[int]) -> dict[int, MatchResult]:
+    """vacancy id -> its current answer, for those that have one; the dry run's "before"."""
+    return {
+        m.vacancy_id: m
+        for m in await session.scalars(
+            select(MatchResult).where(MatchResult.vacancy_id.in_(vacancy_ids), _CURRENT)
+        )
+    }
+
+
+async def count_current_matches(session: AsyncSession, cv_hash: str) -> int:
+    """How many current answers one CV holds; what `jobmatch cv-hash` prints beside the hash."""
+    return await session.scalar(
+        select(func.count())
+        .select_from(MatchResult)
+        .where(MatchResult.cv_hash == cv_hash, _CURRENT)
+    )
+
+
 # --------------------------------------------------------------------------
 # Read paths for the API. Still the only module writing SQL — the routers do
 # no querying of their own, they shape what these return.
