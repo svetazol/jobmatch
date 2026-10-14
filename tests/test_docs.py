@@ -55,6 +55,9 @@ GONE = {
     "matching/jev.py": "llm/jev.py and matching/match.py",
     "`jev.py`": "`llm/jev.py` and `matching/match.py`",
     "fingerprint, cv_hash, content_hash, job": "match_vacancy no longer takes a fingerprint",
+    # the cover note's subprocess, moved 2026-10-14 into the one module that runs `claude -p`
+    "CoverNoteError": "llm.claude_cli.ClaudeError",
+    "cover_note.TIMEOUT_S": "llm.claude_cli.TIMEOUT_S",
     # moved 2026-10-14: pipeline.py keeps only the run phases
     "pipeline.lookup_employer": "company_research.lookup_employer",
     "pipeline.identify_employer": "company_research.identify_employer",

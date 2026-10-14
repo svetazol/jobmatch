@@ -52,6 +52,7 @@ def call(vacancy_id: int, kind: str, **values) -> dict:
 async def test_the_spend_sums_matches_only(vacancy_id):
     await repository.record_call(**call(vacancy_id, "match", cost_usd=Decimal("0.0001")))
     await repository.record_call(**call(vacancy_id, "employer", cost_usd=Decimal("0.0002")))
+    await repository.record_call(**call(vacancy_id, "cover_note", cost_usd=Decimal("0.0123")))
 
     async with SessionLocal() as session:
         spend = (await repository.stats(session, country=[COUNTRY]))["spend"]
@@ -156,6 +157,13 @@ async def test_trace_lists_the_newest_calls_and_filters_by_kind(vacancy_id, caps
     await cli.cmd_trace(None, "match", 1)
     (row,) = capsys.readouterr().out.splitlines()[1:]
     assert row.split()[0] == str(older)
+
+
+async def test_trace_lines_a_cover_note_row_up_with_the_header(vacancy_id, capsys):
+    await repository.record_call(**call(vacancy_id, "cover_note", model_requested="claude-sonnet-5-5"))
+    await cli.cmd_trace(None, "cover_note", 1)
+    header, row = capsys.readouterr().out.splitlines()
+    assert row.index("claude-sonnet-5-5") == header.index("model")
 
 
 async def test_trace_shows_one_call_in_full(vacancy_id, capsys):

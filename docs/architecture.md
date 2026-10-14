@@ -145,7 +145,7 @@ erDiagram
     LLM_CALLS {
         bigint id PK
         bigint vacancy_id FK "SET NULL: spend history outlives the vacancy"
-        text kind "match | employer | recruiters | people; no default"
+        text kind "match | employer | recruiters | cover_note | people; no default"
         char64 inputs_fingerprint "what was asked, even if it failed"
         text model_requested "in the fingerprint"
         text model_resolved "what actually answered"
@@ -214,8 +214,9 @@ blew up — lives in `llm_calls`.
 ### 3.3 `llm_calls`
 
 One row per LLM call **attempted** — including the ones that failed: a Jev
-match (`match`), an employer identity (`employer`) or a recruiter search
-(`recruiters`); `people` marks the five calls of a dropped first attempt. This is the operational ledger: what was asked, what it cost, how long
+match (`match`), an employer identity (`employer`), a recruiter search
+(`recruiters`) or a cover note from `claude -p` (`cover_note`,
+`jobmatch/llm/claude_cli.py`); `people` marks the five calls of a dropped first attempt. This is the operational ledger: what was asked, what it cost, how long
 it took, and what went wrong.
 
 `kind` says which caller paid, with no default so a new caller must name
@@ -472,7 +473,7 @@ which needs a source or a model and the database at once for the same reason.
 ## 8. Matcher integration
 
 Importable as a plain function; no subprocess anywhere. (The cover note's
-`claude -p` is not the matcher and stores nothing; see `cover_note.py`.) `cv_match/` is absorbed
+`claude -p` is not the matcher and stores no note, only its `llm_calls` row; see `cover_note.py`.) `cv_match/` is absorbed
 into `jobmatch/matching/` and deleted:
 
 - `questions.py` → moved unchanged, plus a module-level `QUESTIONS_HASH`.
@@ -659,7 +660,7 @@ response model (the cover note adds one `claude -p` call).
 | `GET /api/vacancies` | the ranked list — the §3.4 query, filters applied |
 | `GET /api/vacancies/{id}` | one vacancy, plus the whole `answers` blob |
 | `PATCH /api/vacancies/{id}/triage` | set or clear `seen_at` / `starred_at` / `hidden_at` / `applied_at` |
-| `POST /api/vacancies/{id}/cover-note` | a draft cover letter from `claude -p`, in the posting's language; never stored (`jobmatch/cover_note.py`) |
+| `POST /api/vacancies/{id}/cover-note` | a draft cover letter from `claude -p`, in the posting's language; the note is never stored, the call is in `llm_calls` (`jobmatch/cover_note.py`) |
 | `GET /api/vacancies/{id}/company` | the looked-up employer, or `null`, with the newest stored `identity` for this vacancy and the `recruiters` search its request would reuse, however old (each `null` when there is none); no request to the source or a model |
 | `POST /api/vacancies/{id}/company` | look the employer up (again): 404 with the reason when there is none to find, 502 when the source fails (`jobmatch/api/routers/company.py`); `identity` and `recruiters` are whatever is already stored |
 | `POST /api/vacancies/{id}/company/identity` | ask `research_model` who is behind the posting (`company_research.identify_employer`), free when the same request was answered before: 409 before the lookup, 503 without `OPENROUTER_API_KEY`, 502 when the call fails |

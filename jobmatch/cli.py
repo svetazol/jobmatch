@@ -276,10 +276,10 @@ async def cmd_trace(call_id: int | None, kind: str | None, last: int) -> int:
 
 
 def _print_calls(calls: list[LlmCall]) -> None:
-    print(f"{'id':>7}  {'started':16}  {'kind':8} {'model':30} {'status':6} "
+    print(f"{'id':>7}  {'started':16}  {'kind':10} {'model':30} {'status':6} "
           f"{'in':>6} {'out':>5} {'cost $':>11} {'ms':>6}  vacancy")
     for c in calls:
-        print(f"{c.id:>7}  {c.started_at:%Y-%m-%d %H:%M}  {c.kind:8} "
+        print(f"{c.id:>7}  {c.started_at:%Y-%m-%d %H:%M}  {c.kind:10} "
               f"{c.model_requested[:30]:30} {c.status:6} "
               f"{_or_dash(c.input_tokens):>6} {_or_dash(c.output_tokens):>5} "
               f"{_or_dash(c.cost_usd):>11} {_or_dash(c.duration_ms):>6}  "
@@ -385,7 +385,7 @@ def main(argv: list[str] | None = None) -> int:
         "trace", help="read the LLM ledger: the last calls, or one in full — free"
     )
     trace.add_argument("id", nargs="?", type=int, help="one call's id: its request and response")
-    trace.add_argument("--kind", help="list only calls of this kind: match, employer, recruiters, people")
+    trace.add_argument("--kind", help="list only calls of this kind: match, employer, recruiters, cover_note, people")
     trace.add_argument("--last", type=_positive_int, help="how many calls to list (20)")
 
     identify = sub.add_parser(

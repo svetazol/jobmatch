@@ -85,7 +85,7 @@ jobmatch/
   sources/     the web: one module per site; hh/ is the only one
   matching/    the match: questions, CV sanitising, job text, the flattened answer (match.py)
   research/    questions to a model about a company: employer.py, recruiters.py
-  llm/         what every model call shares (key, fingerprint, ledger); jev.py and openrouter.py alone know their SDKs
+  llm/         what every model call shares (key, fingerprint, ledger); jev.py, openrouter.py and claude_cli.py alone know their providers
   models.py    the schema (SQLAlchemy 2.0)
   repository.py  flat module of named queries, keeps SQL out of pipeline.py
   pipeline.py  the run phases; it and company_research.py are the only modules allowed to know all three areas above

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ... import cover_note, matching, repository
 from ...config import DEFAULT_PATH, load_settings
+from ...llm import claude_cli
 from ...models import MatchResult, Vacancy
 from ..deps import get_session
 from ..schemas import CoverNote, MatchSummary, VacancyDetail, VacancyPage, VacancyRow
@@ -193,6 +194,6 @@ async def write_cover_note(vacancy_id: int, session: SessionDep) -> CoverNote:
         raise HTTPException(422, str(e)) from None
     try:
         text = await cover_note.write(vacancy, match, cv)
-    except cover_note.CoverNoteError as e:
+    except claude_cli.ClaudeError as e:
         raise HTTPException(502, str(e)) from None
     return CoverNote(text=text, language=cover_note.language_of(vacancy))

@@ -1,26 +1,23 @@
 """A short cover letter for one vacancy, written by `claude -p` on request.
 
 A subprocess, unlike the matcher (§8): this runs on the user's own logged-in
-Claude Code, so it needs no key and spends no OpenRouter credit -- and it only
-works on a machine where `claude` is installed and signed in. A hosted version
-would call the Anthropic API with the same prompt instead.
+Claude Code (`jobmatch/llm/claude_cli.py`), so it needs no key and spends no
+OpenRouter credit -- and it only works on a machine where `claude` is installed
+and signed in. A hosted version would call the Anthropic API with the same
+prompt instead.
 
-Nothing is stored: the note is a draft to copy and edit, and regenerating one
-is a click.
+The note itself is not stored: it is a draft to copy and edit, and regenerating
+one is a click. The call is, like every model call, in `llm_calls`.
 """
 from __future__ import annotations
 
-import asyncio
-import json
 import re
-import shutil
-import tempfile
 
+from .llm import claude_cli
 from .matching.questions import BEST_ANGLE, TOP_GAP
 from .models import MatchResult, Vacancy
 
-MODEL = "sonnet"
-TIMEOUT_S = 180
+MODEL = "claude-sonnet-5-5"   # pinned, not the "sonnet" alias: it is in the fingerprint
 
 # Below this the matcher's gap is a near-tie (see VacancyDetailView's "vague"
 # rule); naming it would make the note answer an objection nobody raised.
@@ -51,10 +48,6 @@ _GENDER = {
     "Russian": "The candidate is a woman: use feminine forms throughout "
                "(e.g. «я проектировала», «я готова»).",
 }
-
-
-class CoverNoteError(RuntimeError):
-    """`claude` is missing, timed out, or returned an error."""
 
 
 def language_of(vacancy: Vacancy) -> str:
@@ -97,41 +90,7 @@ def build_prompt(vacancy: Vacancy, match: MatchResult | None, cv: str) -> str:
 
 
 async def write(vacancy: Vacancy, match: MatchResult | None, cv: str) -> str:
-    """Run `claude -p` once, with no tools, outside the repo.
-
-    The cwd is a temp dir so the project's CLAUDE.md and memory stay out of
-    the prompt; the prompt goes over stdin because a CV plus a posting can
-    outgrow an argv.
-    """
-    exe = shutil.which("claude")
-    if exe is None:
-        raise CoverNoteError("the `claude` CLI is not on PATH")
-    proc = await asyncio.create_subprocess_exec(
-        exe, "-p",
-        "--output-format", "json",
-        "--model", MODEL,
-        "--tools", "",
-        "--no-session-persistence",
-        "--system-prompt", _SYSTEM,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=tempfile.gettempdir(),
+    """The note, from one recorded `claude -p` call; a `claude_cli.ClaudeError` when it fails."""
+    return await claude_cli.ask(
+        MODEL, _SYSTEM, build_prompt(vacancy, match, cv), kind="cover_note", vacancy_id=vacancy.id
     )
-    try:
-        out, err = await asyncio.wait_for(
-            proc.communicate(build_prompt(vacancy, match, cv).encode()), TIMEOUT_S
-        )
-    except TimeoutError:
-        proc.kill()
-        await proc.wait()
-        raise CoverNoteError(f"`claude` did not answer within {TIMEOUT_S}s") from None
-
-    try:
-        result = json.loads(out)
-    except json.JSONDecodeError:
-        detail = (err or out).decode(errors="replace").strip()[-500:]
-        raise CoverNoteError(f"`claude` exited {proc.returncode}: {detail}") from None
-    if result.get("is_error") or proc.returncode != 0:
-        raise CoverNoteError(f"`claude` failed: {result.get('result') or result.get('subtype')}")
-    return str(result["result"]).strip()

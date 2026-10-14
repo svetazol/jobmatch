@@ -21,6 +21,7 @@ from jobmatch.api.routers import vacancies
 from jobmatch.api.routers.stats import _cv_hash
 from jobmatch.config import DEFAULT_PATH, load_settings
 from jobmatch.db import SessionLocal
+from jobmatch.llm import claude_cli
 from jobmatch.models import LlmCall, MatchResult, Vacancy
 
 SOURCE_NAME = "test-api"
@@ -454,9 +455,18 @@ async def test_cover_note_returns_what_claude_wrote(client, rows, cv_file, monke
     assert response.json() == {"text": "I fit because.", "language": "English"}
 
 
+async def test_cover_note_route_returns_the_text_and_records_the_call(client, rows, cv_file, fake_claude):
+    fake_claude({"is_error": False, "result": "I fit because.\n", "total_cost_usd": 0.01})
+    response = await client.post(f"/api/vacancies/{rows[0]}/cover-note")
+    assert response.json() == {"text": "I fit because.", "language": "English"}
+    async with SessionLocal() as session:
+        kinds = (await session.scalars(select(LlmCall.kind).where(LlmCall.vacancy_id == rows[0]))).all()
+    assert "cover_note" in kinds
+
+
 async def test_cover_note_passes_claudes_failure_through(client, rows, cv_file, monkeypatch):
     async def failing_write(vacancy, match, cv):
-        raise cover_note.CoverNoteError("`claude` failed: not logged in")
+        raise claude_cli.ClaudeError("`claude` failed: not logged in")
     monkeypatch.setattr(cover_note, "write", failing_write)
     response = await client.post(f"/api/vacancies/{rows[0]}/cover-note")
     assert response.status_code == 502
