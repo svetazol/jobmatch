@@ -15,7 +15,7 @@ import httpx2
 import pytest
 from sqlalchemy import delete, select, update
 
-from jobmatch import cli, pipeline, repository, research
+from jobmatch import cli, llm, pipeline, repository, research
 from jobmatch.api.app import app
 from jobmatch.db import SessionLocal
 from jobmatch.models import Employer, EmployerIdentity, LlmCall, RecruiterSearch, Vacancy
@@ -468,7 +468,7 @@ async def test_the_command_reports_why_it_cannot_search(vacancy_id, monkeypatch,
 @pytest.fixture
 async def client(monkeypatch):
     """The app, with a key set: the stub never sends it anywhere."""
-    monkeypatch.setenv(research.API_KEY_ENV, "test-key")
+    monkeypatch.setenv(llm.API_KEY_ENV, "test-key")
     transport = httpx2.ASGITransport(app=app)
     async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
@@ -552,12 +552,12 @@ async def test_the_route_422s_a_company_with_nothing_to_search_for(
 
 
 async def test_the_route_needs_the_key_before_any_call(vacancy_id, searches, client, monkeypatch):
-    monkeypatch.delenv(research.API_KEY_ENV)
+    monkeypatch.delenv(llm.API_KEY_ENV)
 
     resp = await client.post(f"/api/vacancies/{vacancy_id}/company/recruiters")
 
     assert resp.status_code == 503
-    assert research.API_KEY_ENV in resp.json()["detail"]
+    assert llm.API_KEY_ENV in resp.json()["detail"]
     assert searches == []
 
 

@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .. import llm
 from .jev import CONCURRENCY, MatchOutcome, Preview, job_text, match_vacancy, open_client, preview_vacancy
 from .questions import QUESTIONS, QUESTIONS_HASH, canonical
 from .sanitize import load_text, sanitize_cv
@@ -57,5 +58,4 @@ def inputs_fingerprint(cv: str, job: str, questions: dict[str, Any], model: str)
         "questions": json.loads(canonical(questions)),
         "model": model,
     }
-    blob = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-    return sha256(blob)
+    return llm.fingerprint(payload)

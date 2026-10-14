@@ -23,10 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
-import hashlib
 import ipaddress
-import json
-import os
 import socket
 import time
 from dataclasses import dataclass
@@ -39,9 +36,10 @@ import httpx2
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from . import repository
+from . import llm, repository
+# The hashing rule is llm's; callers still say `research.fingerprint`.
+from .llm import fingerprint
 
-API_KEY_ENV = "OPENROUTER_API_KEY"
 BASE_URL = "https://openrouter.ai/api/v1"
 
 MODEL_DEADLINE = 30     # one model request, whole; see _Deadline
@@ -481,18 +479,6 @@ def linkedin_slug(url: str) -> str | None:
 
 # --- the call ------------------------------------------------------------------
 
-def fingerprint(request: dict[str, Any]) -> str:
-    """sha256 of the whole request, by the rule in `docs/architecture.md` §4.
-
-    The prompts (so every input they are built from), the schema with its
-    descriptions, the model and OpenRouter's fields: editing any of them makes
-    a different request and so a different key, with no version constant to
-    forget.
-    """
-    blob = json.dumps(request, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-    return hashlib.sha256(blob.encode()).hexdigest()
-
-
 async def _call[T: BaseModel](
     request: dict[str, Any],
     answer: type[T],
@@ -513,9 +499,7 @@ async def _call[T: BaseModel](
     The shield holds against one cancellation; a second, while the row is being
     written, still interrupts it -- an accepted gap for a single-user tool.
     """
-    key = os.environ.get(API_KEY_ENV)
-    if not key:
-        raise ValueError(f"Set {API_KEY_ENV} in .env before asking a model about a company.")
+    key = llm.api_key("before asking a model about a company")
 
     row = {
         "kind": kind,

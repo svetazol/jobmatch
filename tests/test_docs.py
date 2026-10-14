@@ -37,6 +37,9 @@ GONE = {
     "identify.py": "jobmatch/research.py",
     "identify.ask": "research.ask_employer",
     "identify.fingerprint": "research.fingerprint(research.employer_request(...))",
+    # one copy of the key and the hashing rule, 2026-10-14 (the llm/ package)
+    "research.API_KEY_ENV": "llm.API_KEY_ENV, read through llm.api_key",
+    "jev.API_KEY_ENV": "llm.API_KEY_ENV, read through llm.api_key",
     "identify.request_body": "research.employer_request",
     "identify.reachable": "research.reachable",
     "identify.Identity": "research.Identity",

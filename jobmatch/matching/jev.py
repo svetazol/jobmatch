@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-import os
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -18,13 +17,12 @@ from typing import Any
 
 from typesafe_sdk import AsyncTypeSafeClient
 
-from .. import repository
+from .. import llm, repository
 from ..models import Vacancy
 from .questions import QUESTIONS, QUESTIONS_HASH
 
 log = logging.getLogger(__name__)
 
-API_KEY_ENV = "OPENROUTER_API_KEY"
 BASE_URL = "https://openrouter.ai/api"  # the SDK appends /v1/systemone itself
 # Calls in flight at once. The SDK retries a 429 itself, honouring
 # Retry-After, so too high costs latency rather than answers.
@@ -77,9 +75,7 @@ class MatchOutcome:
 @asynccontextmanager
 async def open_client(api_key: str | None = None) -> AsyncIterator[AsyncTypeSafeClient]:
     """One client per run — it holds an HTTP session, shared by every call."""
-    key = api_key or os.environ.get(API_KEY_ENV)
-    if not key:
-        raise ValueError(f"Set {API_KEY_ENV} in .env before matching.")
+    key = api_key or llm.api_key("before matching")
     async with AsyncTypeSafeClient(api_key=key, base_url=BASE_URL) as client:
         yield client
 

@@ -3,12 +3,11 @@ ask a model who is behind the posting, and search for who recruits there."""
 from __future__ import annotations
 
 import logging
-import os
 
 from fastapi import APIRouter, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ... import pipeline, repository, research
+from ... import llm, pipeline, repository
 from ...config import DEFAULT_PATH, load_settings
 from ...db import SessionLocal
 from ...models import Employer, EmployerIdentity, RecruiterSearch
@@ -66,8 +65,10 @@ async def identify_company(vacancy_id: int) -> CompanyIdentity:
     """
     # Checked here, not left to `research.ask_employer`, so a missing key reads as the
     # server's setup (503) rather than the model failing (502).
-    if not os.environ.get(research.API_KEY_ENV):
-        raise HTTPException(503, f"Set {research.API_KEY_ENV} in .env to identify employers.")
+    try:
+        llm.api_key("to identify employers")
+    except ValueError as e:
+        raise HTTPException(503, str(e)) from None
     model = load_settings(DEFAULT_PATH).research_model
     try:
         row = await pipeline.identify_employer(vacancy_id, model)
@@ -93,8 +94,10 @@ async def search_recruiters(vacancy_id: int, refresh: bool = False) -> CompanyRe
     there is no API key, 502 that the call failed -- it is in `llm_calls`
     either way.
     """
-    if not os.environ.get(research.API_KEY_ENV):   # 503 rather than 502, as above
-        raise HTTPException(503, f"Set {research.API_KEY_ENV} in .env to search for recruiters.")
+    try:
+        llm.api_key("to search for recruiters")
+    except ValueError as e:     # 503 rather than 502, as above
+        raise HTTPException(503, str(e)) from None
     model = load_settings(DEFAULT_PATH).people_model
     try:
         row = await pipeline.find_recruiters(vacancy_id, model, refresh=refresh)

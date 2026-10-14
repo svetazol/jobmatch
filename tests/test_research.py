@@ -20,7 +20,7 @@ import pydantic
 import pytest
 from sqlalchemy import delete, select
 
-from jobmatch import cli, matching, pipeline, repository, research
+from jobmatch import cli, llm, matching, pipeline, repository, research
 from jobmatch.api.app import app
 from jobmatch.config import load_settings
 from jobmatch.db import SessionLocal
@@ -87,7 +87,7 @@ def answering(body: dict, sent: list | None = None):
 
 @pytest.fixture(autouse=True)
 def api_key(monkeypatch):
-    monkeypatch.setenv(research.API_KEY_ENV, "sk-test")
+    monkeypatch.setenv(llm.API_KEY_ENV, "sk-test")
 
 
 @pytest.fixture
@@ -258,9 +258,9 @@ async def test_an_http_error_stores_openrouters_error_body(vacancy_id):
 
 
 async def test_without_a_key_nothing_is_sent_or_recorded(vacancy_id, monkeypatch):
-    monkeypatch.delenv(research.API_KEY_ENV)
+    monkeypatch.delenv(llm.API_KEY_ENV)
 
-    with pytest.raises(ValueError, match=research.API_KEY_ENV):
+    with pytest.raises(ValueError, match=llm.API_KEY_ENV):
         await research.ask_employer(POSTER, MODEL, vacancy_id=vacancy_id,
                            http_client=openrouter(lambda r: pytest.fail("sent")))
 
@@ -682,12 +682,12 @@ async def test_identifying_an_unknown_vacancy_answers_404(client, model_calls):
 async def test_without_a_key_the_identity_route_answers_503_unasked(
     client, vacancy_id, model_calls, monkeypatch
 ):
-    monkeypatch.delenv(research.API_KEY_ENV)
+    monkeypatch.delenv(llm.API_KEY_ENV)
 
     resp = await client.post(f"/api/vacancies/{vacancy_id}/company/identity")
 
     assert resp.status_code == 503
-    assert research.API_KEY_ENV in resp.json()["detail"]
+    assert llm.API_KEY_ENV in resp.json()["detail"]
     assert model_calls == []
 
 
