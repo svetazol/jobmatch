@@ -71,7 +71,8 @@ string to code, and with 1–4 sources an import line is the whole mechanism.
 Three tables for the pipeline: what was scraped, what the AI concluded, and
 what each AI call cost. A fourth, `employers`, holds only the companies someone
 looked up from the UI (§3.5), and a fifth, `employer_identities`, what a model
-said about who is behind a posting (§3.6). Single user kills `users`, `user_vacancy_state`,
+said about who is behind a posting (§3.6), and a sixth, `recruiter_searches`,
+who a web search found recruiting for a company (§3.7). Single user kills `users`, `user_vacancy_state`,
 roles. Also deliberately absent: a `sources` table (sources are config), a
 `crawl_log` of discovery runs (nothing reads it), a `skills` table (nothing
 joins on it).
@@ -84,6 +85,8 @@ erDiagram
     LLM_CALLS ||--o| MATCH_RESULTS : "produced"
     VACANCIES ||--o{ EMPLOYER_IDENTITIES : "who posted it"
     LLM_CALLS ||--o| EMPLOYER_IDENTITIES : "produced"
+    EMPLOYERS ||--o{ RECRUITER_SEARCHES : "who recruits for it"
+    LLM_CALLS ||--o| RECRUITER_SEARCHES : "produced"
 
     VACANCIES {
         bigint id PK
@@ -141,7 +144,7 @@ erDiagram
     LLM_CALLS {
         bigint id PK
         bigint vacancy_id FK "SET NULL: spend history outlives the vacancy"
-        text kind "match | employer | people; no default"
+        text kind "match | employer | recruiters | people; no default"
         char64 inputs_fingerprint "what was asked, even if it failed"
         text model_requested "in the fingerprint"
         text model_resolved "what actually answered"
@@ -170,6 +173,15 @@ erDiagram
         boolean careers_ok "NULL without a careers page"
         bigint llm_call_id FK "the call that produced it"
         timestamptz created_at "newest is shown"
+    }
+
+    RECRUITER_SEARCHES {
+        bigint id PK
+        bigint employer_id FK "per employer, not per posting"
+        char64 inputs_fingerprint "not unique: a stale search is redone"
+        jsonb answer "asdict(Confirmed): only cited people"
+        bigint llm_call_id FK "the call that produced it"
+        timestamptz created_at "newest per request is shown"
     }
 ```
 
@@ -201,7 +213,8 @@ blew up — lives in `llm_calls`.
 ### 3.3 `llm_calls`
 
 One row per LLM call **attempted** — including the ones that failed: a Jev
-match (`match`) or an employer identity (`employer`). This is the operational ledger: what was asked, what it cost, how long
+match (`match`), an employer identity (`employer`) or a recruiter search
+(`recruiters`); `people` marks the five calls of a dropped first attempt. This is the operational ledger: what was asked, what it cost, how long
 it took, and what went wrong.
 
 `kind` says which caller paid, with no default so a new caller must name
@@ -300,6 +313,23 @@ the prompts, the schema and the model, so a repeat click with nothing changed
 is free. Per posting rather than on `employers`, because the posting is part
 of the request. Columns and the reason for each: `jobmatch/models.py`; the
 design: `docs/company-research.md` §2.
+
+### 3.7 `recruiter_searches`
+
+What one web-search call (`research.ask_recruiters`) found about who recruits
+for a company, kept only as the people whose profile the search itself cited
+(`research.keep_cited`), with how many were dropped. Per **employer**, unlike
+§3.6: the request holds the company (from its identity when there is one, else
+its hh page) and no posting text, so postings of one company that make the
+same request share a search. Append-only; the row shown and reused is the
+newest with this employer *and* this request's fingerprint, never the
+employer's newest of any request: one posting identified and one not make two
+requests, and each is paid for once, not on every switch between them. The
+employer stays in the lookup because it is not in the request -- two hh
+employers with the same name, link and city must not share people. A row is
+reused while it is younger than `pipeline.RECRUITERS_FRESH`, so the
+fingerprint is not unique: a stale search is asked again with the same
+inputs, because people change jobs. The design: `docs/company-research.md` §3.
 
 ---
 

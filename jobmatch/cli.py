@@ -217,6 +217,42 @@ async def cmd_identify(config_path: str, vacancy_id: int) -> int:
     return 0
 
 
+async def cmd_recruiters(config_path: str, vacancy_id: int) -> int:
+    """Who recruits for the company behind one posting, with `people_model`.
+    Pays unless the company has a fresh search with the same request
+    (`pipeline.RECRUITERS_FRESH`).
+
+    A company never looked up is looked up first, as in `cmd_identify`. The
+    identity is not asked for: the search uses one if it exists.
+    """
+    settings = load_settings(config_path)
+    async with SessionLocal() as session:
+        looked_up = await repository.employer_of(session, vacancy_id) is not None
+    try:
+        if not looked_up:
+            print("looking the company up on hh first")
+            await pipeline.lookup_employer(vacancy_id)
+        started = dt.datetime.now(dt.UTC)
+        row = await pipeline.find_recruiters(vacancy_id, settings.people_model)
+    except (pipeline.EmployerUnknown, pipeline.NotLookedUp) as e:
+        print(f"cannot search for the recruiters of vacancy {vacancy_id}: {e}")
+        return 1
+    async with SessionLocal() as session:
+        call = await repository.get_call(session, row.llm_call_id)
+
+    answer = row.answer
+    for person in answer["people"]:
+        print(" · ".join(_or_dash(person[key])
+                         for key in ("name", "role", "linkedin_url", "source_title")))
+    print(f"{len(answer['people'])} found · {answer['dropped']} dropped · "
+          f"{answer['sources']} sources")
+    # As in cmd_identify: a reused search was paid for by an earlier call.
+    cached = call.started_at < started
+    print(f"\n{'cached, free: searched earlier by' if cached else 'paid:'} "
+          f"llm_calls #{call.id}, {call.model_requested}, ${_or_dash(call.cost_usd)}")
+    return 0
+
+
 async def cmd_trace(call_id: int | None, kind: str | None, last: int) -> int:
     """Read the LLM ledger: the last calls as a table, or one call in full.
 
@@ -349,7 +385,7 @@ def main(argv: list[str] | None = None) -> int:
         "trace", help="read the LLM ledger: the last calls, or one in full — free"
     )
     trace.add_argument("id", nargs="?", type=int, help="one call's id: its request and response")
-    trace.add_argument("--kind", help="list only calls of this kind: match, employer, people")
+    trace.add_argument("--kind", help="list only calls of this kind: match, employer, recruiters, people")
     trace.add_argument("--last", type=_positive_int, help="how many calls to list (20)")
 
     identify = sub.add_parser(
@@ -358,6 +394,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     identify.add_argument("--vacancy", type=int, required=True, metavar="ID")
     identify.add_argument("--config", default=str(DEFAULT_PATH))
+
+    recruiters = sub.add_parser(
+        "recruiters",
+        help="search the web for recruiters at the company behind one posting "
+        "-- pays (~$0.02) unless a fresh search exists",
+    )
+    recruiters.add_argument("--vacancy", type=int, required=True, metavar="ID")
+    recruiters.add_argument("--config", default=str(DEFAULT_PATH))
 
     args = parser.parse_args(argv)
     if args.command == "run":
@@ -379,6 +423,8 @@ def main(argv: list[str] | None = None) -> int:
         command = cmd_trace(args.id, args.kind, args.last or 20)
     elif args.command == "identify":
         command = cmd_identify(args.config, args.vacancy)
+    elif args.command == "recruiters":
+        command = cmd_recruiters(args.config, args.vacancy)
     else:
         parser.error(f"unknown command {args.command}")  # unreachable
     return asyncio.run(_run(command))

@@ -238,6 +238,45 @@ class EmployerIdentity(Base):
         return f"<EmployerIdentity v{self.vacancy_id} {self.answer.get('employer')!r}>"
 
 
+class RecruiterSearch(Base):
+    """Who recruits for a company, as one web-search call answered it and
+    `research.keep_cited` confirmed it (`research.ask_recruiters`,
+    `pipeline.find_recruiters`).
+
+    Per employer, unlike `EmployerIdentity`'s per posting: the request holds no
+    posting text, only the company (`research.Target`), so two postings of one
+    company make the same request and share its answer. Append-only; the
+    newest row with the request's fingerprint is shown -- never the employer's
+    newest of any request, so postings whose requests differ (one identified,
+    one not) do not pay in turn for each other's searches.
+    """
+
+    __tablename__ = "recruiter_searches"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    employer_id: Mapped[int] = mapped_column(ForeignKey("employers.id", ondelete="CASCADE"))
+    # sha256 of the whole request (`research.fingerprint`). Not unique, unlike
+    # `employer_identities`': people change jobs, so a search older than
+    # `pipeline.RECRUITERS_FRESH` is asked again with the same inputs and a
+    # second row carries the same fingerprint.
+    inputs_fingerprint: Mapped[str] = mapped_column(String(64))
+    # `dataclasses.asdict(research.Confirmed)`, whole: only the cited people,
+    # with the dropped and sources counts; nothing filters on its fields
+    answer: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    llm_call_id: Mapped[int] = mapped_column(ForeignKey("llm_calls.id"))
+
+    created_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
+
+    __table_args__ = (
+        # an employer's searches (`repository.latest_recruiters`); a handful per
+        # employer at most, so the fingerprint need not be in the index
+        Index("ix_recruiter_searches_employer_created", "employer_id", "created_at"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<RecruiterSearch e{self.employer_id} {len(self.answer.get('people', []))} people>"
+
+
 class MatchResult(Base):
     """One row per *paid* Jev call that produced a usable answer.
 

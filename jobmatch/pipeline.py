@@ -18,6 +18,8 @@ flight, Jev calls in flight — is waiting, and coroutines wait for free.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import datetime as dt
 import logging
 from collections.abc import Awaitable, Callable, Iterable
 from contextlib import aclosing
@@ -29,7 +31,9 @@ import anyio
 from . import matching, repository, research
 from .config import Settings, SourceConfig
 from .db import SessionLocal
-from .models import MAX_FETCH_ATTEMPTS, Employer, EmployerIdentity, LlmCall, Vacancy
+from .models import (
+    MAX_FETCH_ATTEMPTS, Employer, EmployerIdentity, LlmCall, RecruiterSearch, Vacancy,
+)
 from .sources import (
     SOURCES, EmployerGone, Listing, Rate, Source, VacancyGone, source_for_url,
 )
@@ -548,3 +552,89 @@ def poster_of(employer: Employer, vacancy: Vacancy) -> research.Poster:
         about=about or None,
         posting=matching.job_text(vacancy),
     )
+
+
+def target_of(employer: Employer, identity: EmployerIdentity | None) -> research.Target:
+    """The company to search for recruiters at: the identity's answer where it
+    has one, else the hh employer page.
+
+    The identity's homepage only if it answered (`homepage_ok`): a homepage
+    the model made up would point the search at the wrong company. For an
+    agency posting the identity's employer is the agency, so the search is for
+    the agency's recruiters -- the people who posted the vacancy -- not the
+    client's, who is often unnamed.
+    """
+    answer = identity.answer if identity is not None else {}
+    homepage = answer.get("homepage") if identity is not None and identity.homepage_ok else None
+    return research.Target(
+        name=answer.get("employer") or employer.name or "",
+        homepage=homepage or employer.site_url,
+        city=employer.raw.get("city"),
+    )
+
+
+# How long a stored search is shown instead of asked again. Recruiters change
+# jobs, so the same request is worth paying for again after this. Not config:
+# nobody tunes it per run. Outside the fingerprint, so an older search with
+# the same inputs is redone without a new request shape.
+RECRUITERS_FRESH = dt.timedelta(days=30)
+
+
+async def find_recruiters(vacancy_id: int, model: str) -> RecruiterSearch:
+    """Who recruits for the company behind a posting: the stored search for
+    this request if it is younger than `RECRUITERS_FRESH`, else a paid one
+    (`research.ask_recruiters`), saved.
+
+    Per employer and request: the request holds the company, not the posting,
+    so postings of one company that make the same request share a search, and
+    one never pays twice for a request (the user's rule, 2026-10-14). Needs
+    `lookup_employer` first (`NotLookedUp`); the identity is optional and only
+    sharpens the target. As in `identify_employer`, no session is held across
+    the network call, and failures of the call propagate, already in
+    `llm_calls`.
+    """
+    employer_id, target, fingerprint, stored = await _recruiters_request(vacancy_id, model)
+    if stored is not None and dt.datetime.now(dt.UTC) - stored.created_at < RECRUITERS_FRESH:
+        return stored
+
+    confirmed, call_id = await research.ask_recruiters(target, model, vacancy_id=vacancy_id)
+    # Paid for from here on: as in `identify_employer`, a cancelled request
+    # must not lose the answer.
+    with anyio.CancelScope(shield=True):
+        async with SessionLocal.begin() as session:
+            row = await repository.save_recruiters(
+                session, employer_id, fingerprint, dataclasses.asdict(confirmed), call_id
+            )
+    log.info(
+        "searched recruiters at %s for vacancy %d: %d found, %d dropped",
+        target.name, vacancy_id, len(confirmed.people), confirmed.dropped,
+    )
+    return row
+
+
+async def stored_recruiters(vacancy_id: int, model: str) -> RecruiterSearch | None:
+    """The search a posting's request would reuse, fresh or not; never pays.
+    What the card shows before (or instead of) a click."""
+    *_, stored = await _recruiters_request(vacancy_id, model)
+    return stored
+
+
+async def _recruiters_request(
+    vacancy_id: int, model: str
+) -> tuple[int, research.Target, str, RecruiterSearch | None]:
+    """The employer, the target, the request's fingerprint and its newest
+    stored search; raises as `identify_employer` does without a vacancy or a
+    lookup, and `EmployerUnknown` for a company with no name to search for."""
+    async with SessionLocal() as session:
+        vacancy = await session.get(Vacancy, vacancy_id)
+        if vacancy is None:
+            raise EmployerUnknown(f"no vacancy {vacancy_id}")
+        employer = await repository.employer_of(session, vacancy_id)
+        if employer is None:
+            raise NotLookedUp("the company has not been looked up yet; look it up first")
+        target = target_of(employer, await repository.latest_identity(session, vacancy_id))
+        if not target.name:
+            raise EmployerUnknown("the company has no name to search for")
+        fingerprint = research.fingerprint(research.recruiters_request(target, model))
+        stored = await repository.latest_recruiters(session, employer.id, fingerprint)
+    return employer.id, target, fingerprint, stored

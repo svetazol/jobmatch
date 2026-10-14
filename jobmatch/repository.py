@@ -17,7 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .db import SessionLocal
 from .models import (
-    MAX_FETCH_ATTEMPTS, Employer, EmployerIdentity, LlmCall, MatchResult, Vacancy,
+    MAX_FETCH_ATTEMPTS, Employer, EmployerIdentity, LlmCall, MatchResult, RecruiterSearch,
+    Vacancy,
 )
 from .sources import EmployerData, Listing, VacancyData
 
@@ -205,6 +206,49 @@ async def save_identity(
     return (await session.scalars(
         select(EmployerIdentity).where(EmployerIdentity.inputs_fingerprint == fingerprint)
     )).one()
+
+
+async def latest_recruiters(
+    session: AsyncSession, employer_id: int, fingerprint: str
+) -> RecruiterSearch | None:
+    """The newest search for this employer and this exact request -- the one
+    shown, and the one the pipeline reuses while it is fresh. The employer is
+    in the filter because the request is not: two hh employers with the same
+    name, homepage and city make the same request, and must not share people.
+    `id` breaks a tie."""
+    return await session.scalar(
+        select(RecruiterSearch)
+        .where(
+            RecruiterSearch.employer_id == employer_id,
+            RecruiterSearch.inputs_fingerprint == fingerprint,
+        )
+        .order_by(RecruiterSearch.created_at.desc(), RecruiterSearch.id.desc())
+        .limit(1)
+    )
+
+
+async def save_recruiters(
+    session: AsyncSession,
+    employer_id: int,
+    fingerprint: str,
+    answer: dict[str, Any],
+    llm_call_id: int,
+) -> RecruiterSearch:
+    """Store a search. A plain insert:
+    the fingerprint is not unique, and two clicks that paid at once leave two
+    rows, the newer one shown. `RETURNING` hands back `created_at` too, which
+    the caller reads after the session is gone."""
+    return (await session.scalars(
+        insert(RecruiterSearch)
+        .values(
+            employer_id=employer_id,
+            inputs_fingerprint=fingerprint,
+            answer=answer,
+            llm_call_id=llm_call_id,
+        )
+        .returning(RecruiterSearch)
+    )).one()
+
 
 async def matchable_vacancy_ids(
     session: AsyncSession, sources: Sequence[str], country: str | None = None

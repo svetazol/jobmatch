@@ -193,6 +193,13 @@ nobody has). It pays once per distinct request and stores an
 `employer_identities` row; asking again with nothing changed is free
 (`docs/architecture.md` §3.6).
 
+`pipeline.find_recruiters` asks a model with web search who recruits for the
+company (`jobmatch recruiters --vacancy N`, the same lookup first). It uses the
+identity if there is one, pays once per company and request -- two postings
+whose requests differ do not pay for each other's -- and stores a
+`recruiter_searches` row that is reused, free, until it is a month old
+(`docs/architecture.md` §3.7).
+
 ---
 
 ## Running the phases on their own

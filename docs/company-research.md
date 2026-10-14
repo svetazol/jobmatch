@@ -8,7 +8,7 @@ the AI parts are built as small, measured steps:
 |---|---|---|---|
 | 0 | **Company lookup** — the employer's hh page: name, the link it publishes, city, industries | none | built 2026-10-07 |
 | 1 | **Employer identity** — who posted the vacancy (the agency itself, for an agency posting), its homepage and careers page, and, for an agency, the client it hires for if the posting names it | one structured-output call, no tools | the call built 2026-10-12; the card 2026-10-13; eval to come (§2) |
-| 2 | **Recruiters on LinkedIn** — one click, one model call that searches the web for recruiters and HR at the company; only people whose profile the search cited are shown | one structured-output call with web search, through OpenRouter | approved 2026-10-13 (§3) |
+| 2 | **Recruiters on LinkedIn** — one click, one model call that searches the web for recruiters and HR at the company; only people whose profile the search cited are shown | one structured-output call with web search, through OpenRouter | the search and its table built 2026-10-13; the block to come (§3) |
 | 3 | **An agent that picks its own searches** — only if step 2 shows misses on real clicks | a tool-using agent | not designed |
 
 Each step is traced (every call's request and response in the database) and
@@ -242,10 +242,11 @@ A **RecruitersBlock** under the identity on the Company card
     keeping only people whose profile slug was cited, each URL rewritten in
     its canonical form.
 - `jobmatch/pipeline.py`: `target_of(employer, identity | None)` beside
-  `poster_of`; `find_recruiters(vacancy_id, model)` returns the employer's
-  newest search free when it has the same fingerprint and is younger than
-  `RECRUITERS_FRESH` (30 days, in the pipeline, not config: recruiters change
-  jobs), else asks and saves.
+  `poster_of`; `find_recruiters(vacancy_id, model)` returns the newest search
+  for this employer and this request's fingerprint, free, when it is younger
+  than `RECRUITERS_FRESH` (30 days, in the pipeline, not config: recruiters
+  change jobs), else asks and saves. `stored_recruiters(vacancy_id, model)`
+  reads the same row without asking, for the card.
 - `people_model` in `config.toml`: `google/gemini-2.5-flash-lite:online`;
   Perplexity's sonar is the alternative, by config.
 - API: `POST /api/vacancies/{id}/company/recruiters` (409 / 404 / 503 / 502 as
@@ -258,7 +259,13 @@ A **RecruitersBlock** under the identity on the Company card
 `id`, `employer_id` (FK), `inputs_fingerprint` (not unique: the same request
 is asked again once its answer is stale), `answer` (JSONB), `llm_call_id`
 (FK), `created_at`; indexed on `(employer_id, created_at)`. Plain inserts; the
-newest row is shown.
+row shown is the newest for the employer with the request's fingerprint.
+
+The user's decision, 2026-10-14: never pay twice for the same request, even
+across postings of one company. A first build reused only the employer's
+newest row, so a posting with an identity and one without (two requests)
+paid in turn on every switch; the cache now looks the request up by its
+fingerprint within the employer.
 
 ### Unverified until the first clicks
 
@@ -274,6 +281,7 @@ No committed eval file: it would hold recruiters' names.
 2. **The question and the citation check** (built 2026-10-13, nothing calls
    it yet): the recruiters section of `jobmatch/research.py` and its checks,
    with offline tests.
-3. **The search, kept**: the table, the pipeline function, `people_model` in
-   config.
+3. **The search, kept** (built 2026-10-13): the table, the pipeline function,
+   `people_model` in config, and `jobmatch recruiters --vacancy N` for the
+   first real search from the terminal.
 4. **The block**: the route, the schema, the UI.

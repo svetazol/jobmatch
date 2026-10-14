@@ -65,6 +65,7 @@ uv run jobmatch run [--only bg] [--no-match] [--limit N]
 uv run jobmatch discover | fetch --pending | match [--dry-run] | cv-hash
 uv run jobmatch trace [ID] [--kind K] [--last N]  # the LLM ledger; free, read-only
 uv run jobmatch identify --vacancy N          # who is behind a posting; pays ~$0.0002
+uv run jobmatch recruiters --vacancy N        # who recruits there; pays ~$0.02 unless fresh
 uv run python -m jobmatch.sources.hh russia   # what a country expands to
 
 uv run uvicorn jobmatch.api.app:app --reload  # API on :8000
@@ -72,8 +73,8 @@ cd frontend && npm run dev                    # UI on :5173, proxies /api
 cd frontend && npm run typecheck
 ```
 
-**`jobmatch match`, `jobmatch run` without `--no-match`, and `jobmatch
-identify` spend real money.** Don't run them unless asked. Use `match --dry-run --limit N` to preview (it
+**`jobmatch match`, `jobmatch run` without `--no-match`, `jobmatch identify`
+and `jobmatch recruiters` spend real money.** Don't run them unless asked. Use `match --dry-run --limit N` to preview (it
 still pays, but writes nothing). `discover` and `fetch` are free but hit
 hh.ru, so keep them small (`--limit`).
 

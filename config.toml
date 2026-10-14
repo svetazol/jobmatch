@@ -10,6 +10,12 @@ cv_path = "data/cv2.md"   # the CV the next match run uses
 # (docs/company-research.md, build step 3).
 research_model = "google/gemini-2.5-flash-lite"
 
+# Who recruits for a company (`jobmatch recruiters`), pinned the same way. The
+# `:online` suffix turns on OpenRouter's web search for the call; unverified
+# until the first real clicks (docs/company-research.md §3). Perplexity's
+# sonar is the alternative, and switching is this one line.
+people_model = "google/gemini-2.5-flash-lite:online"
+
 # What the market view reports on: the CV *already* matched, not cv_path.
 # cv2, the same as cv_path; they diverge only while a new CV is being matched.
 # 2026-10-02: cv2 holds all 2 720 current matches. `jobmatch cv-hash`.
