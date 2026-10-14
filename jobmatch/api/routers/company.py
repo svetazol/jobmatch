@@ -56,7 +56,7 @@ async def look_up_company(vacancy_id: int) -> Company:
 
 @router.post("/{vacancy_id}/company/identity", response_model=CompanyIdentity)
 async def identify_company(vacancy_id: int) -> CompanyIdentity:
-    """Ask `research_model` who is behind the posting; free when this exact
+    """Ask the `employer` model who is behind the posting; free when this exact
     request was answered before (`company_research.identify_employer`).
 
     No `SessionDep`, as above: no pooled connection waits on the model. 409
@@ -69,7 +69,7 @@ async def identify_company(vacancy_id: int) -> CompanyIdentity:
         llm.api_key("to identify employers")
     except ValueError as e:
         raise HTTPException(503, str(e)) from None
-    model = load_settings(DEFAULT_PATH).research_model
+    model = load_settings(DEFAULT_PATH).model_for("employer")
     try:
         row = await company_research.identify_employer(vacancy_id, model)
     except company_research.NotLookedUp:
@@ -85,7 +85,7 @@ async def identify_company(vacancy_id: int) -> CompanyIdentity:
 
 @router.post("/{vacancy_id}/company/recruiters", response_model=CompanyRecruiters)
 async def search_recruiters(vacancy_id: int, refresh: bool = False) -> CompanyRecruiters:
-    """Ask `people_model` to search the web for who recruits at the company;
+    """Ask the `recruiters` model to search the web for who recruits at the company;
     free when the same request was answered within `company_research.RECRUITERS_FRESH`,
     unless `?refresh=true`, which always pays.
 
@@ -98,7 +98,7 @@ async def search_recruiters(vacancy_id: int, refresh: bool = False) -> CompanyRe
         llm.api_key("to search for recruiters")
     except ValueError as e:     # 503 rather than 502, as above
         raise HTTPException(503, str(e)) from None
-    model = load_settings(DEFAULT_PATH).people_model
+    model = load_settings(DEFAULT_PATH).model_for("recruiters")
     try:
         row = await company_research.find_recruiters(vacancy_id, model, refresh=refresh)
     except company_research.NotLookedUp:
@@ -120,7 +120,7 @@ async def _stored_recruiters(vacancy_id: int) -> CompanyRecruiters | None:
     The section is optional on a free read, so no failure here fails the card.
     """
     try:
-        model = load_settings(DEFAULT_PATH).people_model
+        model = load_settings(DEFAULT_PATH).model_for("recruiters")
         row = await company_research.stored_recruiters(vacancy_id, model)
     except (company_research.NotLookedUp, company_research.EmployerUnknown):
         return None

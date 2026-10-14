@@ -446,8 +446,9 @@ def cv_file(monkeypatch, tmp_path):
 
 
 async def test_cover_note_returns_what_claude_wrote(client, rows, cv_file, monkeypatch):
-    async def fake_write(vacancy, match, cv):
+    async def fake_write(vacancy, match, cv, model):
         assert match is not None and cv
+        assert model == "claude-sonnet-5-5"     # read from [models], not a constant
         return "I fit because."
     monkeypatch.setattr(cover_note, "write", fake_write)
     response = await client.post(f"/api/vacancies/{rows[0]}/cover-note")
@@ -465,7 +466,7 @@ async def test_cover_note_route_returns_the_text_and_records_the_call(client, ro
 
 
 async def test_cover_note_passes_claudes_failure_through(client, rows, cv_file, monkeypatch):
-    async def failing_write(vacancy, match, cv):
+    async def failing_write(vacancy, match, cv, model):
         raise claude_cli.ClaudeError("`claude` failed: not logged in")
     monkeypatch.setattr(cover_note, "write", failing_write)
     response = await client.post(f"/api/vacancies/{rows[0]}/cover-note")
@@ -478,7 +479,7 @@ async def test_cover_note_is_given_the_sanitised_cv(client, rows, cv_file, monke
     through the same `load_cv`: no contact rows, no internal notes."""
     given = []
 
-    async def fake_write(vacancy, match, cv):
+    async def fake_write(vacancy, match, cv, model):
         given.append(cv)
         return "I fit because."
     monkeypatch.setattr(cover_note, "write", fake_write)

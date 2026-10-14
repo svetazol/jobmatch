@@ -188,7 +188,7 @@ The paid eval run is a CLI command, never pytest. API tests with
    pipeline and repository functions, `jobmatch identify --vacancy N`.
 3. **The eval**: evals.py, `jobmatch eval employers`, the labels pre-filled
    for the user to correct; then gemini-2.5-flash-lite against
-   mistral-small-2603, and `research_model` set from the scores.
+   mistral-small-2603, and `[models] employer` set from the scores.
 4. **The card** (built 2026-10-13): the route, the schema, the UI. Built
    before the eval, by the user's choice, to see the answer on screen first;
    the eval (step 3) is still to come.
@@ -254,7 +254,7 @@ A **RecruitersBlock** under the identity on the Company card
   config: recruiters change jobs), else asks and saves; `refresh` always asks
   and saves a new row. `stored_recruiters(vacancy_id, model)`
   reads the same row without asking, for the card.
-- `people_model` in `config.toml`: `google/gemini-2.5-flash-lite:online`;
+- `[models] recruiters` in `config.toml`: `google/gemini-2.5-flash-lite:online`;
   Perplexity's sonar is the alternative, by config.
 - API: `POST /api/vacancies/{id}/company/recruiters[?refresh=true]` (409 /
   404 / 503 / 502 as for the identity, and 422 when the company has neither a
@@ -312,7 +312,7 @@ No committed eval file: it would hold recruiters' names.
    it yet): the recruiters question (now `jobmatch/research/recruiters.py`) and its checks,
    with offline tests.
 3. **The search, kept** (built 2026-10-13): the table, the `company_research` function,
-   `people_model` in config, and `jobmatch recruiters --vacancy N` for the
+   the `recruiters` model in config, and `jobmatch recruiters --vacancy N` for the
    first real search from the terminal.
 4. **The block** (built 2026-10-14): the route, `CompanyRecruiters` on `GET`
    and `POST /company`, and `RecruitersBlock.vue` on the Company card.

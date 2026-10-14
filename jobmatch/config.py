@@ -18,6 +18,9 @@ from .sources import SOURCES, Crawl, Rate
 
 DEFAULT_PATH = Path("config.toml")
 
+# The kinds of model call, as `llm_calls.kind` names them; a typo in [models] is refused at load.
+MODEL_KINDS = ("match", "employer", "recruiters", "cover_note")
+
 # Keys allowed inside a [sources."<name>"] table.
 _SOURCE_KEYS = {"search", "sweeps"}
 
@@ -44,17 +47,22 @@ class Settings:
     fetch_delay: float | None = None
     fetch_workers: int | None = None
     crawl: Crawl | None = None
-    model: str = "jev-1.13"          # pinned; part of the match fingerprint
-    # pinned like `model`; part of the employer-identity fingerprint
-    research_model: str = "google/gemini-2.5-flash-lite"
-    # pinned too; part of the recruiter-search fingerprint. `:online` is
-    # OpenRouter's web search, which the question depends on.
-    people_model: str = "google/gemini-2.5-flash-lite:online"
+    # kind -> pinned model id; each is part of its call's fingerprint, so no defaults here to drift from config
+    models: Mapping[str, str] = dataclasses.field(default_factory=dict)
     cv_path: Path = Path("data/cv.md")
     # A hash, not a path: answers are stored under the hash of the CV that
     # earned them, which survives the file being edited or renamed. Empty means
     # every CV at once -- honest only while there has been one.
     stats_cv_hash: str = ""
+
+    def model_for(self, kind: str) -> str:
+        """The model for one kind of call; a config without it fails here rather than asking a default."""
+        try:
+            return self.models[kind]
+        except KeyError:
+            raise ValueError(
+                f"no model for {kind!r} in [models]; configured: {', '.join(sorted(self.models)) or '(none)'}"
+            ) from None
 
     def rate_for(self, source_rate: Rate) -> Rate:
         """The source's measured rate, with any config override applied."""
@@ -117,12 +125,31 @@ def load_settings(path: Path | str = DEFAULT_PATH) -> Settings:
             max_pages=int(crawl.get("max_pages", 40)),
             delay=float(crawl.get("delay", 2.5)),
         ),
-        model=str(raw.get("model", "jev-1.13")),
-        research_model=str(raw.get("research_model", "google/gemini-2.5-flash-lite")),
-        people_model=str(raw.get("people_model", "google/gemini-2.5-flash-lite:online")),
+        models=_models(path, raw.get("models", {})),
         cv_path=Path(raw.get("cv_path", "data/cv.md")),
         stats_cv_hash=str(raw.get("stats_cv_hash", "")).strip(),
     )
+
+
+def _models(path: Path, table: Any) -> dict[str, str]:
+    """``[models]`` -> kind -> id, refusing what would make a fingerprint drift or a search go blind."""
+    if not isinstance(table, dict):
+        raise ValueError(f"{path}: [models] must be a table of kind = \"model id\"")
+    if unknown := sorted(set(table) - set(MODEL_KINDS)):
+        raise ValueError(
+            f"{path}: [models] has unknown kind(s) {', '.join(unknown)}; known: {', '.join(MODEL_KINDS)}"
+        )
+    models = {kind: str(model) for kind, model in table.items()}
+    for kind, model in models.items():
+        # an alias ("sonnet", "jev-latest") resolves to another model over time, silently re-pricing every fingerprint
+        if "latest" in model or not any(c.isdigit() for c in model):
+            raise ValueError(f"{path}: [models] {kind} = {model!r} is an alias; pin a versioned id")
+    if "recruiters" in models and not models["recruiters"].endswith(":online"):
+        raise ValueError(
+            f"{path}: [models] recruiters = {models['recruiters']!r} must end in :online, "
+            "OpenRouter's web search, which the question depends on"
+        )
+    return models
 
 
 def _sources(path: Path, table: Any) -> tuple[SourceConfig, ...]:

@@ -109,7 +109,7 @@ data/          CVs (gitignored, no committed copy)
   Don't add a version constant.
 - **The CV is sanitised before it is hashed or sent**, and loaded once per run.
   The CV the next run uses is `cv_path` in `config.toml`.
-- **The model is pinned** (`jev-1.13`), never `jev-latest`: it is part of the
+- **Every model is pinned** (`[models]` in `config.toml`, e.g. `jev-1.13`), never `jev-latest`: it is part of the
   fingerprint.
 - **Every guard is a condition on the rows.** There is no queue table, run
   record or cursor. `fetched_at IS NULL` *is* the fetch queue.

@@ -55,6 +55,13 @@ GONE = {
     "matching/jev.py": "llm/jev.py and matching/match.py",
     "`jev.py`": "`llm/jev.py` and `matching/match.py`",
     "fingerprint, cv_hash, content_hash, job": "match_vacancy no longer takes a fingerprint",
+    # one [models] table keyed by llm_calls kind, 2026-10-14; `model = "` is not
+    # bare `model`, which every doc uses as a word
+    "research_model": "[models] employer, via Settings.model_for",
+    "people_model": "[models] recruiters, via Settings.model_for",
+    'model = "jev-1.13"': '[models] match = "jev-1.13"',
+    "settings.model)": 'settings.model_for("match")',
+    "cover_note.MODEL": "[models] cover_note, passed to cover_note.write",
     # the cover note's subprocess, moved 2026-10-14 into the one module that runs `claude -p`
     "CoverNoteError": "llm.claude_cli.ClaudeError",
     "cover_note.TIMEOUT_S": "llm.claude_cli.TIMEOUT_S",

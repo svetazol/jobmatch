@@ -6,7 +6,7 @@ so a change that breaks it should break the suite rather than the next crawl.
 """
 import pytest
 
-from jobmatch.config import DEFAULT_PATH, load_settings
+from jobmatch.config import DEFAULT_PATH, MODEL_KINDS, load_settings
 
 MINIMAL = """
 [sources."hh.ru".search]
@@ -56,11 +56,11 @@ def test_sweeps_become_the_crawl_plan(tmp_path):
 def test_only_narrows_to_one_sweep_and_keeps_everything_else(tmp_path):
     """The bug that retired config.bg.toml: a second file for one different
     sweep let `fetch_workers` drift to a value the first file called unsafe."""
-    body = 'model = "jev-9.9"\n' + MINIMAL + 'ru = ["russia"]\n'
+    body = '[models]\nmatch = "jev-9.9"\n' + MINIMAL + 'ru = ["russia"]\n'
     settings = load_settings(write(tmp_path, body))
     narrowed = settings.only("all")
     assert [c for _, _, c in narrowed.crawls()] == [("georgia",)]
-    assert narrowed.model == settings.model == "jev-9.9"
+    assert narrowed.model_for("match") == settings.model_for("match") == "jev-9.9"
     assert narrowed.sources[0].search == settings.sources[0].search
 
 
@@ -80,7 +80,7 @@ def test_a_source_with_no_sweeps_is_refused(tmp_path):
 
 def test_a_config_with_no_sources_is_refused(tmp_path):
     with pytest.raises(ValueError, match="enables no sources"):
-        load_settings(write(tmp_path, "model = 'jev-1.13'\n"))
+        load_settings(write(tmp_path, "[models]\nmatch = 'jev-1.13'\n"))
 
 
 def test_a_misspelled_setting_is_named_rather_than_ignored(tmp_path):
@@ -88,6 +88,29 @@ def test_a_misspelled_setting_is_named_rather_than_ignored(tmp_path):
     times slower than the rate the comments justify."""
     with pytest.raises(ValueError, match="unknown setting.*fetch_worker"):
         load_settings(write(tmp_path, "fetch_worker = 6\n" + MINIMAL))
+
+
+def test_a_kind_with_no_model_fails_when_asked_for(tmp_path):
+    settings = load_settings(write(tmp_path, '[models]\nmatch = "jev-1.13"\n' + MINIMAL))
+    with pytest.raises(ValueError, match="no model for 'employer'.*configured: match"):
+        settings.model_for("employer")
+
+
+def test_a_misspelled_model_kind_is_caught_at_load(tmp_path):
+    with pytest.raises(ValueError, match="unknown kind.*employers"):
+        load_settings(write(tmp_path, '[models]\nemployers = "google/gemini-2.5-flash-lite"\n' + MINIMAL))
+
+
+@pytest.mark.parametrize("alias", ["sonnet", "jev-latest", "google/gemini-flash-latest"])
+def test_a_model_alias_is_refused(tmp_path, alias):
+    """An alias moves under the fingerprint: the same key, another model's answer."""
+    with pytest.raises(ValueError, match="is an alias"):
+        load_settings(write(tmp_path, f'[models]\ncover_note = "{alias}"\n' + MINIMAL))
+
+
+def test_a_recruiters_model_without_web_search_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="must end in :online"):
+        load_settings(write(tmp_path, '[models]\nrecruiters = "google/gemini-2.5-flash-lite"\n' + MINIMAL))
 
 
 def test_an_unknown_source_is_caught_at_load(tmp_path):
@@ -124,9 +147,18 @@ def test_the_checked_in_config_loads_and_holds_only_choices():
     settings = load_settings(DEFAULT_PATH)
     assert {s for _, s, _ in settings.crawls()} == {"bg", "ru"}
     assert (settings.crawl, settings.fetch_workers, settings.fetch_delay) == (None, None, None)
-    assert settings.model and settings.cv_path and settings.stats_cv_hash
-    assert settings.research_model == "google/gemini-2.5-flash-lite"
-    assert settings.people_model == "google/gemini-2.5-flash-lite:online"
+    assert settings.cv_path and settings.stats_cv_hash
+
+
+def test_the_checked_in_models_are_the_ones_every_stored_fingerprint_was_made_with():
+    """A changed string is a new request for every row: each one would be paid for again."""
+    settings = load_settings(DEFAULT_PATH)
+    assert {kind: settings.model_for(kind) for kind in MODEL_KINDS} == {
+        "match": "jev-1.13",
+        "employer": "google/gemini-2.5-flash-lite",
+        "recruiters": "google/gemini-2.5-flash-lite:online",
+        "cover_note": "claude-sonnet-5-5",
+    }
 
 
 def test_the_checked_in_config_expands_to_the_queries_it_used_to_list():

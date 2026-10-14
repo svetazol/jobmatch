@@ -384,7 +384,7 @@ async def _match(
         if not vacancy.description:
             return
         job = matching.job_text(vacancy)
-        fingerprint = matching.inputs_fingerprint(cv, job, matching.QUESTIONS, settings.model)
+        fingerprint = matching.inputs_fingerprint(cv, job, matching.QUESTIONS, settings.model_for("match"))
         if await repository.make_current(session, vacancy_id, fingerprint):
             report.already_matched += 1   # free, whether found current or revived
             return
@@ -396,7 +396,7 @@ async def _match(
             client,
             cv,
             vacancy,
-            settings.model,
+            settings.model_for("match"),
             cv_hash=matching.sha256(cv),
             content_hash=matching.content_hash(job),
             job=job,

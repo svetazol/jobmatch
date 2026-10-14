@@ -48,7 +48,7 @@ def settings(tmp_path):
             SourceConfig(name=SOURCE_NAME, search={}, sweeps={"all": ("georgia",)}),
         ),
         fetch_delay=0.0,
-        model="test-model",
+        models={"match": "test-model"},
         cv_path=cv,
     )
 

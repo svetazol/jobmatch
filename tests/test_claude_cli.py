@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy import delete, select
 
 from jobmatch import cover_note, llm
+from jobmatch.config import DEFAULT_PATH, load_settings
 from jobmatch.db import SessionLocal
 from jobmatch.llm import claude_cli
 from jobmatch.models import LlmCall, Vacancy
@@ -102,12 +103,13 @@ async def test_no_claude_on_path_records_nothing(vacancy_id, monkeypatch):
     assert await _rows(vacancy_id) == []
 
 
-async def test_the_cover_note_is_asked_under_its_kind_and_pinned_model(vacancy_id, fake_claude):
+async def test_the_cover_note_is_asked_under_its_kind_and_configured_model(vacancy_id, fake_claude):
     fake_claude(ANSWER)
     async with SessionLocal() as session:
         vacancy = await session.get_one(Vacancy, vacancy_id)
-    assert await cover_note.write(vacancy, None, "cv") == "Dear team, I fit."
+    model = load_settings(DEFAULT_PATH).model_for("cover_note")
+    assert await cover_note.write(vacancy, None, "cv", model) == "Dear team, I fit."
 
     (row,) = await _rows(vacancy_id)
-    assert (row.kind, row.model_requested) == ("cover_note", cover_note.MODEL)
+    assert (row.kind, row.model_requested) == ("cover_note", "claude-sonnet-5-5")
     assert row.request["prompt"] == cover_note.build_prompt(vacancy, None, "cv")

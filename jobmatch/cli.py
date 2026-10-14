@@ -125,14 +125,14 @@ async def _dry_run(settings: Settings, country: str | None, limit: int | None) -
         }
 
     cv = matching.load_cv(settings.cv_path)
-    print(f"dry run — {settings.cv_path} ({len(cv)} chars), model {settings.model}, "
+    print(f"dry run — {settings.cv_path} ({len(cv)} chars), model {settings.model_for('match')}, "
           f"{len(vacancies)} vacancies. Nothing will be written.\n")
 
     total = Decimal(0)
     async with matching.open_client() as client:
         for vacancy in vacancies:          # one at a time: the output is read in order
             preview = await matching.preview_vacancy(
-                client, cv, vacancy, settings.model, job=matching.job_text(vacancy)
+                client, cv, vacancy, settings.model_for("match"), job=matching.job_text(vacancy)
             )
             total += preview.cost_usd or Decimal(0)
             was = stored.get(vacancy.id)
@@ -185,7 +185,7 @@ async def cmd_fetch_pending(config_path: str, limit: int | None) -> int:
 
 
 async def cmd_identify(config_path: str, vacancy_id: int) -> int:
-    """Who is behind one posting, with `research_model`. Pays unless the same
+    """Who is behind one posting, with the `employer` model. Pays unless the same
     request was answered before.
 
     A company never looked up is looked up first: one free hh page, the same
@@ -199,7 +199,7 @@ async def cmd_identify(config_path: str, vacancy_id: int) -> int:
             print("looking the company up on hh first")
             await company_research.lookup_employer(vacancy_id)
         started = dt.datetime.now(dt.UTC)
-        row = await company_research.identify_employer(vacancy_id, settings.research_model)
+        row = await company_research.identify_employer(vacancy_id, settings.model_for("employer"))
     except (company_research.EmployerUnknown, company_research.NotLookedUp) as e:
         print(f"cannot identify the employer of vacancy {vacancy_id}: {e}")
         return 1
@@ -218,7 +218,7 @@ async def cmd_identify(config_path: str, vacancy_id: int) -> int:
 
 
 async def cmd_recruiters(config_path: str, vacancy_id: int, *, refresh: bool = False) -> int:
-    """Who recruits for the company behind one posting, with `people_model`.
+    """Who recruits for the company behind one posting, with the `recruiters` model.
     Pays unless the company has a fresh search with the same request
     (`company_research.RECRUITERS_FRESH`); with `refresh`, always pays.
 
@@ -233,7 +233,9 @@ async def cmd_recruiters(config_path: str, vacancy_id: int, *, refresh: bool = F
             print("looking the company up on hh first")
             await company_research.lookup_employer(vacancy_id)
         started = dt.datetime.now(dt.UTC)
-        row = await company_research.find_recruiters(vacancy_id, settings.people_model, refresh=refresh)
+        row = await company_research.find_recruiters(
+            vacancy_id, settings.model_for("recruiters"), refresh=refresh
+        )
     except (company_research.EmployerUnknown, company_research.NotLookedUp) as e:
         print(f"cannot search for the recruiters of vacancy {vacancy_id}: {e}")
         return 1

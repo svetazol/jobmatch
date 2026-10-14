@@ -368,7 +368,7 @@ covers the whole request:
 | `sanitize.py` changed | The hash is over the **sanitized** output, so a new redaction rule invalidates. Hashing the file on disk would miss this. |
 | A question added, removed or reworded | `questions` are in the hash. No hand-maintained `PROMPT_VERSION` to forget to bump. |
 | Model pinned differently | `model` is in the hash. |
-| Model upgraded | Caught, **because the model is pinned**. A bump is a config edit, which changes the fingerprint and re-matches cleanly. This is exactly why `jev-latest` is not used: with it, a silent server-side roll would be invisible — you cannot know the resolved model before paying for the call. |
+| Model upgraded | Caught, **because the model is pinned**. A bump is a `[models]` edit, which changes the fingerprint and re-matches cleanly. This is exactly why `jev-latest` is not used: with it, a silent server-side roll would be invisible — you cannot know the resolved model before paying for the call. |
 
 The three component hashes are not used for lookup. They cost 3 × 64 bytes and
 let you answer "which vacancies are stale only because I edited my CV?" without
@@ -553,9 +553,11 @@ values are used. The rule: a setting a config *must* restate is a setting a
 config can contradict — see `docs/decisions.md`.
 
 ```toml
-model = "jev-1.13"       # pinned, never an alias — see §4
 cv_path = "data/cv2.md"  # what the *next* match run uses
 stats_cv_hash = "9e5b…"  # what has *already* been matched — a different thing
+
+[models]                 # one per llm_calls kind; pinned, never an alias — see §4
+match = "jev-1.13"       # employer, recruiters and cover_note beside it
 
 [sources."hh.ru".search]           # opaque: passed to the source verbatim
 text = "python"
@@ -566,6 +568,11 @@ search_field = ["name", "description"]
 bg = ["belarus", "georgia"]
 ru = ["russia"]
 ```
+
+`[models]` is keyed by `llm_calls.kind`, and every caller asks
+`Settings.model_for(kind)`, which fails naming the kinds configured. The load
+refuses an unknown kind, an alias (no version digit, or `latest`), and a
+`recruiters` model without `:online`, which is what turns web search on.
 
 A country name is the whole "where". `areas.coverage()` expands it into the
 queries needed to get under hh's ceiling — one for Belarus or Georgia, 92 for
@@ -663,8 +670,8 @@ response model (the cover note adds one `claude -p` call).
 | `POST /api/vacancies/{id}/cover-note` | a draft cover letter from `claude -p`, in the posting's language; the note is never stored, the call is in `llm_calls` (`jobmatch/cover_note.py`) |
 | `GET /api/vacancies/{id}/company` | the looked-up employer, or `null`, with the newest stored `identity` for this vacancy and the `recruiters` search its request would reuse, however old (each `null` when there is none); no request to the source or a model |
 | `POST /api/vacancies/{id}/company` | look the employer up (again): 404 with the reason when there is none to find, 502 when the source fails (`jobmatch/api/routers/company.py`); `identity` and `recruiters` are whatever is already stored |
-| `POST /api/vacancies/{id}/company/identity` | ask `research_model` who is behind the posting (`company_research.identify_employer`), free when the same request was answered before: 409 before the lookup, 503 without `OPENROUTER_API_KEY`, 502 when the call fails |
-| `POST /api/vacancies/{id}/company/recruiters[?refresh=true]` | ask `people_model` to search the web for who recruits at the company (`company_research.find_recruiters`), free when the same request was answered within `company_research.RECRUITERS_FRESH` unless `refresh=true`, which always pays: 409 before the lookup, 404 for an unknown vacancy, 422 when the company has neither a website nor a name, 503 without `OPENROUTER_API_KEY`, 502 when the call fails |
+| `POST /api/vacancies/{id}/company/identity` | ask the `employer` model (`[models]`) who is behind the posting (`company_research.identify_employer`), free when the same request was answered before: 409 before the lookup, 503 without `OPENROUTER_API_KEY`, 502 when the call fails |
+| `POST /api/vacancies/{id}/company/recruiters[?refresh=true]` | ask the `recruiters` model (`[models]`) to search the web for who recruits at the company (`company_research.find_recruiters`), free when the same request was answered within `company_research.RECRUITERS_FRESH` unless `refresh=true`, which always pays: 409 before the lookup, 404 for an unknown vacancy, 422 when the company has neither a website nor a name, 503 without `OPENROUTER_API_KEY`, 502 when the call fails |
 
 **Response models are Pydantic, and they are not a second schema.** This section's
 rejection of "pydantic domain models mirroring the ORM models" stands: these

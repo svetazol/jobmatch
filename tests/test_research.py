@@ -644,7 +644,7 @@ async def test_the_identity_route_returns_the_answer_and_what_it_cost(
     assert {k: body[k] for k in ANSWER} == ANSWER
     assert body["homepage_ok"] is True and body["careers_ok"] is False
     # the fake records no model_resolved, so the model asked for is shown
-    assert body["model"] == load_settings().research_model
+    assert body["model"] == load_settings().model_for("employer")
     assert body["cost_usd"] == 0.0002
     assert body["llm_call_id"] == (await _only_call(vacancy_id)).id
     assert body["created_at"]

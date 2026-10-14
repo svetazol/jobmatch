@@ -188,12 +188,13 @@ async def write_cover_note(vacancy_id: int, session: SessionDep) -> CoverNote:
         raise HTTPException(404, f"no vacancy {vacancy_id}")
     vacancy, match = found
     try:
+        settings = load_settings(DEFAULT_PATH)
         # Sanitised, as for Jev: the CV leaves the machine here too.
-        cv = matching.load_cv(load_settings(DEFAULT_PATH).cv_path)
+        cv = matching.load_cv(settings.cv_path)
     except ValueError as e:     # an empty or unfilled CV: nothing to write from
         raise HTTPException(422, str(e)) from None
     try:
-        text = await cover_note.write(vacancy, match, cv)
+        text = await cover_note.write(vacancy, match, cv, settings.model_for("cover_note"))
     except claude_cli.ClaudeError as e:
         raise HTTPException(502, str(e)) from None
     return CoverNote(text=text, language=cover_note.language_of(vacancy))

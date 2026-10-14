@@ -17,8 +17,6 @@ from .llm import claude_cli
 from .matching.questions import BEST_ANGLE, TOP_GAP
 from .models import MatchResult, Vacancy
 
-MODEL = "claude-sonnet-5-5"   # pinned, not the "sonnet" alias: it is in the fingerprint
-
 # Below this the matcher's gap is a near-tie (see VacancyDetailView's "vague"
 # rule); naming it would make the note answer an objection nobody raised.
 _GAP_CONFIDENT = 0.5
@@ -89,8 +87,8 @@ def build_prompt(vacancy: Vacancy, match: MatchResult | None, cv: str) -> str:
     return "\n\n".join(parts)
 
 
-async def write(vacancy: Vacancy, match: MatchResult | None, cv: str) -> str:
+async def write(vacancy: Vacancy, match: MatchResult | None, cv: str, model: str) -> str:
     """The note, from one recorded `claude -p` call; a `claude_cli.ClaudeError` when it fails."""
     return await claude_cli.ask(
-        MODEL, _SYSTEM, build_prompt(vacancy, match, cv), kind="cover_note", vacancy_id=vacancy.id
+        model, _SYSTEM, build_prompt(vacancy, match, cv), kind="cover_note", vacancy_id=vacancy.id
     )
