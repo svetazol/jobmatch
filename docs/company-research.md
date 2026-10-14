@@ -67,62 +67,17 @@ approved by the user with the architect's changes folded in.
 
 ### Where the code lives
 
-- `jobmatch/research/employer.py` (built as the identify module, renamed
-  2026-10-13, split 2026-10-14) asks the question through
-  `jobmatch/llm/openrouter.py`, the only module that knows the OpenAI SDK, as
-  `jobmatch/llm/jev.py` is for Jev. Across the two, top to bottom:
-  - `Poster(name, site_url, about, posting)` — frozen dataclass, the input.
-  - `Identity` — a frozen pydantic model, `extra="forbid"`, every field
-    required: `employer`, `homepage`, `careers_page`, `is_agency`, `client`
-    (each `X | None`, None = unknown) and `notes`. The one shape of the
-    answer: it produces the JSON schema, validates the response, and its
-    `model_dump()` is what is stored.
-  - `EMPLOYER_SYSTEM` prompt: facts given plus own knowledge only, null rather than a
-    guess; the hh link may be a careers site; an agency says so ("наш
-    клиент", "кадровое агентство"), and the client is named only if the
-    posting names it.
-  - `employer_prompt(poster)`, `employer_request(poster, model)` — the whole
-    request; `fingerprint(request)` is its sha256: everything sent — prompts,
-    schema, model and OpenRouter's fields.
-  - `async def ask_employer(poster, model, *, vacancy_id, http_client=None) ->
-    tuple[Identity, int]` — `openrouter.ask`: one `chat.completions.create`
-    with `response_format` `json_schema` (`strict`), `usage.include` and
-    `provider.require_parameters`; validates `message.content` itself
-    (`create`, not `parse`, so the raw body is kept when validation fails);
-    records the call through `llm.recorded`, success or failure,
-    shielded from cancellation. Returns the identity and the `llm_calls` id.
-  - `_Deadline` — the SDK's HTTP client with a deadline on each whole request
-    (`MODEL_DEADLINE = 30`, one retry): OpenRouter's keepalive whitespace
-    defeats per-read timeouts (`docs/decisions.md`).
-  - `async def reachable(url) -> bool` — GET, 10 s whole deadline, ≤3
-    redirects, http(s) and public addresses only; true below status 400. No
-    "page mentions the name" check: a Cyrillic name against a Latin site
-    would fail real homepages.
-- `jobmatch/company_research.py` — `poster_of(employer, vacancy)` (name and link from
-  the employer row, `about` from its city and industries, `posting` =
-  `matching.job_text(vacancy)` as is — Jev's questions and fingerprint are not
-  touched) and `identify_employer(vacancy_id, model)`: load the vacancy and
-  its employer (none → `NotLookedUp`, the API's 409); fingerprint; a stored
-  identity with that fingerprint → return it; else `research.ask_employer`, then
-  `reachable` on the homepage and careers page and the save, shielded from
-  cancellation so a paid answer is kept. No session held across a network
-  call.
-- `jobmatch/repository.py` — `record_call(**values)`, moved out of
-  `jev._record_call` so both callers share one ledger writer (own session, so
-  the row survives the caller's rollback); `identity_by_fingerprint`,
-  `latest_identity(vacancy_id)`, `save_identity`.
-- **evals.py** (new, `jobmatch/`) — `async def run(path, model) -> Report` at
-  the top: load the cases, read each posting through the repository, call
-  `research.ask_employer` one case at a time, score. Below it, in reading order:
-  `load_cases`, `score` (per field: right / unknown / wrong), the normalisers
-  (names without quotes and ООО/АО/ПАО, casefolded; URLs by host without
-  `www.`). It does **not** use the cache and writes no identity rows — each
-  call still gets its `llm_calls` row, so the trace works. `cmd_eval` in
-  `jobmatch/cli.py` only prints the report.
-- API: `POST /api/vacancies/{id}/company/identity` (409 "look up the company
-  first", 502 with the error, 503 without `OPENROUTER_API_KEY`); `GET
-  /company` adds `identity`. Card: one button, two requests in sequence, the
-  identity part with its own spinner and error; links only for http(s).
+- `jobmatch/research/employer.py`: the question (`Poster` in, `Identity` out,
+  `EMPLOYER_SYSTEM`) and `reachable`, the check on a URL it names (never its
+  content: a Cyrillic name would fail a real Latin homepage).
+- `jobmatch/llm/openrouter.py`: the call, its deadline and its ledger row.
+- `jobmatch/company_research.py`: `poster_of` and `identify_employer`, the
+  cache check, the call and the save.
+- `jobmatch/repository.py`: `identity_by_fingerprint`, `latest_identity`,
+  `save_identity`.
+- `jobmatch/api/routers/company.py`: the route and its status codes.
+- **evals.py** (not built yet): scores `research.ask_employer` against
+  labelled cases, bypassing the cache.
 
 ### Data
 
@@ -230,36 +185,13 @@ A **RecruitersBlock** under the identity on the Company card
 
 ### Where the code lives
 
-- `jobmatch/research/recruiters.py`:
-  - `Target(name, homepage, city)` — the company to search for.
-    `recruiters_prompt` names it by its homepage's host, and by its name only
-    when there is no homepage (see "Query by website" below).
-  - `Person(name, role | None, linkedin_url, evidence)` and
-    `Recruiters(people, notes)` — pydantic, strict like `Identity`. Their
-    docstrings and `Field` descriptions are sent as part of the schema: prompt
-    text, written for the model and covered by the fingerprint, so notes for
-    people go in comments.
-  - `RECRUITERS_SYSTEM`, `recruiters_request(target, model)`, and
-    `ask_recruiters(target, model, *, vacancy_id) -> (Confirmed, call_id)`,
-    kind `"recruiters"`: `openrouter.ask`, then `keep_cited(answer, body)`.
-  - Checks: `linkedin_slug(url)`; `cited(body)` reads only
-    `choices[0].message.annotations[*].url_citation`; `keep_cited` is a pure
-    filter that never raises and returns `Confirmed(people, dropped, sources)`,
-    keeping only people whose profile slug was cited, each URL rewritten in
-    its canonical form.
-- `jobmatch/company_research.py`: `target_of(employer, identity | None)` beside
-  `poster_of`; `find_recruiters(vacancy_id, model, *, refresh=False)` returns
-  the newest search for this employer and this request's fingerprint, free,
-  when it is younger than `RECRUITERS_FRESH` (30 days, in `company_research`, not
-  config: recruiters change jobs), else asks and saves; `refresh` always asks
-  and saves a new row. `stored_recruiters(vacancy_id, model)`
-  reads the same row without asking, for the card.
-- `[models] recruiters` in `config.toml`: `google/gemini-2.5-flash-lite:online`;
-  Perplexity's sonar is the alternative, by config.
-- API: `POST /api/vacancies/{id}/company/recruiters[?refresh=true]` (409 /
-  404 / 503 / 502 as for the identity, and 422 when the company has neither a
-  website nor a name to search for: `company_research.NothingToSearchFor`); `GET /company` gains `recruiters`, shaped
-  `CompanyRecruiters(people, dropped, sources, created_at)` only.
+- `jobmatch/research/recruiters.py`: the question (`Target` in, `Recruiters`
+  out, `RECRUITERS_SYSTEM`) and `keep_cited`, which keeps only the people
+  whose profile the search cited.
+- `jobmatch/company_research.py`: `target_of`, `find_recruiters` (the
+  freshness rule, `RECRUITERS_FRESH`) and `stored_recruiters`, for the card.
+- `[models] recruiters` in `config.toml`.
+- `jobmatch/api/routers/company.py`: the route and its status codes.
 
 ### Data
 

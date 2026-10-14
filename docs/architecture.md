@@ -4,7 +4,7 @@ Why the code is shaped the way it is. The companion documents:
 
 - `docs/pipeline.md` — the three phases, and what is on disk after each
 - `docs/decisions.md` — what was considered and refused
-- `jobmatch/models.py` — the schema itself, with the reason for each column
+- `jobmatch/models.py` — the schema itself, with a one-line reason where a column needs one
 
 This file holds the reasoning that none of those can: the seams, the two
 idempotency rules, what the timestamps mean, and where the hard edges are.
@@ -16,17 +16,19 @@ Nothing here restates a value that lives in code. hh's measured limits are in
 
 ## 1. Layout
 
-Three leaf areas that know nothing about each other — `sources/` (the web),
-`matching/` (the LLM), `models.py`+`repository.py` (the DB) — and two modules,
+Leaf areas that know nothing about each other — `sources/` (the web), the
+model calls, and `models.py`+`repository.py` (the DB) — and two modules,
 `pipeline.py` (the run phases) and `company_research.py` (the on-click company
-operations), allowed to know all three. `cli.py` and later `api/` are both
-thin callers of that same core.
+operations), that put them together. `cli.py` and `api/` are both thin callers
+of that same core.
 
-`research/` is a second LLM leaf beside `matching/`, not a part of it:
-structured-output questions about a company, sent by `jobmatch/llm/openrouter.py`,
-the only module that imports the OpenAI SDK, as `jobmatch/llm/jev.py` alone calls
-Jev's. It asks who is behind a posting and who recruits there
-(`docs/company-research.md` §2, §3); `company_research` is its caller.
+The model calls are in two layers. `llm/` holds what every call shares — the
+key, `fingerprint`, `Usage` and `recorded()`, the one `llm_calls` writer — and
+one module per provider, each the only caller of its SDK or CLI:
+`jobmatch/llm/jev.py`, `jobmatch/llm/openrouter.py`, `jobmatch/llm/claude_cli.py`.
+The uses sit above them: `matching/` (the match), `research/` (who is behind a
+posting, who recruits there: `docs/company-research.md` §2, §3) and
+`jobmatch/cover_note.py`. §8 lists every call.
 
 No `src/` layout (buys import hygiene that matters for distributed libraries,
 not for one app) and no `core/` subpackage (a path segment, nothing more).
@@ -191,8 +193,8 @@ erDiagram
 One row per vacancy per source. Discovery and fetch are two phases, so a
 partially-filled row is a first-class, indexable state — not a second table.
 
-Columns, types and the reason for each: `jobmatch/models.py`, which is the
-schema's source of truth and carries that reasoning as comments.
+Columns and types: `jobmatch/models.py`, the schema's source of truth, with a
+one-line reason where a column needs one; the longer reasons are here.
 
 Triage is four nullable timestamps rather than booleans: same filter cost
 (`seen_at IS NULL`), "when" for free, one consistent style, and no left join on
@@ -205,7 +207,7 @@ without them every run re-fetches the same broken page forever — which is the
 One row per *paid* Jev call. Append-only; the only update is setting
 `superseded_at`.
 
-Columns and the reason for each: `jobmatch/models.py`.
+Columns: `jobmatch/models.py`.
 
 This table holds *conclusions*. Everything operational about the call that
 produced them — model, provider, tokens, cost, how long it took, whether it
@@ -222,7 +224,8 @@ it took, and what went wrong.
 `kind` says which caller paid, with no default so a new caller must name
 itself; the market view's spend sums `match` only. `request` and `response`
 are the trace — what was sent and the body as received, kept even when it
-failed to parse — read with `jobmatch trace ID`. Jev rows keep only an
+failed to parse — read with `jobmatch trace ID`. `duration_ms` is timed
+around the call by `llm.recorded`, for every provider alike. Jev rows keep only an
 error's body: its SDK exposes no raw request worth keeping, and its answer is
 already whole in `match_results.answers`. Every row goes through `repository.record_call`, in
 its own transaction.
@@ -231,7 +234,7 @@ its own transaction.
 this table, a run where a third of the calls 429'd leaves no evidence at all,
 and a call that cost money but returned an unparseable body is invisible.
 
-Columns and the reason for each: `jobmatch/models.py`.
+Columns: `jobmatch/models.py`.
 
 The questions this answers, each a one-liner:
 
@@ -299,9 +302,13 @@ and the two join on `(source, external_id)` with no FK: the crawl's three
 concurrent workers never touch an employer row, so there is nothing to race on,
 and nothing deletes rows for an FK to protect. A "look up company" click
 (`company_research.lookup_employer`) fetches the employer page and upserts the row; a
-second click refreshes it. Columns and the reason for each:
-`jobmatch/models.py`. The design, and what comes next on top of it:
-`docs/company-research.md`.
+second click refreshes it. Columns: `jobmatch/models.py`. The design, and
+what comes next on top of it: `docs/company-research.md`.
+
+- `vacancies.employer_external_id` is NULL for an anonymous posting, and for
+  one fetched before the column existed until its company is looked up.
+- `raw` keeps the page's source-specific text (hh: city, industries,
+  category); city and industries become `Poster.about`, city `Target.city`.
 
 ### 3.6 `employer_identities`
 
@@ -312,9 +319,15 @@ when the posting names it. Append-only, one row per distinct request;
 the newest for a vacancy is the one shown. `inputs_fingerprint` is unique and
 is the cache, by the rule in §4: the request holds the hh facts, the posting,
 the prompts, the schema and the model, so a repeat click with nothing changed
-is free. Per posting rather than on `employers`, because the posting is part
-of the request. Columns and the reason for each: `jobmatch/models.py`; the
-design: `docs/company-research.md` §2.
+is free. Columns: `jobmatch/models.py`; the design: `docs/company-research.md` §2.
+
+- Per posting, not a column on `employers`: the posting is part of the
+  request (it is what reveals an agency and its client), and one answer per
+  company would need a rule for which posting wins. The price is one more
+  cheap call per further posting of a company.
+- `inputs_fingerprint` is unique, unlike `match_results`'
+  `(vacancy_id, inputs_fingerprint)`: two vacancies share a fingerprint only
+  when their text, company and link are identical, and then so is the answer.
 
 ### 3.7 `recruiter_searches`
 
@@ -331,7 +344,8 @@ employer stays in the lookup because it is not in the request -- two hh
 employers with the same name, link and city must not share people. A row is
 reused while it is younger than `company_research.RECRUITERS_FRESH`, so the
 fingerprint is not unique: a stale search is asked again with the same
-inputs, because people change jobs. The design: `docs/company-research.md` §3.
+inputs, because people change jobs. Columns: `jobmatch/models.py`; the design:
+`docs/company-research.md` §3.
 
 ---
 
@@ -485,18 +499,17 @@ into `jobmatch/matching/` and deleted:
   come from the DB.
 - `cli.py` → **deleted**; its behaviour survives as `jobmatch match --url <url>`.
 
-Public surface:
+Every model call:
 
-```python
-def open_client(api_key: str | None = None) -> AbstractContextManager[TypeSafeClient]
-def load_cv(path: Path | str) -> str                # read + sanitize_cv
-def sha256(text: str) -> str                        # content_hash is an alias of it
-def job_text(vacancy: Vacancy) -> str               # renders the posting for the model
-def inputs_fingerprint(cv, job, questions, model) -> str
-def preview_vacancy(client, cv, vacancy, model, *, job) -> Preview   # asks, records nothing
-def match_vacancy(client, cv, vacancy, model, *,
-                  cv_hash, content_hash, job) -> MatchOutcome
-```
+| Feature | Entry point | Provider module | Input | Output type | Fingerprint of | Cache rule | `llm_calls` kind | Stored in |
+|---|---|---|---|---|---|---|---|---|
+| match | `jobmatch match`, `jobmatch run` | `llm/jev.py` (`ask`) | sanitised CV, `matching.job_text(vacancy)` | `matching.MatchOutcome` | state (cv, job_description), `QUESTIONS`, model (`jev.fingerprint`) | free when `match_results` holds `(vacancy_id, fingerprint)`; a superseded row is revived (`repository.make_current`) | `match` | `match_results` |
+| match dry-run | `jobmatch match --dry-run` | `llm/jev.py` (`preview`) | as match | `matching.Preview` | as match, but unused | none: always pays | none: no row | nothing; printed |
+| identify | `jobmatch identify`, `POST /api/vacancies/{id}/company/identity` | `llm/openrouter.py` | `research.Poster`: the hh employer page and `job_text` | `research.Identity` | the whole request: messages, schema, model, OpenRouter fields | free when any `employer_identities` row has the fingerprint, forever | `employer` | `employer_identities` |
+| recruiters | `jobmatch recruiters [--refresh]`, `POST /api/vacancies/{id}/company/recruiters` | `llm/openrouter.py` | `research.Target`: name, homepage, city | `research.Confirmed`, after `keep_cited` | the whole request, as identify | free when the employer's newest row with the fingerprint is younger than `company_research.RECRUITERS_FRESH`; `refresh` always pays | `recruiters` | `recruiter_searches` |
+| cover note | `POST /api/vacancies/{id}/cover-note` | `llm/claude_cli.py` | the vacancy, its current match's angle and gap, the sanitised CV | `str` | model, system prompt, prompt; recorded, never looked up | none: every click pays | `cover_note` | nothing; the text is in the ledger row's `response` |
+
+Each call writes its ledger row through `llm.recorded`, except the dry run.
 
 The fingerprint is not passed in: `llm.jev.ask` hashes exactly what it sends
 and returns it in `MatchOutcome`, so the stored key cannot describe another
@@ -518,9 +531,23 @@ containment is what lets `repository.save_match` stay a dumb column write.
 
 Two deliberate choices: the client is opened **once per run** (it's an HTTP
 session), and the CV is loaded and sanitized **once per run**, not per vacancy.
-`_job_text(vacancy)` renders the vacancy for the model, mirroring the
+`matching.job_text(vacancy)` renders the vacancy for the model, mirroring the
 prototype's `to_markdown()` — the one piece of it worth keeping. It goes to the
-model, never to disk.
+model, never to disk. The employer question sends it too, unchanged.
+
+### How to add an AI use case
+
+1. Write the question: an OpenRouter `Question` in `research/<kind>.py`, or a
+   Jev questions module like `jobmatch/matching/questions.py`.
+2. Pin its model under `[models]` in `config.toml`, keyed by its kind.
+3. Write the caller: build the request → fingerprint it → stored? return it →
+   else ask → save. The provider module writes the ledger row for free.
+4. Give kept answers their own table (subject FK, `inputs_fingerprint`,
+   `answer` JSONB, `llm_call_id`, `created_at`); add a column only to sort or
+   filter on (§5).
+5. Keep the route and the CLI command thin: one `company_research`-style call
+   each.
+6. Tests: pin the fingerprint, fake the provider, never call it live.
 
 ---
 

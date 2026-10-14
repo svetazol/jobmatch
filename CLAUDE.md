@@ -25,8 +25,10 @@ The docs hold the reasoning the code cannot; read the relevant one first.
 - `docs/jev.md`: the matcher model and SDK.
 - `docs/initial_task.md`: the original brief. Frozen, never edited to match the
   code.
-- `jobmatch/models.py`: the schema's source of truth, with the reason for each
-  column in comments.
+- `docs/company-research.md`: the on-click company questions (who posted it,
+  who recruits there).
+- `jobmatch/models.py`: the schema's source of truth; the longer reasons for
+  its columns are in `docs/architecture.md` §3.
 
 ## How we work on a new idea
 
@@ -74,7 +76,8 @@ cd frontend && npm run typecheck
 ```
 
 **`jobmatch match`, `jobmatch run` without `--no-match`, `jobmatch identify`
-and `jobmatch recruiters` spend real money.** Don't run them unless asked. Use `match --dry-run --limit N` to preview (it
+and `jobmatch recruiters` spend real money**, as do the UI's identify,
+recruiters and cover-note buttons. Don't run them unless asked. Use `match --dry-run --limit N` to preview (it
 still pays, but writes nothing). `discover` and `fetch` are free but hit
 hh.ru, so keep them small (`--limit`).
 
@@ -88,10 +91,11 @@ jobmatch/
   llm/         what every model call shares (key, fingerprint, ledger); jev.py, openrouter.py and claude_cli.py alone know their providers
   models.py    the schema (SQLAlchemy 2.0)
   repository.py  flat module of named queries, keeps SQL out of pipeline.py
-  pipeline.py  the run phases; it and company_research.py are the only modules allowed to know all three areas above
+  cover_note.py  the cover-note prompt, sent through llm/claude_cli.py; the note is not stored
+  pipeline.py  the run phases: discover, fetch, match
   company_research.py  the on-click company operations: look up, identify, find recruiters
   cli.py       thin caller; the one place asyncio.run happens
-  api/         FastAPI, thin: each route is a repository call plus a response model
+  api/         FastAPI, thin: each route is a repository or company_research call plus a response model
   config.py    loads and validates config.toml
   db.py        engine + SessionLocal; the only reader of DATABASE_URL
 migrations/    Alembic (synchronous, reads DATABASE_URL from env)
@@ -103,10 +107,11 @@ data/          CVs (gitignored, no committed copy)
 ## Rules that are easy to break
 
 - **The database is the only store.** No per-vacancy files, no HTML cache.
-- **Never pay for the same match twice.** `inputs_fingerprint` hashes the whole
-  Jev request: the sanitised CV, the vacancy's job text, the questions and the
-  model. Anything that changes the CV or the vacancy must flow through it.
-  Don't add a version constant.
+- **Never pay twice for the same request.** `inputs_fingerprint` hashes the
+  whole request; for a match, the sanitised CV, the vacancy's job text, the
+  questions and the model. Anything that changes what is sent must flow
+  through it. Don't add a version constant. Each call's cache rule:
+  `docs/architecture.md` §8.
 - **The CV is sanitised before it is hashed or sent**, and loaded once per run.
   The CV the next run uses is `cv_path` in `config.toml`.
 - **Every model is pinned** (`[models]` in `config.toml`, e.g. `jev-1.13`), never `jev-latest`: it is part of the
@@ -135,7 +140,8 @@ data/          CVs (gitignored, no committed copy)
 - **Migrations:** autogenerate misses `Computed` changes and mishandles partial
   indexes, so review every revision. Never call `create_all` outside tests.
 - **KISS:** no ABCs, registries, DI, plugin systems, Celery or tenacity. Each
-  abstraction must serve a requirement that exists today.
+  abstraction must serve a requirement that exists today. A frozen dataclass
+  per AI use (`Question`) is plain data, not a registry.
 - **Never edit `data/cv.md`.** `data/` is gitignored, so an edit there cannot
   be reverted.
 
@@ -146,7 +152,7 @@ data/          CVs (gitignored, no committed copy)
   rows under its own `source` name and cleans them up afterwards.
 - Async tests use `pytest.mark.anyio`, with one session-wide asyncio loop set
   in `tests/conftest.py`.
-- Nothing in the test suite calls Jev for real.
+- Nothing in the test suite calls a model for real: fake the provider.
 - `tests/test_docs.py` checks every tracked `.md` file, this one included. A
   doc must not name anything listed in `GONE`, and every backticked
   `jobmatch/…py`, `docs/…md` or `config.toml` path must exist. When you remove
@@ -156,9 +162,12 @@ data/          CVs (gitignored, no committed copy)
 
 - Python 3.14: `from __future__ import annotations`, frozen `slots`
   dataclasses, PEP 695 generics, modules of plain functions.
-- Comments and docstrings explain *why*, often citing a measurement and its
-  date. Keep that density, and don't restate in a doc a value that lives in
-  code. Point at the code instead.
+- Comments are one line and say why; a measurement keeps its date; longer
+  reasoning goes in docs/. Don't restate in a doc a value that lives in code:
+  point at the code instead.
+- Docstrings and Field text of models sent as a schema, the system prompts,
+  the question text and job_text are prompt text: editing them changes the
+  fingerprint and re-pays every match.
 - When a design choice is rejected or reversed, record it in
   `docs/decisions.md`.
 - Commit subjects are short imperative sentences that say what changed and

@@ -343,7 +343,7 @@ def main(argv: list[str] | None = None) -> int:
         "trace", help="read the LLM ledger: the last calls, or one in full — free"
     )
     trace.add_argument("id", nargs="?", type=int, help="one call's id: its request and response")
-    trace.add_argument("--kind", help="list only calls of this kind: match, employer, recruiters, cover_note, people")
+    trace.add_argument("--kind", help="list only calls of this kind: match, employer, recruiters, cover_note")
     trace.add_argument("--last", type=_positive_int, help="how many calls to list (20)")
 
     identify = sub.add_parser(
