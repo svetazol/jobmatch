@@ -1,33 +1,37 @@
 """The employer behind a vacancy: read what is stored, or look it up on click,
-and ask a model who is behind the posting."""
+ask a model who is behind the posting, and search for who recruits there."""
 from __future__ import annotations
 
 import logging
 import os
-from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ... import pipeline, repository, research
 from ...config import DEFAULT_PATH, load_settings
 from ...db import SessionLocal
-from ...models import Employer, EmployerIdentity
-from ..deps import get_session
-from ..schemas import Company, CompanyIdentity
+from ...models import Employer, EmployerIdentity, RecruiterSearch
+from ..schemas import Company, CompanyIdentity, CompanyRecruiters
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/vacancies", tags=["company"])
 
-SessionDep = Annotated[AsyncSession, Depends(get_session)]
-
-
 @router.get("/{vacancy_id}/company", response_model=Company | None)
-async def get_company(vacancy_id: int, session: SessionDep) -> Company | None:
-    """What is stored, with no request to the source; null until looked up."""
-    employer = await repository.employer_of(session, vacancy_id)
-    return None if employer is None else await _company(session, employer, vacancy_id)
+async def get_company(vacancy_id: int) -> Company | None:
+    """What is stored, with no request to the source or a model; null until
+    looked up.
+
+    No `SessionDep`: `pipeline.stored_recruiters` opens its own session, so it
+    runs first and this one opens after, rather than holding two connections.
+    """
+    recruiters = await _stored_recruiters(vacancy_id)
+    async with SessionLocal() as session:
+        employer = await repository.employer_of(session, vacancy_id)
+        if employer is None:
+            return None
+        return await _company(session, employer, vacancy_id, recruiters)
 
 
 @router.post("/{vacancy_id}/company", response_model=Company)
@@ -46,8 +50,9 @@ async def look_up_company(vacancy_id: int) -> Company:
     except Exception as e:  # noqa: BLE001 -- throttled, 5xx, layout change: all the source's
         log.warning("employer lookup failed for vacancy %d: %s", vacancy_id, e)
         raise HTTPException(502, f"{type(e).__name__}: {e}") from None
+    recruiters = await _stored_recruiters(vacancy_id)
     async with SessionLocal() as session:
-        return await _company(session, employer, vacancy_id)
+        return await _company(session, employer, vacancy_id, recruiters)
 
 
 @router.post("/{vacancy_id}/company/identity", response_model=CompanyIdentity)
@@ -77,8 +82,57 @@ async def identify_company(vacancy_id: int) -> CompanyIdentity:
         return await _identity(session, row)
 
 
-async def _company(session: AsyncSession, employer: Employer, vacancy_id: int) -> Company:
-    """The employer, with the newest identity asked for this vacancy.
+@router.post("/{vacancy_id}/company/recruiters", response_model=CompanyRecruiters)
+async def search_recruiters(vacancy_id: int) -> CompanyRecruiters:
+    """Ask `people_model` to search the web for who recruits at the company;
+    free when the same request was answered within `pipeline.RECRUITERS_FRESH`.
+
+    No `SessionDep`, as above. 409 means the company must be looked up first,
+    422 that it has no name to search for, 503 that there is no API key, 502
+    that the call failed -- it is in `llm_calls` either way.
+    """
+    if not os.environ.get(research.API_KEY_ENV):   # 503 rather than 502, as above
+        raise HTTPException(503, f"Set {research.API_KEY_ENV} in .env to search for recruiters.")
+    model = load_settings(DEFAULT_PATH).people_model
+    try:
+        row = await pipeline.find_recruiters(vacancy_id, model)
+    except pipeline.NotLookedUp:
+        raise HTTPException(409, "look up the company first") from None
+    except pipeline.NoCompanyName as e:   # before EmployerUnknown: it is one
+        raise HTTPException(422, str(e)) from None
+    except pipeline.EmployerUnknown as e:
+        raise HTTPException(404, str(e)) from None
+    except Exception as e:  # noqa: BLE001 -- timeout, refusal, invalid JSON, OpenRouter's error
+        log.warning("searching for recruiters failed for vacancy %d: %s", vacancy_id, e)
+        raise HTTPException(502, f"{type(e).__name__}: {e}") from None
+    return _recruiters(row)
+
+
+async def _stored_recruiters(vacancy_id: int) -> CompanyRecruiters | None:
+    """The search the card would show; None when there is none, or nothing to
+    search for yet (no lookup, no name) -- the POST says why when clicked.
+
+    The section is optional on a free read, so no failure here fails the card.
+    """
+    try:
+        model = load_settings(DEFAULT_PATH).people_model
+        row = await pipeline.stored_recruiters(vacancy_id, model)
+    except (pipeline.NotLookedUp, pipeline.EmployerUnknown):
+        return None
+    except Exception as e:  # noqa: BLE001 -- a bad config.toml, a database hiccup
+        log.warning("reading the recruiter search failed for vacancy %d: %s", vacancy_id, e)
+        return None
+    return None if row is None else _recruiters(row)
+
+
+async def _company(
+    session: AsyncSession,
+    employer: Employer,
+    vacancy_id: int,
+    recruiters: CompanyRecruiters | None,
+) -> Company:
+    """The employer, with the newest identity asked for this vacancy and the
+    recruiter search already read.
 
     Written out field by field: three of them live in `raw`, which
     `model_validate` cannot see into.
@@ -94,6 +148,7 @@ async def _company(session: AsyncSession, employer: Employer, vacancy_id: int) -
         industries=raw.get("industries"),
         looked_up_at=employer.looked_up_at,
         identity=None if row is None else await _identity(session, row),
+        recruiters=recruiters,
     )
 
 
@@ -109,3 +164,8 @@ async def _identity(session: AsyncSession, row: EmployerIdentity) -> CompanyIden
         llm_call_id=call.id,
         created_at=row.created_at,
     )
+
+
+def _recruiters(row: RecruiterSearch) -> CompanyRecruiters:
+    """The stored answer (`dataclasses.asdict(research.Confirmed)`), as is."""
+    return CompanyRecruiters(**row.answer, created_at=row.created_at)

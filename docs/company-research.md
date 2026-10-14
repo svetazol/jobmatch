@@ -250,7 +250,8 @@ A **RecruitersBlock** under the identity on the Company card
 - `people_model` in `config.toml`: `google/gemini-2.5-flash-lite:online`;
   Perplexity's sonar is the alternative, by config.
 - API: `POST /api/vacancies/{id}/company/recruiters` (409 / 404 / 503 / 502 as
-  for the identity); `GET /company` gains `recruiters`, shaped
+  for the identity, and 422 when the company has no name to search for:
+  `pipeline.NoCompanyName`); `GET /company` gains `recruiters`, shaped
   `CompanyRecruiters(people, dropped, sources, created_at)` only.
 
 ### Data
@@ -284,4 +285,5 @@ No committed eval file: it would hold recruiters' names.
 3. **The search, kept** (built 2026-10-13): the table, the pipeline function,
    `people_model` in config, and `jobmatch recruiters --vacancy N` for the
    first real search from the terminal.
-4. **The block**: the route, the schema, the UI.
+4. **The block** (built 2026-10-14): the route, `CompanyRecruiters` on `GET`
+   and `POST /company`, and `RecruitersBlock.vue` on the Company card.

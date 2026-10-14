@@ -182,6 +182,35 @@ class CompanyIdentity(BaseModel):
     created_at: dt.datetime
 
 
+class RecruiterPerson(BaseModel):
+    """One person the search cited (`research.ConfirmedPerson`, as stored).
+
+    `linkedin_url` is always `https://www.linkedin.com/in/<slug>`:
+    `research.keep_cited` rebuilds it from the slug, so the model's own text
+    never reaches an href. `source_title` is the search's title for that page,
+    shown beside the model's name and role because only the page is proven.
+    """
+
+    name: str
+    role: str | None
+    linkedin_url: str
+    evidence: str
+    source_title: str | None
+
+
+class CompanyRecruiters(BaseModel):
+    """The search a posting's request would reuse (`pipeline.stored_recruiters`):
+    the cited people, how many the model named without a citation (`dropped`),
+    and how many pages the search cited (`sources`). Model and cost are in the
+    trace, not on the card.
+    """
+
+    people: list[RecruiterPerson]
+    dropped: int
+    sources: int
+    created_at: dt.datetime
+
+
 class Company(BaseModel):
     """The employer behind a vacancy, as its page said when last looked up.
 
@@ -190,7 +219,8 @@ class Company(BaseModel):
     `city`, `category` and `industries` are the page's own text, verbatim
     from `employer.raw` (`industries` one comma-separated string, as hh
     prints it). `identity` is the newest answer for this vacancy, if one was
-    asked for.
+    asked for; `recruiters` the search its request would reuse, if one was
+    made, however old.
     """
 
     name: str | None
@@ -201,3 +231,4 @@ class Company(BaseModel):
     industries: str | None
     looked_up_at: dt.datetime
     identity: CompanyIdentity | None = None
+    recruiters: CompanyRecruiters | None = None

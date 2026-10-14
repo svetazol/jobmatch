@@ -444,6 +444,13 @@ class EmployerUnknown(LookupError):
     """
 
 
+class NoCompanyName(EmployerUnknown):
+    """The company was looked up but has no name, so there is nothing to
+    search the web for. A subclass so callers that only care about a dead end
+    need not know it; the API tells it from a missing vacancy and answers 422.
+    """
+
+
 class NotLookedUp(LookupError):
     """The vacancy's company has not been looked up, so there is nothing to
     tell a model about it yet. Not a dead end: `lookup_employer` first, then
@@ -624,7 +631,7 @@ async def _recruiters_request(
 ) -> tuple[int, research.Target, str, RecruiterSearch | None]:
     """The employer, the target, the request's fingerprint and its newest
     stored search; raises as `identify_employer` does without a vacancy or a
-    lookup, and `EmployerUnknown` for a company with no name to search for."""
+    lookup, and `NoCompanyName` for a company with no name to search for."""
     async with SessionLocal() as session:
         vacancy = await session.get(Vacancy, vacancy_id)
         if vacancy is None:
@@ -634,7 +641,7 @@ async def _recruiters_request(
             raise NotLookedUp("the company has not been looked up yet; look it up first")
         target = target_of(employer, await repository.latest_identity(session, vacancy_id))
         if not target.name:
-            raise EmployerUnknown("the company has no name to search for")
+            raise NoCompanyName("the company has no name to search for")
         fingerprint = research.fingerprint(research.recruiters_request(target, model))
         stored = await repository.latest_recruiters(session, employer.id, fingerprint)
     return employer.id, target, fingerprint, stored

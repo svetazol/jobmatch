@@ -7,6 +7,7 @@ import { api } from '@/api/client'
 import type { Company } from '@/api/types'
 import { host, isWeb, sameName } from '@/composables/useCompany'
 import CompanyIdentity from './CompanyIdentity.vue'
+import RecruitersBlock from './RecruitersBlock.vue'
 
 /**
  * The employer behind a vacancy, as its hh profile describes it, looked up
@@ -14,7 +15,8 @@ import CompanyIdentity from './CompanyIdentity.vue'
  *
  * Stored per company, not per vacancy: opening another posting from an
  * employer already looked up shows it at once, with no request to hh.
- * The model's answer under it is a separate, paid request with its own button.
+ * The model's answer under it is a separate, paid request with its own button,
+ * and so is the recruiter search under that.
  */
 const props = defineProps<{ vacancyId: number; companyName: string | null }>()
 
@@ -51,6 +53,12 @@ async function lookUp() {
 
 watch(() => props.vacancyId, load, { immediate: true })
 
+/** The name the paid search uses, so the free link asks the same: the employer
+ *  behind the posting when a model has named it (an agency's hh name finds the
+ *  agency's recruiters), else the hh name. `||`, as an empty name is no name.
+ *  The stored answer only: one asked just now shows on reload. */
+const searchName = computed(() => company.value?.identity?.employer || company.value?.name || '')
+
 /** hh's own words, in its language: translating them would add nothing but doubt. */
 const details = computed(() => {
   const c = company.value
@@ -82,6 +90,7 @@ const details = computed(() => {
 
         <CompanyIdentity :vacancy-id="vacancyId" :stored="company.identity"
                          :employer-name="company.name ?? companyName" />
+        <RecruitersBlock :vacancy-id="vacancyId" :stored="company.recruiters" :search-name="searchName" />
       </template>
       <p v-else-if="!error" class="note">Its hh profile: website, city, industries. Free, about 2 s.</p>
     </template>

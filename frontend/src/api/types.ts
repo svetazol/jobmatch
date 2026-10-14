@@ -97,6 +97,8 @@ export interface Company {
   looked_up_at: string
   /** The newest answer for this posting; null until identified. */
   identity: CompanyIdentity | null
+  /** The newest search for this company's request; null until searched. */
+  recruiters: CompanyRecruiters | null
 }
 
 /**
@@ -120,6 +122,32 @@ export interface CompanyIdentity {
   /** Read in full with `jobmatch trace <id>`. */
   llm_call_id: number
   created_at: string
+}
+
+/**
+ * POST /api/vacancies/:id/company/recruiters — the people an AI web search
+ * named, kept only when the search itself cited their LinkedIn profile.
+ * A citation proves the profile exists, not that the name and role match it,
+ * so `evidence` and `source_title` travel with each person for the user to read.
+ */
+export interface CompanyRecruiters {
+  people: RecruiterPerson[]
+  /** Named by the model but not among the links the search returned. */
+  dropped: number
+  /** Links the search returned; 0 means there was nothing to check against. */
+  sources: number
+  created_at: string
+}
+
+export interface RecruiterPerson {
+  name: string
+  role: string | null
+  /** Canonical `https://www.linkedin.com/in/<slug>`, rewritten from the cited link. */
+  linkedin_url: string
+  /** The model's quote of the search result it read the person from. */
+  evidence: string
+  /** The cited page's title, as the search returned it. */
+  source_title: string | null
 }
 
 export interface VacancyPage {

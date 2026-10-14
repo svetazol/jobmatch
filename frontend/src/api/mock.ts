@@ -8,7 +8,7 @@
  * real shape creates.
  */
 import type {
-  Answers, Company, CompanyIdentity, FitLevel, Gap, Pitch, Stats, VacancyDetail, VacancyPage, VacancyRow,
+  Answers, Company, CompanyIdentity, CompanyRecruiters, FitLevel, Gap, Pitch, Stats, VacancyDetail, VacancyPage, VacancyRow,
 } from './types'
 
 const MOCK_CV = {
@@ -176,6 +176,7 @@ export function mockCompany(): Company {
     industries: 'Информационные технологии, системная интеграция, интернет, СМИ, маркетинг, реклама, BTL, PR, дизайн, продюсирование',
     looked_up_at: new Date().toISOString(),
     identity: null,
+    recruiters: null,
   }
 }
 
@@ -187,4 +188,13 @@ export function mockCompany(): Company {
 export function mockIdentify(): Promise<CompanyIdentity> {
   return new Promise((_, reject) =>
     setTimeout(() => reject(new Error('Mock: no stored identity to show yet.')), 600))
+}
+
+/**
+ * The same rule for recruiters, and more so: a real row holds real people's
+ * names, so it does not belong in a committed file even once one exists.
+ */
+export function mockRecruiters(): Promise<CompanyRecruiters> {
+  return new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('Mock: no recruiter search to show.')), 600))
 }

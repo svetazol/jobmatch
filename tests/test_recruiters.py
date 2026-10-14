@@ -1,7 +1,7 @@
-"""The recruiter search, kept: `recruiter_searches`, `pipeline.target_of` and
-`pipeline.find_recruiters` on the real database, with `research.ask_recruiters`
-stubbed -- nothing here reaches OpenRouter. The call itself and `keep_cited`
-are tested in `test_research.py`.
+"""The recruiter search, kept: `recruiter_searches`, `pipeline.target_of`,
+`pipeline.find_recruiters` and its API route on the real database, with
+`research.ask_recruiters` stubbed -- nothing here reaches OpenRouter. The call
+itself and `keep_cited` are tested in `test_research.py`.
 """
 from __future__ import annotations
 
@@ -11,10 +11,12 @@ import json
 from decimal import Decimal
 
 import anyio
+import httpx2
 import pytest
 from sqlalchemy import delete, select, update
 
 from jobmatch import cli, pipeline, repository, research
+from jobmatch.api.app import app
 from jobmatch.db import SessionLocal
 from jobmatch.models import Employer, EmployerIdentity, LlmCall, RecruiterSearch, Vacancy
 
@@ -336,7 +338,7 @@ async def test_a_company_with_no_name_is_not_searched(vacancy_id, searches):
             update(Employer).where(Employer.source == SOURCE_NAME).values(name=None)
         )
 
-    with pytest.raises(pipeline.EmployerUnknown, match="no name"):
+    with pytest.raises(pipeline.NoCompanyName, match="no name"):
         await pipeline.find_recruiters(vacancy_id, MODEL)
     assert searches == []
 
@@ -400,3 +402,114 @@ async def test_the_command_reports_why_it_cannot_search(vacancy_id, monkeypatch,
     monkeypatch.setattr(pipeline, "find_recruiters", fails)
     assert await cli.cmd_recruiters("config.toml", vacancy_id) == 1
     assert "has not been looked up" in capsys.readouterr().out
+
+
+# --- the API -----------------------------------------------------------------------
+
+@pytest.fixture
+async def client(monkeypatch):
+    """The app, with a key set: the stub never sends it anywhere."""
+    monkeypatch.setenv(research.API_KEY_ENV, "test-key")
+    transport = httpx2.ASGITransport(app=app)
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+
+
+async def test_the_route_answers_with_the_people_and_the_counts(vacancy_id, searches, client):
+    resp = await client.post(f"/api/vacancies/{vacancy_id}/company/recruiters")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["people"] == [dataclasses.asdict(CONFIRMED.people[0])]
+    assert (body["dropped"], body["sources"]) == (1, 4)
+    assert dt.datetime.fromisoformat(body["created_at"]) == (await _searches())[0].created_at
+    assert set(body) == {"people", "dropped", "sources", "created_at"}
+    assert [model for _, model in searches] == [MODEL]
+
+
+async def test_the_company_card_carries_the_search_once_made(vacancy_id, searches, client):
+    before = await client.get(f"/api/vacancies/{vacancy_id}/company")
+    assert before.status_code == 200 and before.json()["recruiters"] is None
+
+    posted = (await client.post(f"/api/vacancies/{vacancy_id}/company/recruiters")).json()
+
+    after = await client.get(f"/api/vacancies/{vacancy_id}/company")
+    assert after.json()["recruiters"] == posted
+    assert len(searches) == 1
+
+
+async def test_a_second_click_with_nothing_changed_is_free(vacancy_id, searches, client):
+    first = await client.post(f"/api/vacancies/{vacancy_id}/company/recruiters")
+    second = await client.post(f"/api/vacancies/{vacancy_id}/company/recruiters")
+
+    assert second.status_code == 200 and second.json() == first.json()
+    assert len(searches) == 1
+
+
+async def test_the_route_asks_for_a_lookup_first(vacancy_id, searches, client):
+    async with SessionLocal.begin() as session:
+        await session.execute(delete(Employer).where(Employer.source == SOURCE_NAME))
+
+    resp = await client.post(f"/api/vacancies/{vacancy_id}/company/recruiters")
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "look up the company first"
+    assert searches == []
+
+
+async def test_the_route_404s_an_unknown_vacancy(searches, client):
+    resp = await client.post("/api/vacancies/0/company/recruiters")
+
+    assert resp.status_code == 404
+    assert "no vacancy" in resp.json()["detail"]
+
+
+async def test_the_route_422s_a_company_with_no_name(vacancy_id, searches, client):
+    async with SessionLocal.begin() as session:
+        await session.execute(
+            update(Employer).where(Employer.source == SOURCE_NAME).values(name=None)
+        )
+
+    resp = await client.post(f"/api/vacancies/{vacancy_id}/company/recruiters")
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "the company has no name to search for"
+    assert searches == []
+    # and the card still renders, with nothing to show
+    card = await client.get(f"/api/vacancies/{vacancy_id}/company")
+    assert card.status_code == 200 and card.json()["recruiters"] is None
+
+
+async def test_the_route_needs_the_key_before_any_call(vacancy_id, searches, client, monkeypatch):
+    monkeypatch.delenv(research.API_KEY_ENV)
+
+    resp = await client.post(f"/api/vacancies/{vacancy_id}/company/recruiters")
+
+    assert resp.status_code == 503
+    assert research.API_KEY_ENV in resp.json()["detail"]
+    assert searches == []
+
+
+async def test_a_failed_call_is_a_502_with_its_type(vacancy_id, client, monkeypatch):
+    async def fails(target, model, *, vacancy_id, http_client=None):
+        raise RuntimeError("OpenRouter said no")
+
+    monkeypatch.setattr(research, "ask_recruiters", fails)
+    resp = await client.post(f"/api/vacancies/{vacancy_id}/company/recruiters")
+
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "RuntimeError: OpenRouter said no"
+    assert await _searches() == []
+
+
+async def test_a_failed_read_of_the_search_leaves_the_card_whole(
+    vacancy_id, client, monkeypatch
+):
+    async def fails(*args):
+        raise RuntimeError("database hiccup")
+
+    monkeypatch.setattr(pipeline, "stored_recruiters", fails)
+    resp = await client.get(f"/api/vacancies/{vacancy_id}/company")
+
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "ЭР-Телеком Холдинг" and resp.json()["recruiters"] is None
