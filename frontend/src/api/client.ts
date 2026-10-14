@@ -110,15 +110,17 @@ export const api = {
   },
 
   /**
-   * POST /api/vacancies/:id/company/recruiters — one AI web search, ~5-20 s
-   * and ~$0.02, up to ~60 s (a 30 s deadline, one retry); free and instant
-   * when the same request was searched in the last 30 days. 409 until the
-   * company is looked up, 422 when it has no name to search for, 502 with the
-   * model's error, 503 without OPENROUTER_API_KEY; each says so in `detail`.
+   * POST /api/vacancies/:id/company/recruiters — one AI web search, ~$0.01,
+   * typically 3–5 s (measured 2026-10-14), up to ~60 s (30 s deadline, one
+   * retry). Without `refresh`, free and instant when the same request was searched in the last 30 days;
+   * with it, always a new paid search. 409 until the company is looked up,
+   * 422 when it has neither a website nor a name to search for, 502 with the model's error, 503
+   * without OPENROUTER_API_KEY; each says so in `detail`.
    */
-  async findRecruiters(id: number): Promise<CompanyRecruiters> {
+  async findRecruiters(id: number, { refresh = false } = {}): Promise<CompanyRecruiters> {
     if (USE_MOCK) return mockRecruiters()
-    const res = await fetch(`${BASE}/vacancies/${id}/company/recruiters`, { method: 'POST' })
+    const query = refresh ? '?refresh=true' : ''
+    const res = await fetch(`${BASE}/vacancies/${id}/company/recruiters${query}`, { method: 'POST' })
     if (!res.ok) {
       const body = await res.json().catch(() => null)
       throw new Error(body?.detail ?? `${res.status} ${res.statusText}`)

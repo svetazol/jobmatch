@@ -65,7 +65,7 @@ uv run jobmatch run [--only bg] [--no-match] [--limit N]
 uv run jobmatch discover | fetch --pending | match [--dry-run] | cv-hash
 uv run jobmatch trace [ID] [--kind K] [--last N]  # the LLM ledger; free, read-only
 uv run jobmatch identify --vacancy N          # who is behind a posting; pays ~$0.0002
-uv run jobmatch recruiters --vacancy N        # who recruits there; pays ~$0.02 unless fresh
+uv run jobmatch recruiters --vacancy N [--refresh]  # who recruits there; ~$0.01 unless fresh, --refresh always pays
 uv run python -m jobmatch.sources.hh russia   # what a country expands to
 
 uv run uvicorn jobmatch.api.app:app --reload  # API on :8000

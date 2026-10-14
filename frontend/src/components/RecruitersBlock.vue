@@ -12,7 +12,7 @@ import { isWeb } from '@/composables/useCompany'
  * shown; the free search link beside it is always there, so the paid one is
  * a shortcut, never the only way in.
  */
-const props = defineProps<{ vacancyId: number; stored: CompanyRecruiters | null; searchName: string }>()
+const props = defineProps<{ vacancyId: number; stored: CompanyRecruiters | null; searchTerm: string }>()
 
 /** The stored search until a new one lands; the parent's copy is not ours to edit. */
 const found = ref<CompanyRecruiters | null>(props.stored)
@@ -25,13 +25,15 @@ watch(() => [props.vacancyId, props.stored] as const, () => {
   error.value = null
 })
 
-async function search() {
+/** `refresh` asks for a new paid search; without it the API may return a
+ *  recent one for free. */
+async function search(refresh = false) {
   const id = props.vacancyId
   if (pendingFor.value === id) return
   pendingFor.value = id
   error.value = null
   try {
-    const answer = await api.findRecruiters(id)
+    const answer = await api.findRecruiters(id, { refresh })
     if (props.vacancyId === id) found.value = answer   // ignore a late answer for a page already left
   } catch (e) {
     if (props.vacancyId === id) error.value = (e as Error).message
@@ -40,12 +42,14 @@ async function search() {
   }
 }
 
-/** The same question the paid search asks, typed into LinkedIn by hand. Quotes
- *  in the name (ООО «Ромашка») would close the phrase early, so they go. */
+/** LinkedIn's company search for the website (or the name without one, see
+ *  CompanyPanel.vue): a company page lists its website, and its People tab is
+ *  where the recruiters are. The user's choice, 2026-10-14. Quotes in a name
+ *  (ООО «Ромашка») would close the phrase early, so they go. */
 const linkedinSearch = computed(() => {
-  const name = props.searchName.replace(/["«»]/g, '').trim()
-  return 'https://www.linkedin.com/search/results/people/?keywords='
-    + encodeURIComponent(`"${name}" (recruiter OR HR OR "talent acquisition")`)
+  const term = props.searchTerm.replace(/["«»]/g, '').trim()
+  return 'https://www.linkedin.com/search/results/companies/?keywords='
+    + encodeURIComponent(`"${term}"`)
 })
 
 /** `linkedin.com/in/<slug>`: the slug is what tells two namesakes apart. */
@@ -56,29 +60,30 @@ const profile = (url: string) => {
 const searchedOn = computed(() => found.value
   ? new Date(found.value.created_at).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
   : '')
-
-/** Mirrors `RECRUITERS_FRESH` in jobmatch/pipeline.py: a search younger than
- *  this is served again for free. Change both together. */
-const FRESH_MS = 30 * 24 * 60 * 60 * 1000
-const fresh = computed(() =>
-  !!found.value && Date.now() - new Date(found.value.created_at).getTime() < FRESH_MS)
 </script>
 
 <template>
   <div class="recruiters">
     <p class="head">
       Recruiters
-      <!-- An empty name would search LinkedIn for every recruiter there is. -->
-      <a v-if="searchName" class="free" :href="linkedinSearch" target="_blank" rel="noopener noreferrer">Search LinkedIn yourself ↗</a>
+      <!-- An empty term would search LinkedIn for every recruiter there is. -->
+      <a v-if="searchTerm" class="free" :href="linkedinSearch" target="_blank" rel="noopener noreferrer">Find the company on LinkedIn ↗</a>
     </p>
 
-    <div class="ask">
-      <Button :label="found ? 'Search again' : 'Find recruiters'" icon="pi pi-search"
-              text size="small" :loading="pendingFor === vacancyId" @click="search" />
+    <!-- ~$0.008 measured on the first two searches (2026-10-14, calls 19578-9) -->
+    <!-- A shown search is refreshed on purpose: refresh=true always pays for a new one. -->
+    <div v-if="found" class="ask">
+      <span class="note">Searched {{ searchedOn }} ·</span>
+      <Button label="Refresh" icon="pi pi-refresh" text size="small"
+              :loading="pendingFor === vacancyId" @click="search(true)" />
       <span v-if="pendingFor === vacancyId" class="note">Searching the web… up to a minute.</span>
-      <span v-else-if="found && fresh" class="note">free · searched {{ searchedOn }}</span>
-      <span v-else-if="found" class="note">about $0.02 · last search {{ searchedOn }}</span>
-      <span v-else class="note">about $0.02 · 5–20 s · an AI web search</span>
+      <span v-else class="note">about $0.01 — runs a new search</span>
+    </div>
+    <div v-else class="ask">
+      <Button label="Find recruiters" icon="pi pi-search"
+              text size="small" :loading="pendingFor === vacancyId" @click="search()" />
+      <span v-if="pendingFor === vacancyId" class="note">Searching the web… up to a minute.</span>
+      <span v-else class="note">about $0.01 · a few seconds · an AI web search</span>
     </div>
 
     <Message v-if="error" severity="warn" :closable="false">Could not search ({{ error }}). Try again.</Message>

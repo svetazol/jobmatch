@@ -444,10 +444,11 @@ class EmployerUnknown(LookupError):
     """
 
 
-class NoCompanyName(EmployerUnknown):
-    """The company was looked up but has no name, so there is nothing to
-    search the web for. A subclass so callers that only care about a dead end
-    need not know it; the API tells it from a missing vacancy and answers 422.
+class NothingToSearchFor(EmployerUnknown):
+    """The company was looked up but has neither a website nor a name, so
+    there is nothing to search the web for. A subclass so callers that only
+    care about a dead end need not know it; the API tells it from a missing
+    vacancy and answers 422.
     """
 
 
@@ -566,7 +567,10 @@ def target_of(employer: Employer, identity: EmployerIdentity | None) -> research
     has one, else the hh employer page.
 
     The identity's homepage only if it answered (`homepage_ok`): a homepage
-    the model made up would point the search at the wrong company. For an
+    the model made up would point the search at the wrong company. Without
+    it the website is hh's link, often a careers or landing host
+    (rabotavdomru.ru for ЭР-Телеком, l.tbank.ru for Т-Банк), and the search
+    names the company by that host. For an
     agency posting the identity's employer is the agency, so the search is for
     the agency's recruiters -- the people who posted the vacancy -- not the
     client's, who is often unnamed.
@@ -574,7 +578,7 @@ def target_of(employer: Employer, identity: EmployerIdentity | None) -> research
     answer = identity.answer if identity is not None else {}
     homepage = answer.get("homepage") if identity is not None and identity.homepage_ok else None
     return research.Target(
-        name=answer.get("employer") or employer.name or "",
+        name=answer.get("employer") or employer.name,
         homepage=homepage or employer.site_url,
         city=employer.raw.get("city"),
     )
@@ -587,10 +591,14 @@ def target_of(employer: Employer, identity: EmployerIdentity | None) -> research
 RECRUITERS_FRESH = dt.timedelta(days=30)
 
 
-async def find_recruiters(vacancy_id: int, model: str) -> RecruiterSearch:
+async def find_recruiters(
+    vacancy_id: int, model: str, *, refresh: bool = False
+) -> RecruiterSearch:
     """Who recruits for the company behind a posting: the stored search for
     this request if it is younger than `RECRUITERS_FRESH`, else a paid one
-    (`research.ask_recruiters`), saved.
+    (`research.ask_recruiters`), saved. `refresh` always pays and saves a new
+    row, fresh one or not: the user asked for it (2026-10-14), to redo a
+    search they doubt without waiting out the month.
 
     Per employer and request: the request holds the company, not the posting,
     so postings of one company that make the same request share a search, and
@@ -601,7 +609,8 @@ async def find_recruiters(vacancy_id: int, model: str) -> RecruiterSearch:
     `llm_calls`.
     """
     employer_id, target, fingerprint, stored = await _recruiters_request(vacancy_id, model)
-    if stored is not None and dt.datetime.now(dt.UTC) - stored.created_at < RECRUITERS_FRESH:
+    if (not refresh and stored is not None
+            and dt.datetime.now(dt.UTC) - stored.created_at < RECRUITERS_FRESH):
         return stored
 
     confirmed, call_id = await research.ask_recruiters(target, model, vacancy_id=vacancy_id)
@@ -614,7 +623,7 @@ async def find_recruiters(vacancy_id: int, model: str) -> RecruiterSearch:
             )
     log.info(
         "searched recruiters at %s for vacancy %d: %d found, %d dropped",
-        target.name, vacancy_id, len(confirmed.people), confirmed.dropped,
+        target.name or target.homepage, vacancy_id, len(confirmed.people), confirmed.dropped,
     )
     return row
 
@@ -631,7 +640,8 @@ async def _recruiters_request(
 ) -> tuple[int, research.Target, str, RecruiterSearch | None]:
     """The employer, the target, the request's fingerprint and its newest
     stored search; raises as `identify_employer` does without a vacancy or a
-    lookup, and `NoCompanyName` for a company with no name to search for."""
+    lookup, and `NothingToSearchFor` for a company with neither a website nor
+    a name."""
     async with SessionLocal() as session:
         vacancy = await session.get(Vacancy, vacancy_id)
         if vacancy is None:
@@ -640,8 +650,8 @@ async def _recruiters_request(
         if employer is None:
             raise NotLookedUp("the company has not been looked up yet; look it up first")
         target = target_of(employer, await repository.latest_identity(session, vacancy_id))
-        if not target.name:
-            raise NoCompanyName("the company has no name to search for")
+        if not target.searchable:
+            raise NothingToSearchFor("the company has neither a website nor a name to search for")
         fingerprint = research.fingerprint(research.recruiters_request(target, model))
         stored = await repository.latest_recruiters(session, employer.id, fingerprint)
     return employer.id, target, fingerprint, stored

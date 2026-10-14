@@ -216,18 +216,24 @@ A **RecruitersBlock** under the identity on the Company card
 (`frontend/src/components/RecruitersBlock.vue`, a sibling of
 `CompanyIdentity.vue`):
 
-1. A free "Search LinkedIn yourself ↗" link, always there.
-2. **Find recruiters** (~$0.02, ~5–20 s; both estimates): one AI web search for
-   recruiters, HR and talent acquisition at the company.
-3. Each person: name · role · linkedin ↗, and the snippet that shows it.
-   Below: "N found · M dropped · searched <date>". None confirmed reads "No
-   profiles the search could confirm".
+1. A free "Find the company on LinkedIn ↗" link, always there: LinkedIn's
+   company search for the website's host in quotes, or the name when there is
+   no website; the company page's People tab lists its recruiters.
+2. **Find recruiters** (~$0.01, 3–5 s measured): one AI web search for
+   recruiters, HR and talent acquisition at the company. Once a search is
+   shown: "Searched <date> · **Refresh**" — a refresh always runs and pays
+   for a new search (user, 2026-10-14).
+3. Each person: name · role · linkedin ↗, then "LinkedIn: <page title>" (the
+   search's own text, the check) and the model's note. Below: "N found · M
+   dropped". None confirmed reads "No profiles the search could confirm".
 
 ### Where the code lives
 
 - `jobmatch/research.py` gains a recruiters section between "who is behind a
   posting" and "checks on an answer":
   - `Target(name, homepage, city)` — the company to search for.
+    `recruiters_prompt` names it by its homepage's host, and by its name only
+    when there is no homepage (see "Query by website" below).
   - `Person(name, role | None, linkedin_url, evidence)` and
     `Recruiters(people, notes)` — pydantic, strict like `Identity`. Their
     docstrings and `Field` descriptions are sent as part of the schema: prompt
@@ -242,16 +248,17 @@ A **RecruitersBlock** under the identity on the Company card
     keeping only people whose profile slug was cited, each URL rewritten in
     its canonical form.
 - `jobmatch/pipeline.py`: `target_of(employer, identity | None)` beside
-  `poster_of`; `find_recruiters(vacancy_id, model)` returns the newest search
-  for this employer and this request's fingerprint, free, when it is younger
-  than `RECRUITERS_FRESH` (30 days, in the pipeline, not config: recruiters
-  change jobs), else asks and saves. `stored_recruiters(vacancy_id, model)`
+  `poster_of`; `find_recruiters(vacancy_id, model, *, refresh=False)` returns
+  the newest search for this employer and this request's fingerprint, free,
+  when it is younger than `RECRUITERS_FRESH` (30 days, in the pipeline, not
+  config: recruiters change jobs), else asks and saves; `refresh` always asks
+  and saves a new row. `stored_recruiters(vacancy_id, model)`
   reads the same row without asking, for the card.
 - `people_model` in `config.toml`: `google/gemini-2.5-flash-lite:online`;
   Perplexity's sonar is the alternative, by config.
-- API: `POST /api/vacancies/{id}/company/recruiters` (409 / 404 / 503 / 502 as
-  for the identity, and 422 when the company has no name to search for:
-  `pipeline.NoCompanyName`); `GET /company` gains `recruiters`, shaped
+- API: `POST /api/vacancies/{id}/company/recruiters[?refresh=true]` (409 /
+  404 / 503 / 502 as for the identity, and 422 when the company has neither a
+  website nor a name to search for: `pipeline.NothingToSearchFor`); `GET /company` gains `recruiters`, shaped
   `CompanyRecruiters(people, dropped, sources, created_at)` only.
 
 ### Data
@@ -268,10 +275,32 @@ newest row, so a posting with an identity and one without (two requests)
 paid in turn on every switch; the cache now looks the request up by its
 fingerprint within the employer.
 
-### Unverified until the first clicks
+### Query by website, and refresh (the user's decisions, 2026-10-14)
 
-That `:online` searches with Exa at ~$0.02 a call, that its citations arrive
-in `annotations`, and that strict `json_schema` works with the web plugin.
+- **The website identifies the company, not the name.** The prompt reads
+  "Recruiters, HR or talent acquisition at the company whose website is
+  ertelecom.ru (Пермь) — LinkedIn profiles"; the name is not sent when there
+  is a website, and is used only when there is none. A name is shared by
+  namesakes and spelt in two alphabets; a host is neither. `Target` keeps the
+  name for the log. This changed every recruiter fingerprint: the two rows
+  stored before it are not reused.
+- **Which website.** Without an identity whose homepage answered
+  (`homepage_ok`), the website is hh's link, often a careers or landing host
+  (rabotavdomru.ru for ЭР-Телеком, l.tbank.ru for Т-Банк); an identity with
+  a homepage that answered is what replaces it (`pipeline.target_of`).
+- **Chosen knowing the cost.** The user chose website-only knowing the
+  search text then holds no name. Unmeasured: the first refreshes will show
+  whether LinkedIn profiles still come back from a host-only search.
+- **Refresh.** `jobmatch recruiters --vacancy N --refresh` and `?refresh=true`
+  on the route skip the 30-day reuse and always pay, for a search the user
+  doubts; a plain click or command still reuses a fresh row.
+
+### Measured on the first clicks (2026-10-14)
+
+Two searches (`jobmatch trace --kind recruiters`, calls 19578–9): strict
+`json_schema` works with `:online`, citations arrive in `annotations` (5 per
+search), and a search costs $0.007–0.008 in 3–5 s, not the ~$0.02 estimated.
+УайтСнейк: 5 people kept, 0 dropped. ОнТаргет ЛАБС: 5 sources, nobody.
 No committed eval file: it would hold recruiters' names.
 
 ### Build steps

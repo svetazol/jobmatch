@@ -41,6 +41,8 @@ GONE = {
     "identify.reachable": "research.reachable",
     "identify.Identity": "research.Identity",
     "identify.Poster": "research.Poster",
+    # renamed 2026-10-14, when a website alone became enough to search by
+    "NoCompanyName": "pipeline.NothingToSearchFor",
 }
 
 # Prose that happens to contain a dead string for a legitimate reason: the

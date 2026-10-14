@@ -53,11 +53,19 @@ async function lookUp() {
 
 watch(() => props.vacancyId, load, { immediate: true })
 
-/** The name the paid search uses, so the free link asks the same: the employer
- *  behind the posting when a model has named it (an agency's hh name finds the
- *  agency's recruiters), else the hh name. `||`, as an empty name is no name.
- *  The stored answer only: one asked just now shows on reload. */
-const searchName = computed(() => company.value?.identity?.employer || company.value?.name || '')
+/** What the free LinkedIn link searches for. The website's host first: it
+ *  names one company where a name is shared or translated (user, 2026-10-14);
+ *  the homepage the model checked, else the one hh lists. Without a site, the
+ *  employer a model named (an agency's hh name finds the agency's recruiters),
+ *  else the hh name; `||`, as an empty name is no name. The stored answer
+ *  only: one asked just now shows on reload. */
+const searchTerm = computed(() => {
+  const c = company.value
+  if (!c) return ''
+  const site = c.identity?.homepage_ok === true && isWeb(c.identity.homepage) ? c.identity.homepage
+    : isWeb(c.site_url) ? c.site_url : null
+  return site ? host(site) : c.identity?.employer || c.name || ''
+})
 
 /** hh's own words, in its language: translating them would add nothing but doubt. */
 const details = computed(() => {
@@ -90,7 +98,7 @@ const details = computed(() => {
 
         <CompanyIdentity :vacancy-id="vacancyId" :stored="company.identity"
                          :employer-name="company.name ?? companyName" />
-        <RecruitersBlock :vacancy-id="vacancyId" :stored="company.recruiters" :search-name="searchName" />
+        <RecruitersBlock :vacancy-id="vacancyId" :stored="company.recruiters" :search-term="searchTerm" />
       </template>
       <p v-else-if="!error" class="note">Its hh profile: website, city, industries. Free, about 2 s.</p>
     </template>

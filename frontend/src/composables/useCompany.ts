@@ -3,9 +3,11 @@
  * is worth a link, and whether a name says anything the page already shows.
  */
 
-/** The host alone, which is what you would type; the link keeps the full URL. */
+/** The host alone, which is what you would type; the link keeps the full URL.
+ *  No port, lowercased, no `www.`: the same as `_host` in jobmatch/research.py,
+ *  so the free LinkedIn link searches what the paid search does. */
 export const host = (url: string) => {
-  try { return new URL(url).host.replace(/^www\./, '') } catch { return url }
+  try { return new URL(url).hostname.toLowerCase().replace(/^www\./, '') } catch { return url }
 }
 
 /** Only http(s) becomes a link: Vue renders a `javascript:` href as given.

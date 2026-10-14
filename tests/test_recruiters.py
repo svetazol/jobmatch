@@ -249,6 +249,19 @@ async def test_a_fresh_search_with_the_same_request_is_free(vacancy_id, searches
     assert len(searches) == 1
 
 
+async def test_a_refresh_pays_even_with_a_fresh_search(vacancy_id, searches):
+    first = await pipeline.find_recruiters(vacancy_id, MODEL)
+    again = await pipeline.find_recruiters(vacancy_id, MODEL, refresh=True)
+
+    assert again.id != first.id
+    assert again.inputs_fingerprint == first.inputs_fingerprint
+    assert len(searches) == 2
+    assert [s.id for s in await _searches()] == [first.id, again.id]
+    # and a plain click after it reuses the refreshed one
+    assert (await pipeline.find_recruiters(vacancy_id, MODEL)).id == again.id
+    assert len(searches) == 2
+
+
 async def test_a_search_older_than_fresh_is_asked_again(vacancy_id, searches):
     first = await pipeline.find_recruiters(vacancy_id, MODEL)
     async with SessionLocal.begin() as session:
@@ -332,13 +345,28 @@ async def test_without_a_looked_up_employer_there_is_nothing_to_search(vacancy_i
     assert searches == []
 
 
-async def test_a_company_with_no_name_is_not_searched(vacancy_id, searches):
+async def test_a_company_with_a_website_but_no_name_is_searched_by_it(vacancy_id, searches):
     async with SessionLocal.begin() as session:
         await session.execute(
             update(Employer).where(Employer.source == SOURCE_NAME).values(name=None)
         )
 
-    with pytest.raises(pipeline.NoCompanyName, match="no name"):
+    await pipeline.find_recruiters(vacancy_id, MODEL)
+
+    ((target, _),) = searches
+    assert target == research.Target(None, "http://rabotavdomru.ru", "Пермь")
+
+
+async def test_a_company_with_neither_a_website_nor_a_name_is_not_searched(
+    vacancy_id, searches
+):
+    async with SessionLocal.begin() as session:
+        await session.execute(
+            update(Employer).where(Employer.source == SOURCE_NAME)
+            .values(name=None, site_url=None)
+        )
+
+    with pytest.raises(pipeline.NothingToSearchFor, match="neither a website nor a name"):
         await pipeline.find_recruiters(vacancy_id, MODEL)
     assert searches == []
 
@@ -394,9 +422,31 @@ async def test_the_command_prints_the_people_and_whether_it_paid(vacancy_id, sea
     assert await cli.cmd_recruiters("config.toml", vacancy_id) == 0
     assert "cached, free: searched earlier by llm_calls #" in capsys.readouterr().out
 
+    assert await cli.cmd_recruiters("config.toml", vacancy_id, refresh=True) == 0
+    assert "paid: llm_calls #" in capsys.readouterr().out
+    assert len(searches) == 2
+
+
+def test_the_command_takes_refresh(monkeypatch):
+    passed = {}
+
+    async def cmd(config_path, vacancy_id, *, refresh=False):
+        passed.update(vacancy_id=vacancy_id, refresh=refresh)
+        return 0
+
+    async def run(command):   # `cli._run` without disposing the tests' engine
+        return await command
+
+    monkeypatch.setattr(cli, "cmd_recruiters", cmd)
+    monkeypatch.setattr(cli, "_run", run)
+    assert cli.main(["recruiters", "--vacancy", "7", "--refresh"]) == 0
+    assert passed == {"vacancy_id": 7, "refresh": True}
+    assert cli.main(["recruiters", "--vacancy", "7"]) == 0
+    assert passed == {"vacancy_id": 7, "refresh": False}
+
 
 async def test_the_command_reports_why_it_cannot_search(vacancy_id, monkeypatch, capsys):
-    async def fails(*args):
+    async def fails(*args, **kwargs):
         raise pipeline.NotLookedUp("the company has not been looked up yet")
 
     monkeypatch.setattr(pipeline, "find_recruiters", fails)
@@ -446,6 +496,15 @@ async def test_a_second_click_with_nothing_changed_is_free(vacancy_id, searches,
     assert len(searches) == 1
 
 
+async def test_a_refresh_click_pays_again(vacancy_id, searches, client):
+    first = await client.post(f"/api/vacancies/{vacancy_id}/company/recruiters")
+    second = await client.post(f"/api/vacancies/{vacancy_id}/company/recruiters?refresh=true")
+
+    assert second.status_code == 200
+    assert second.json()["created_at"] != first.json()["created_at"]
+    assert len(searches) == 2 and len(await _searches()) == 2
+
+
 async def test_the_route_asks_for_a_lookup_first(vacancy_id, searches, client):
     async with SessionLocal.begin() as session:
         await session.execute(delete(Employer).where(Employer.source == SOURCE_NAME))
@@ -464,16 +523,19 @@ async def test_the_route_404s_an_unknown_vacancy(searches, client):
     assert "no vacancy" in resp.json()["detail"]
 
 
-async def test_the_route_422s_a_company_with_no_name(vacancy_id, searches, client):
+async def test_the_route_422s_a_company_with_nothing_to_search_for(
+    vacancy_id, searches, client
+):
     async with SessionLocal.begin() as session:
         await session.execute(
-            update(Employer).where(Employer.source == SOURCE_NAME).values(name=None)
+            update(Employer).where(Employer.source == SOURCE_NAME)
+            .values(name=None, site_url=None)
         )
 
     resp = await client.post(f"/api/vacancies/{vacancy_id}/company/recruiters")
 
     assert resp.status_code == 422
-    assert resp.json()["detail"] == "the company has no name to search for"
+    assert resp.json()["detail"] == "the company has neither a website nor a name to search for"
     assert searches == []
     # and the card still renders, with nothing to show
     card = await client.get(f"/api/vacancies/{vacancy_id}/company")

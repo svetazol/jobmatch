@@ -197,8 +197,8 @@ nobody has). It pays once per distinct request and stores an
 company (`jobmatch recruiters --vacancy N`, the same lookup first). It uses the
 identity if there is one, pays once per company and request -- two postings
 whose requests differ do not pay for each other's -- and stores a
-`recruiter_searches` row that is reused, free, until it is a month old
-(`docs/architecture.md` §3.7).
+`recruiter_searches` row that is reused, free, until it is a month old, or
+until `--refresh` asks again (`docs/architecture.md` §3.7).
 
 ---
 

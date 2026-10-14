@@ -217,10 +217,10 @@ async def cmd_identify(config_path: str, vacancy_id: int) -> int:
     return 0
 
 
-async def cmd_recruiters(config_path: str, vacancy_id: int) -> int:
+async def cmd_recruiters(config_path: str, vacancy_id: int, *, refresh: bool = False) -> int:
     """Who recruits for the company behind one posting, with `people_model`.
     Pays unless the company has a fresh search with the same request
-    (`pipeline.RECRUITERS_FRESH`).
+    (`pipeline.RECRUITERS_FRESH`); with `refresh`, always pays.
 
     A company never looked up is looked up first, as in `cmd_identify`. The
     identity is not asked for: the search uses one if it exists.
@@ -233,7 +233,7 @@ async def cmd_recruiters(config_path: str, vacancy_id: int) -> int:
             print("looking the company up on hh first")
             await pipeline.lookup_employer(vacancy_id)
         started = dt.datetime.now(dt.UTC)
-        row = await pipeline.find_recruiters(vacancy_id, settings.people_model)
+        row = await pipeline.find_recruiters(vacancy_id, settings.people_model, refresh=refresh)
     except (pipeline.EmployerUnknown, pipeline.NotLookedUp) as e:
         print(f"cannot search for the recruiters of vacancy {vacancy_id}: {e}")
         return 1
@@ -398,9 +398,13 @@ def main(argv: list[str] | None = None) -> int:
     recruiters = sub.add_parser(
         "recruiters",
         help="search the web for recruiters at the company behind one posting "
-        "-- pays (~$0.02) unless a fresh search exists",
+        "-- pays (~$0.01) unless a fresh search exists",
     )
     recruiters.add_argument("--vacancy", type=int, required=True, metavar="ID")
+    recruiters.add_argument(
+        "--refresh", action="store_true",
+        help="search again even if a fresh search exists -- always pays",
+    )
     recruiters.add_argument("--config", default=str(DEFAULT_PATH))
 
     args = parser.parse_args(argv)
@@ -424,7 +428,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "identify":
         command = cmd_identify(args.config, args.vacancy)
     elif args.command == "recruiters":
-        command = cmd_recruiters(args.config, args.vacancy)
+        command = cmd_recruiters(args.config, args.vacancy, refresh=args.refresh)
     else:
         parser.error(f"unknown command {args.command}")  # unreachable
     return asyncio.run(_run(command))

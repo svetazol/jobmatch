@@ -189,11 +189,21 @@ async def ask_employer(
 
 @dataclass(frozen=True, slots=True)
 class Target:
-    """The company to search for: its name, and what tells it from namesakes."""
+    """The company to search for: its homepage, its name, and its city.
 
-    name: str
+    The prompt names it by the homepage's host where there is one, by the name
+    only where there is not (`recruiters_prompt`); the name is kept either way
+    for the log and the UI.
+    """
+
+    name: str | None
     homepage: str | None
     city: str | None
+
+    @property
+    def searchable(self) -> bool:
+        """Whether there is a website or a name to search for."""
+        return bool(_host(self.homepage) or self.name)
 
 
 # As with `Identity`, the docstrings and descriptions are prompt text, covered
@@ -234,8 +244,9 @@ acquisition who work there now. Search the web for their LinkedIn profiles.
   memory or build one from a name.
 - `evidence` is the search result text that shows the person's name, role and
   company.
-- A company with the same or a similar name is not this company: tell them
-  apart by the homepage and the city.
+- The company is given by its website where it has one. Keep only people
+  the search results tie to the company behind that site; a company with a
+  similar name is not it: tell them apart by the website and the city.
 - Someone who left the company, or who recruits for another one, does not
   belong in the list.
 - If the search shows no one, answer with an empty list: an empty list is
@@ -243,10 +254,17 @@ acquisition who work there now. Search the web for their LinkedIn profiles.
 
 
 def recruiters_prompt(target: Target) -> str:
-    """Short and query-like: the web search is likely built from this text,
-    so the homepage goes in as its bare host, as a person would type it."""
-    known = ", ".join(part for part in (_host(target.homepage), target.city) if part)
-    company = f"{target.name} ({known})" if known else target.name
+    """Short and query-like: the web search is likely built from this text.
+
+    The company is named by its website's bare host, as a person would type
+    it, and by its name only when it has no website: a name is shared by
+    namesakes and spelt in two alphabets, a host is neither (the user,
+    2026-10-14). Only for a `searchable` target.
+    """
+    host = _host(target.homepage)
+    company = f"the company whose website is {host}" if host else target.name
+    if target.city:
+        company = f"{company} ({target.city})"
     return f"Recruiters, HR or talent acquisition at {company} — LinkedIn profiles"
 
 

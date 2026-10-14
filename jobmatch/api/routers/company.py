@@ -83,22 +83,24 @@ async def identify_company(vacancy_id: int) -> CompanyIdentity:
 
 
 @router.post("/{vacancy_id}/company/recruiters", response_model=CompanyRecruiters)
-async def search_recruiters(vacancy_id: int) -> CompanyRecruiters:
+async def search_recruiters(vacancy_id: int, refresh: bool = False) -> CompanyRecruiters:
     """Ask `people_model` to search the web for who recruits at the company;
-    free when the same request was answered within `pipeline.RECRUITERS_FRESH`.
+    free when the same request was answered within `pipeline.RECRUITERS_FRESH`,
+    unless `?refresh=true`, which always pays.
 
     No `SessionDep`, as above. 409 means the company must be looked up first,
-    422 that it has no name to search for, 503 that there is no API key, 502
-    that the call failed -- it is in `llm_calls` either way.
+    422 that it has neither a website nor a name to search for, 503 that
+    there is no API key, 502 that the call failed -- it is in `llm_calls`
+    either way.
     """
     if not os.environ.get(research.API_KEY_ENV):   # 503 rather than 502, as above
         raise HTTPException(503, f"Set {research.API_KEY_ENV} in .env to search for recruiters.")
     model = load_settings(DEFAULT_PATH).people_model
     try:
-        row = await pipeline.find_recruiters(vacancy_id, model)
+        row = await pipeline.find_recruiters(vacancy_id, model, refresh=refresh)
     except pipeline.NotLookedUp:
         raise HTTPException(409, "look up the company first") from None
-    except pipeline.NoCompanyName as e:   # before EmployerUnknown: it is one
+    except pipeline.NothingToSearchFor as e:   # before EmployerUnknown: it is one
         raise HTTPException(422, str(e)) from None
     except pipeline.EmployerUnknown as e:
         raise HTTPException(404, str(e)) from None
@@ -110,7 +112,7 @@ async def search_recruiters(vacancy_id: int) -> CompanyRecruiters:
 
 async def _stored_recruiters(vacancy_id: int) -> CompanyRecruiters | None:
     """The search the card would show; None when there is none, or nothing to
-    search for yet (no lookup, no name) -- the POST says why when clicked.
+    search for yet (no lookup, no website or name) -- the POST says why when clicked.
 
     The section is optional on a free read, so no failure here fails the card.
     """

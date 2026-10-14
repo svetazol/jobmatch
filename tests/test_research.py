@@ -778,17 +778,30 @@ def test_a_citation_without_a_title_still_confirms():
 
 
 @pytest.mark.parametrize(("target", "prompt"), [
-    (TARGET, "Recruiters, HR or talent acquisition at ЭР-Телеком "
-             "(ertelecom.ru, Пермь) — LinkedIn profiles"),
-    (research.Target("ЭР-Телеком", "https://www.ertelecom.ru/about", None),
-     "Recruiters, HR or talent acquisition at ЭР-Телеком (ertelecom.ru) — LinkedIn profiles"),
+    # a website names the company, and the name is not sent (the user, 2026-10-14)
+    (TARGET, "Recruiters, HR or talent acquisition at the company whose website is "
+             "ertelecom.ru (Пермь) — LinkedIn profiles"),
+    (research.Target(None, "https://www.ertelecom.ru/about", None),
+     "Recruiters, HR or talent acquisition at the company whose website is "
+     "ertelecom.ru — LinkedIn profiles"),
+    # no website, or one with no host: the name
     (research.Target("ЭР-Телеком", None, "Пермь"),
      "Recruiters, HR or talent acquisition at ЭР-Телеком (Пермь) — LinkedIn profiles"),
-    (research.Target("ЭР-Телеком", None, None),
+    (research.Target("ЭР-Телеком", "not a url", None),
      "Recruiters, HR or talent acquisition at ЭР-Телеком — LinkedIn profiles"),
 ])
 def test_the_question_is_short_like_a_search_query(target, prompt):
     assert research.recruiters_prompt(target) == prompt
+
+
+@pytest.mark.parametrize(("target", "searchable"), [
+    (research.Target(None, "https://ertelecom.ru", None), True),
+    (research.Target("ЭР-Телеком", None, None), True),
+    (research.Target(None, "not a url", "Пермь"), False),
+    (research.Target("", None, "Пермь"), False),
+])
+def test_a_target_needs_a_website_or_a_name(target, searchable):
+    assert target.searchable is searchable
 
 
 def test_the_recruiters_schema_is_what_strict_mode_accepts():
