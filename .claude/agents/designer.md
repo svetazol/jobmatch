@@ -23,9 +23,13 @@ Never run anything that spends money or hits hh.ru: `jobmatch match`,
   is the only store, async throughout, no PG enums, config holds choices
   only, nothing deletes vacancies, never pay twice for the same LLM request,
   the KISS list.
-- `docs/architecture.md` — the seams: `sources/` (the web), `matching/` (the
-  LLM), `models.py` + `repository.py` (the database), and `pipeline.py`, the
-  only module allowed to know all three. `cli.py` and `api/` are thin callers.
+- `docs/architecture.md` — the seams: `sources/` (the web), `llm/` (how a model is called: key, fingerprint,
+  ledger, one module per provider), the uses above it (`matching/`,
+  `research/`, `cover_note.py`), `models.py` + `repository.py` (the
+  database), and the two modules that join them: `pipeline.py` (the run
+  phases) and `company_research.py` (the on-click company questions).
+  `cli.py` and `api/` are thin callers. Every model call is in the table in
+  `docs/architecture.md` §8; a new AI use follows the recipe there.
 - `docs/decisions.md` — options refused before, and why. History, not law,
   and it can be outdated. Before designing around an entry, check its reason
   still holds against today's code and data. Do not quietly design a refused

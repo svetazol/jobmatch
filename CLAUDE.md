@@ -1,8 +1,9 @@
 # jobmatch
 
 Scrapes Python vacancies from hh.ru into Postgres and matches each one against
-a CV with Jev (TypeSafe AI, via OpenRouter), served to a Vue UI. Single user,
-one machine, one database.
+a CV with Jev (TypeSafe AI, via OpenRouter), served to a Vue UI. On click it
+also asks a model who posted a vacancy and who recruits there (OpenRouter),
+and drafts a cover note (`claude -p`). Single user, one machine, one database.
 
 It is also where the user practises the AI engineering stack: agents, tools,
 structured output, evals, tracing. Where AI is a reasonable way to solve a
@@ -15,7 +16,8 @@ reason to leave AI out.
 The docs hold the reasoning the code cannot; read the relevant one first.
 
 - `docs/architecture.md`: the seams, the idempotency rules, the schema's
-  reasoning, the API's decisions.
+  reasoning, the API's decisions. §8 maps every model call and holds the
+  recipe for adding a new AI use.
 - `docs/pipeline.md`: the three phases and what is on disk after each one.
 - `docs/decisions.md`: what was considered and **refused**, and why. Check it
   before proposing an abstraction, a library, or a config setting. It can be

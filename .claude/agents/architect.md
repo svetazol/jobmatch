@@ -17,10 +17,14 @@ run anything that spends money or hits a live site.
 
 ## What you know about this repo
 
-Read `CLAUDE.md` and `docs/architecture.md` first. The seams: `sources/` (the
-web), `matching/` (the LLM), `models.py` + `repository.py` (the database), and
-`pipeline.py`, the one module allowed to know all three; `cli.py` and `api/`
-are thin callers. `docs/decisions.md` records what was refused; it can be
+Read `CLAUDE.md` and `docs/architecture.md` first. The seams:
+`sources/` (the web), `llm/` (how a model is called: key, fingerprint,
+ledger, one module per provider), the uses above it (`matching/`,
+`research/`, `cover_note.py`), `models.py` + `repository.py` (the
+database), and the two modules that join them: `pipeline.py` (the run
+phases) and `company_research.py` (the on-click company questions).
+`cli.py` and `api/` are thin callers. Every model call is in the table in
+`docs/architecture.md` §8; a new AI use follows the recipe there. `docs/decisions.md` records what was refused; it can be
 outdated, so check a reason still holds before leaning on it.
 
 ## What readable means here
