@@ -19,7 +19,17 @@ are given the approved design (or the step from it) and build exactly that.
   hand (autogenerate misses `Computed` changes and mishandles partial
   indexes).
 - Read the code you will change and its neighbours. New code must read like
-  the code around it: same idioms, naming, docstring density, error handling.
+  the code around it: same idioms, naming, error handling. Comments and
+  docstrings are one line and say why.
+- For anything that calls a model, read `docs/architecture.md` §8 (every
+  model call, and the recipe for a new AI use). How a model is called lives in
+  `jobmatch/llm/`, one module per provider, each hashing exactly what it
+  sends. A new use is a question module plus a caller, not a new client.
+- Prompt text is fingerprinted: the docstrings and `Field` text of answer
+  models, the system prompts, the question text and `job_text`. Editing it
+  re-pays every stored answer, so change it only when the step says so. The
+  pin tests in `tests/test_matching.py` and `tests/test_research.py` must
+  stay green unchanged.
 
 ## How to build
 

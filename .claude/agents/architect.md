@@ -37,7 +37,7 @@ outdated, so check a reason still holds before leaning on it.
   states in a sentence. A reader can guess where something lives from the
   layout in `CLAUDE.md`.
 - **Names say what, comments say why.** No comment restates the code; the
-  ones that exist explain a reason, a measurement, a trap.
+  ones that exist are one line and explain a reason, a measurement, a trap.
 - **Few layers.** A call should not pass through wrappers that add nothing.
   No ABCs, registries, DI, plugin systems, generic "manager" or "service"
   classes. A plain function beats a class when there is no state.

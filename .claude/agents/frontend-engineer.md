@@ -26,7 +26,8 @@ You are given the approved design (or the step from it) and build exactly that.
 - Build only the step you were given. If the design does not fit the UI or the
   API once you are in the code, stop and report it — do not redesign.
 - Keep components small and readable: state and actions at the top of the
-  script, in the order the user meets them; a comment says why, not what.
+  script, in the order the user meets them; a comment is one line and says
+  why, not what.
 - Anything that triggers a slow or paid request: a button disabled while it
   runs, a line telling the user how long it takes, the API's error message
   shown as given.

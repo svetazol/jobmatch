@@ -32,6 +32,12 @@ paid model).
 - Data: migrations reviewed by hand and reversible; no row deleted that the
   rules keep; never paying twice for the same LLM request; nothing that
   spends money left out of `llm_calls`.
+- Model calls: a new one goes through its provider module in `jobmatch/llm/`
+  and `llm.recorded`, and follows the recipe in `docs/architecture.md` §8.
+  The stored fingerprint must be the hash of what is actually sent. Any edit
+  to prompt text (answer-model docstrings and `Field`s, system prompts,
+  question text, `job_text`) changes fingerprints: flag it unless the step
+  meant it, and check the pin tests were not edited to match.
 - Async: no blocking work on the event loop, no session held across a network
   call, timeouts that bound the whole operation.
 - Security for this tool: links from outside data limited to http(s), no
@@ -40,8 +46,8 @@ paid model).
 
 **Readability** — could the user open the file and see how it works?
 - The flow visible in one function, helpers below it in reading order.
-- One job per module and function; names that say what; comments that say
-  why, not what.
+- One job per module and function; names that say what; comments of one
+  line that say why, not what.
 - No layer, wrapper or abstraction that adds nothing; no clever code where a
   plain version reads better.
 - Workarounds explained once, where they live, with what forced them.
