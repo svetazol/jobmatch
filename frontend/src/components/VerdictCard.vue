@@ -1,27 +1,37 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import Card from 'primevue/card'
-import type { Answers, Gap, MatchSummary, Pitch } from '@/api/types'
-import FitHistogram from '@/components/FitHistogram.vue'
+import type { Answers, Gap, MatchSummary, Pitch, Seniority } from '@/api/types'
 import {
   FIT_ORDER, GAP_LABEL, PITCH_HINT, PITCH_LABEL,
   fmtPct, fmtScore, isVague, legendOf, requirementsBand, topTwo,
 } from '@/composables/useFit'
+import { ramp } from '@/theme'
 
 /**
- * The matcher's verdict as four sentences. An unsure answer names its two
- * leading options instead of one winner: a winner printed alone reads as
- * certainty the matcher did not have.
+ * The matcher's verdict: the fit as a ring, then four short columns. An unsure
+ * answer names its two leading options instead of one winner: a winner printed
+ * alone reads as certainty the matcher did not have.
  */
 const props = defineProps<{
   match: MatchSummary | null
   answers: Answers | null
+  seniority: Seniority | null
 }>()
 
 const fitLabel = (key: string) => FIT_ORDER[Number(key)] ?? key
 // "none" among two options must not read as a bare "or none" -- the "no gap" this card avoids
 const gapLabel = (key: string) => key === 'none' ? 'no gap at all' : GAP_LABEL[key as Gap] ?? key
 const pitchLabel = (key: string) => PITCH_LABEL[key as Pitch] ?? key
+
+const capitalise = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+const share = (t: { label: string; p: number }) => `${t.label} ${fmtPct(t.p)}`
+
+const RING_R = 34
+const RING_LEN = 2 * Math.PI * RING_R
+const ringDash = computed(() => `${(props.match?.overall_fit_score ?? 0) * RING_LEN} ${RING_LEN}`)
+// the list histogram's hue, so a poor fit never reads as a green pass
+const ringColour = computed(() =>
+  props.match ? ramp()[FIT_ORDER.indexOf(props.match.overall_fit_label)] ?? ramp()[0] : undefined)
 
 const fitVague = computed(() => isVague(props.match?.overall_fit_confidence))
 const fitTop = computed(() => props.match ? topTwo(props.match.fit_probabilities, fitLabel) : [])
@@ -30,6 +40,10 @@ const fitMeaning = computed(() =>
   props.match ? legendOf(props.answers)[props.match.overall_fit_label] : null)
 
 const band = computed(() => props.match ? requirementsBand(props.match.is_qualified_noul) : null)
+
+const SENIORITY_TEXT: Record<Seniority, string> = {
+  below: 'Below your level', level: 'Your level', above: 'Above your level',
+}
 
 /**
  * Never render a vague gap as "no gap". Vacancy 40's top_gap is "none" at
@@ -42,70 +56,117 @@ const gapTop = computed(() => props.answers ? topTwo(props.answers.top_gap.proba
 
 const pitchVague = computed(() => isVague(props.match?.best_angle_confidence))
 const pitchTop = computed(() => props.answers ? topTwo(props.answers.best_angle.probabilities, pitchLabel) : [])
-
-const capitalise = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 </script>
 
 <template>
-  <Card>
-    <template #content>
-      <p v-if="!match" class="none">Not matched yet.</p>
+  <p v-if="!match" class="none">Not matched yet.</p>
 
-      <div v-else class="rows">
-        <span class="label">Fit</span>
-        <div class="fit">
-          <FitHistogram :probabilities="match.fit_probabilities" :label="match.overall_fit_label"
-                        :confidence="match.overall_fit_confidence" />
-          <p v-if="fitVague && fitTop.length === 2">
-            <strong>{{ capitalise(match.overall_fit_label) }}?</strong> — the matcher was unsure:
-            {{ fitTop[0]!.label }} {{ fmtPct(fitTop[0]!.p) }}, {{ fitTop[1]!.label }} {{ fmtPct(fitTop[1]!.p) }}.
-          </p>
-          <p v-else>
-            <strong>{{ capitalise(match.overall_fit_label) }}</strong>
-            <span class="nm">{{ fmtScore(match.overall_fit_score) }}</span>
-            <span v-if="fitMeaning" class="muted">“{{ fitMeaning }}”</span>
-          </p>
-        </div>
+  <div v-else class="verdict">
+    <div class="fit">
+      <svg class="ring" viewBox="0 0 80 80" width="80" height="80" role="img"
+           :aria-label="`Fit score ${Math.round(match.overall_fit_score * 100)} of 100`">
+        <circle cx="40" cy="40" :r="RING_R" class="track" />
+        <circle cx="40" cy="40" :r="RING_R" class="arc" :stroke="ringColour" :stroke-dasharray="ringDash" />
+        <text x="40" y="40" class="score">{{ Math.round(match.overall_fit_score * 100) }}</text>
+      </svg>
+      <div v-if="fitVague && fitTop.length === 2">
+        <p class="fitlabel">{{ capitalise(match.overall_fit_label) }}?</p>
+        <p class="muted">unsure: {{ share(fitTop[0]!) }} or {{ share(fitTop[1]!) }}</p>
+      </div>
+      <div v-else>
+        <p class="fitlabel">{{ capitalise(match.overall_fit_label) }}</p>
+        <p v-if="fitMeaning" class="muted">{{ fitMeaning }}</p>
+      </div>
+    </div>
 
+    <div class="cols">
+      <div>
         <span class="label">Requirements</span>
         <!-- borderline names the raw noul: .51 and .64 are both "true",
              and neither is worth trusting without a read -->
-        <p v-if="band === 'meets'">Meets the minimum requirements.</p>
-        <p v-else-if="band === 'borderline'">
-          Borderline ({{ fmtScore(match.is_qualified_noul) }}) — read the requirements yourself before writing.
-        </p>
-        <p v-else>Misses the minimum requirements.</p>
+        <p v-if="band === 'meets'" class="value ok">Meets</p>
+        <p v-else-if="band === 'borderline'" class="value warn">Borderline · {{ fmtScore(match.is_qualified_noul) }}</p>
+        <p v-else class="value bad">Misses</p>
+        <p class="muted">{{ band === 'borderline' ? 'read them before writing' : 'minimum requirements' }}</p>
+      </div>
 
+      <div>
+        <span class="label">Seniority</span>
+        <template v-if="seniority">
+          <p class="value">{{ SENIORITY_TEXT[seniority] }}</p>
+          <span class="scale" aria-hidden="true"><span class="you" /><span :class="['dot', seniority]" /></span>
+        </template>
+        <template v-else>
+          <p class="value">—</p>
+          <p class="muted">experience not stated</p>
+        </template>
+      </div>
+
+      <div>
         <span class="label">Biggest gap</span>
         <!-- the two shares, not "about equally": low confidence is not a tie
              (vacancy 5495: .63 against .19 at confidence .49) -->
-        <p v-if="gapVague && gapTop.length === 2">
-          No single clear gap — {{ gapTop[0]!.label }} {{ fmtPct(gapTop[0]!.p) }},
-          {{ gapTop[1]!.label }} {{ fmtPct(gapTop[1]!.p) }}.
-        </p>
-        <p v-else-if="gapVague">No single clear gap.</p>
-        <p v-else-if="match.top_gap === 'none'">No real gap.</p>
-        <p v-else>{{ capitalise(GAP_LABEL[match.top_gap]) }}.</p>
-
-        <span class="label">Lead with</span>
-        <p v-if="pitchVague && pitchTop.length === 2">
-          {{ pitchTop[0]!.label }} {{ fmtPct(pitchTop[0]!.p) }}, or {{ pitchTop[1]!.label }} {{ fmtPct(pitchTop[1]!.p) }}.
-        </p>
-        <p v-else>
-          {{ PITCH_LABEL[match.best_angle] }} <span class="muted">— {{ PITCH_HINT[match.best_angle] }}</span>
-        </p>
+        <template v-if="gapVague">
+          <p class="value">Unclear</p>
+          <p class="muted">no single gap stands out</p>
+          <p v-if="gapTop.length === 2" class="muted">{{ share(gapTop[0]!) }} · {{ share(gapTop[1]!) }}</p>
+        </template>
+        <p v-else-if="match.top_gap === 'none'" class="value">No real gap</p>
+        <p v-else class="value">{{ capitalise(GAP_LABEL[match.top_gap]) }}</p>
       </div>
-    </template>
-  </Card>
+
+      <div>
+        <span class="label">Lead with</span>
+        <template v-if="pitchVague && pitchTop.length === 2">
+          <p class="value">{{ pitchTop[0]!.label }}?</p>
+          <p class="muted">{{ fmtPct(pitchTop[0]!.p) }}, or {{ share(pitchTop[1]!) }}</p>
+        </template>
+        <template v-else>
+          <p class="value">{{ PITCH_LABEL[match.best_angle] }}</p>
+          <p class="muted">{{ PITCH_HINT[match.best_angle] }}</p>
+        </template>
+      </div>
+    </div>
+  </div>
 </template>
 
 <style scoped>
-.rows { display: grid; grid-template-columns: 8rem minmax(0, 1fr); gap: 0.875rem 1rem; align-items: baseline; }
-.label { font-size: 0.72rem; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase;
-  color: var(--p-text-muted-color); }
-.rows p, .none { margin: 0; font-size: 0.95rem; line-height: 1.5; }
-.none { color: var(--p-text-muted-color); }
-.fit { display: flex; align-items: flex-end; gap: 0.75rem; }
-.nm { margin-left: 0.5rem; color: var(--p-text-muted-color); font-variant-numeric: tabular-nums; }
-.muted { margin-left: 0.25rem; color: var(--p-text-muted-color); }
+/* requirements status only (see theme.ts); 700 and 400 are the shades that clear 4.5:1 on each mode's surface */
+.verdict { --ok: var(--p-green-700); --warn: var(--p-orange-700); --bad: var(--p-red-700); }
+:root.dark .verdict { --ok: var(--p-green-400); --warn: var(--p-orange-400); --bad: var(--p-red-400); }
+p { margin: 0; }
+.none { font-size: 0.95rem; color: var(--p-text-muted-color); }
+.muted { font-size: 0.8rem; line-height: 1.45; color: var(--p-text-muted-color); }
+
+.fit { display: flex; align-items: center; gap: 1rem; }
+.ring { flex: none; }
+.ring circle { fill: none; stroke-width: 6; }
+.track { stroke: var(--p-surface-200); }
+/* starts at twelve o'clock and fills clockwise */
+.arc { stroke-linecap: round; transform: rotate(-90deg); transform-origin: 40px 40px; }
+.score { fill: var(--p-text-color); font-size: 22px; font-weight: 700; text-anchor: middle;
+  dominant-baseline: central; }
+.fitlabel { font-size: 1.05rem; font-weight: 600; }
+
+.cols { margin-top: 1.25rem; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem 1.5rem; }
+.label { display: block; margin-bottom: 0.3rem; font-size: 10.5px; font-weight: 600;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--p-text-muted-color); }
+.value { font-size: 0.95rem; font-weight: 600; line-height: 1.4; }
+.ok { color: var(--ok); }
+.warn { color: var(--warn); }
+.bad { color: var(--bad); }
+
+/* neutral on purpose: the text above carries the meaning; the band is your level, the dot the posting */
+.scale { position: relative; display: block; width: 120px; height: 4px; margin-top: 0.55rem;
+  border-radius: 2px; background: var(--p-surface-200); }
+.you { position: absolute; left: 40%; width: 20%; height: 100%; border-radius: 2px; background: var(--p-surface-300); }
+:root.dark .you { background: var(--p-surface-400); }
+.dot { position: absolute; top: 50%; width: 10px; height: 10px; border-radius: 50%;
+  transform: translate(-50%, -50%); background: var(--p-text-color); }
+.dot.below { left: 0; }
+.dot.level { left: 50%; }
+.dot.above { left: 100%; }
+
+@media (max-width: 860px) { .cols { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 480px) { .cols { grid-template-columns: minmax(0, 1fr); } }
 </style>

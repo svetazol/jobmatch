@@ -1,14 +1,14 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import Card from 'primevue/card'
-import Tag from 'primevue/tag'
 import Chip from 'primevue/chip'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
 import Skeleton from 'primevue/skeleton'
 import { api } from '@/api/client'
 import type { CoverNote, VacancyDetail } from '@/api/types'
+import { isWeb } from '@/composables/useCompany'
+import AiButton from '@/components/AiButton.vue'
 import CompanyPanel from '@/components/CompanyPanel.vue'
 import VerdictCard from '@/components/VerdictCard.vue'
 
@@ -39,6 +39,14 @@ async function load(id: number) {
  */
 const fmtDate = (iso: string) =>
   new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+
+/** Each fact once, in one line; 69% of matched postings state no salary (2026-10-13), so it says so. */
+const meta = computed(() => {
+  if (!v.value) return ''
+  const { company, country, work_formats, experience_raw, salary_raw, published_at } = v.value
+  return [company, country, work_formats.join(', '), experience_raw, salary_raw || 'salary not stated',
+    published_at && `posted ${fmtDate(published_at)}`].filter(Boolean).join(' · ')
+})
 
 /** Set by hand: nothing here can see your hh.ru account. */
 async function toggleApplied() {
@@ -110,94 +118,76 @@ watch(() => route.params.id, (id) => load(Number(id)))
         Not seen in hh search since {{ fmtDate(v.last_seen_at) }} — it may be closed.
       </Message>
 
-      <Card>
-        <template #content>
-          <div class="topline">
-            <div class="titlebox">
-              <h1>{{ v.title }}</h1>
-              <p class="org">
-                {{ v.company }} · {{ v.country }} · {{ v.work_formats.join(', ') }}<template
-                  v-if="v.published_at"> · posted {{ fmtDate(v.published_at) }}</template>
-              </p>
-            </div>
-            <div class="topacts">
-              <Button :label="v.applied_at ? `Applied ${fmtDate(v.applied_at)}` : 'Mark as applied'"
-                      :icon="v.applied_at ? 'pi pi-check-circle' : 'pi pi-send'"
-                      :severity="v.applied_at ? 'success' : 'secondary'" :outlined="!v.applied_at"
-                      :title="v.applied_at ? 'Click to undo' : undefined" @click="toggleApplied" />
-              <a :href="v.url" target="_blank" rel="noopener">
-                <Button label="Open on hh.ru" icon="pi pi-external-link" icon-pos="right" />
-              </a>
-            </div>
-          </div>
-          <div class="facts">
-            <Tag v-if="v.experience_raw" :value="v.experience_raw" severity="secondary" />
-            <!-- 69% of matched postings state no salary (2026-10-13), so absent is the normal case -->
-            <Tag v-if="v.salary_raw" :value="v.salary_raw" severity="secondary" />
-            <span v-else class="nosalary">salary not stated</span>
-          </div>
-        </template>
-      </Card>
+      <header class="head">
+        <div class="titlebox">
+          <h1>{{ v.title }}</h1>
+          <p class="meta">{{ meta }}</p>
+        </div>
+        <div class="acts">
+          <Button :label="v.applied_at ? `Applied ${fmtDate(v.applied_at)}` : 'Mark applied'"
+                  :icon="v.applied_at ? 'pi pi-check-circle' : 'pi pi-send'"
+                  :severity="v.applied_at ? 'success' : 'secondary'" outlined size="small"
+                  :title="v.applied_at ? 'Click to undo' : undefined" @click="toggleApplied" />
+          <Button v-if="isWeb(v.url)" as="a" :href="v.url" target="_blank" rel="noopener noreferrer"
+                  label="hh.ru ↗" severity="secondary" outlined size="small" />
+        </div>
+      </header>
 
-      <VerdictCard :match="v.match" :answers="v.answers" />
+      <section class="sec">
+        <VerdictCard :match="v.match" :answers="v.answers" :seniority="v.seniority" />
+      </section>
 
-      <CompanyPanel :vacancy-id="v.id" :company-name="v.company" />
+      <section class="sec">
+        <CompanyPanel :vacancy-id="v.id" :company-name="v.company" />
+      </section>
 
-      <Card>
-        <template #title>
-          <div class="cardtop">
-            <span>Cover letter</span>
-            <div class="noteactions">
-              <Button v-if="note" :label="copied ? 'Copied' : 'Copy'" :icon="copied ? 'pi pi-check' : 'pi pi-copy'"
-                      text size="small" @click="copyNote" />
-              <Button :label="note ? 'Rewrite' : 'Write cover letter'" icon="pi pi-sparkles" size="small"
-                      :loading="noteBusy" @click="writeNote" />
-            </div>
+      <section class="sec">
+        <div class="sechead">
+          <div>
+            <h2 class="label">Cover letter</h2>
+            <p v-if="note" class="muted">In {{ note.language }}. A draft: check every claim before sending.</p>
+            <p v-else class="muted">From your CV, in the posting's language</p>
           </div>
-        </template>
-        <template #content>
-          <Message v-if="noteError" severity="error" :closable="false">{{ noteError }}</Message>
-          <p v-if="noteBusy && !note" class="note">Asking Claude — this takes 10–30 seconds.</p>
-          <p v-if="note" class="covernote" :class="{ busy: noteBusy }">{{ note.text }}</p>
-          <p v-if="note" class="note">
-            In {{ note.language }}, from the CV in config.toml. A draft: check every claim before sending.
-          </p>
-          <p v-if="!note && !noteBusy && !noteError" class="note">
-            A short cover letter built from the CV, in the posting's language.
-          </p>
-        </template>
-      </Card>
-
-      <Card>
-        <template #title>The posting</template>
-        <template #content>
-          <div v-if="v.skills.length" class="skills">
-            <Chip v-for="s in v.skills" :key="s" :label="s" />
+          <div class="acts">
+            <Button v-if="note" :label="copied ? 'Copied' : 'Copy'" :icon="copied ? 'pi pi-check' : 'pi pi-copy'"
+                    text size="small" severity="secondary" @click="copyNote" />
+            <AiButton :label="note ? 'Rewrite' : 'Write draft'" :loading="noteBusy" loading-label="Writing… 10–30 s"
+                      title="Claude drafts it on this machine; 10–30 s" @click="writeNote" />
           </div>
-          <!-- plain text with list bullets already lost in scraping -->
-          <pre v-if="v.description" class="desc">{{ v.description }}</pre>
-        </template>
-      </Card>
+        </div>
+        <Message v-if="noteError" severity="error" :closable="false">{{ noteError }}</Message>
+        <p v-if="note" class="covernote" :class="{ busy: noteBusy }">{{ note.text }}</p>
+      </section>
+
+      <section class="sec">
+        <h2 class="label">Posting</h2>
+        <div v-if="v.skills.length" class="skills">
+          <Chip v-for="s in v.skills" :key="s" :label="s" />
+        </div>
+        <!-- plain text with list bullets already lost in scraping -->
+        <pre v-if="v.description" class="desc">{{ v.description }}</pre>
+      </section>
     </template>
   </section>
 </template>
 
 <style scoped>
-.page { display: flex; flex-direction: column; gap: 0.875rem; }
+/* one quiet column: no cards, sections split by a hairline */
+.page { display: flex; flex-direction: column; gap: 0.875rem; max-width: 56rem; margin: 0 auto; }
 .crumb { margin-bottom: -0.25rem; }
-.topacts { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
-.topline { display: flex; gap: 1.25rem; align-items: flex-start; flex-wrap: wrap; }
+.head { display: flex; gap: 1.25rem; align-items: flex-start; flex-wrap: wrap; }
 .titlebox { flex: 1 1 20rem; min-width: 0; }
 h1 { margin: 0; font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; line-height: 1.25; }
-.org { margin: 0.5rem 0 0; font-size: 0.875rem; color: var(--p-text-muted-color); }
-.facts { margin-top: 1rem; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
-.nosalary { font-size: 0.78rem; font-style: italic; color: var(--p-text-muted-color); }
-.cardtop { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; }
-.note { margin: 0.875rem 0 0; font-size: 0.78rem; line-height: 1.5; color: var(--p-text-muted-color); }
+.meta { margin: 0.5rem 0 0; font-size: 0.875rem; color: var(--p-text-muted-color); }
+.acts { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+.sec { display: flex; flex-direction: column; gap: 0.75rem; padding-top: 1.25rem;
+  border-top: 1px solid var(--p-content-border-color); }
+.sechead { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }
+.label { margin: 0; font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--p-text-muted-color); }
+.muted { margin: 0.25rem 0 0; font-size: 0.8rem; line-height: 1.45; color: var(--p-text-muted-color); }
 .skills { display: flex; flex-wrap: wrap; gap: 0.45rem; }
-.skills + .desc { margin-top: 1rem; }
 .desc { margin: 0; font-family: inherit; font-size: 0.85rem; line-height: 1.65; white-space: pre-wrap; }
-.noteactions { display: flex; gap: 0.25rem; align-items: center; }
 .covernote { margin: 0; font-size: 0.95rem; line-height: 1.65; white-space: pre-wrap; }
 .covernote.busy { opacity: 0.5; }
 </style>
