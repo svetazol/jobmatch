@@ -12,7 +12,7 @@ import { definePreset } from '@primevue/themes'
  * Fit is the only thing that gets colour: one hue, light -> dark. Pitch
  * identity is carried by its label, never by hue — four categorical hues
  * beside a five-step ramp is how a chart becomes unreadable.
- * The requirements status (pass/borderline/fail) is not fit: it uses Aura's green/orange/red.
+ * Status (requirements, the written mark, a failed call) is not fit: Aura's green/orange/red, set in styles.css.
  */
 export const FIT_RAMP = {
   light: ['#86b6ef', '#5598e7', '#2a78d6', '#1c5cab', '#104281'],

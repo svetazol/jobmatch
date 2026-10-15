@@ -181,7 +181,7 @@ async def cmd_identify(config_path: str, vacancy_id: int) -> int:
 
 
 async def _look_up_first(vacancy_id: int) -> None:
-    """One free hh page, as the UI's Look up company button."""
+    """One free hh page, as the UI's Look up action."""
     async with SessionLocal() as session:
         looked_up = await repository.employer_of(session, vacancy_id) is not None
     if not looked_up:

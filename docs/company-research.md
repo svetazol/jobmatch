@@ -21,7 +21,7 @@ deleted on 2026-10-12, after the parts worth keeping moved into what is now `job
 
 ## 1. Built: the company lookup
 
-A **Look up company** button in the vacancy page's Company card
+A **Look up** action in the vacancy page's Company section
 (`frontend/src/components/CompanyPanel.vue`) calls
 `POST /api/vacancies/{id}/company` (`jobmatch/api/routers/company.py`), which
 runs `company_research.lookup_employer` (`jobmatch/company_research.py`):
@@ -51,6 +51,9 @@ Designed by the designer agent, structure reviewed by the architect agent,
 approved by the user with the architect's changes folded in.
 
 ### What the user sees
+
+As designed; since 2026-10-15 the identity runs only on demand, to fill a gap
+(§3, What the user sees).
 
 1. **Look up company** runs the hh lookup as today (~2 s), then a second
    request identifies the employer (~1–3 s, ~$0.0002).
@@ -168,20 +171,48 @@ approved by the user.
 
 ### What the user sees
 
-A **RecruitersBlock** under the identity on the Company card
-(`frontend/src/components/RecruitersBlock.vue`, a sibling of
-`CompanyIdentity.vue`):
+Redrawn 2026-10-15 with the vacancy page (one quiet column, no cards). Two
+sections, Company and Recruiters (`frontend/src/components/CompanyPanel.vue`,
+and `RecruitersBlock.vue` under it); each has its label on the left and its
+actions on the right, the free one first.
 
-1. A free "Find the company on LinkedIn ↗" link, always there: LinkedIn's
-   company search for the website's host in quotes, or the name when there is
-   no website; the company page's People tab lists its recruiters.
-2. **Find recruiters** (~$0.01, 3–5 s measured): one AI web search for
+**Company.**
+
+1. Not looked up: the label and a quiet **Look up** (free, ~2 s, the hh
+   lookup of §1). Once looked up, the same action reads **Refresh**.
+2. Looked up: the links (hh's website host ↗ when hh has one, "hh profile ↗",
+   and "LinkedIn ↗", LinkedIn's company search for the website's host in
+   quotes, or the name without one), then a muted line: category ·
+   industries · city. hh's category already says organization
+   (`Организация`, shown "Organization") or agency (`Кадровое агентство`,
+   "Recruiting agency"), for free.
+3. The identity call (§2, ~$0.0002, cached by its inputs) is offered only to
+   fill a gap hh leaves: **Find website** when hh lists no site, **Find
+   client** for an agency, **Identify** for both. Nothing is offered when hh
+   already says it all. Its answer replaces the button: a homepage ↗ (when hh
+   had none) and a careers page ↗, each only if it answered a GET and marked
+   with a sparkles icon as the model's; for an agency (hh's category or the
+   model's answer), "Recruiting agency · hiring for <client> · <city>" or
+   "· client not named"; the real name, when it is not the posting's; the
+   model's notes as a tooltip on each of those. An answer that adds none of
+   them reads "Nothing found beyond hh". A failure reads "Couldn't check
+   (<error>)" and the button stays.
+
+**Recruiters**, once the company is looked up:
+
+1. **Find recruiters** (~$0.01, 3–5 s measured): one AI web search for
    recruiters, HR and talent acquisition at the company. Once a search is
-   shown: "Searched <date> · **Refresh**" — a refresh always runs and pays
-   for a new search (user, 2026-10-14).
-3. Each person: name · role · linkedin ↗, then "LinkedIn: <page title>" (the
-   search's own text, the check) and the model's note. Below: "N found · M
-   dropped". None confirmed reads "No profiles the search could confirm".
+   shown, **Search again** always runs and pays for a new one (user,
+   2026-10-14).
+2. Each person, one row: the name, linking to the LinkedIn profile ↗ (its
+   tooltip is the cited page's title and the profile slug, the check that
+   the name matches the page), the role, and the written mark.
+3. The written mark: "Mark as written", or "✓ Written <date>", which a click
+   undoes. It is stored per profile in `recruiter_contacts`, so it outlives
+   every search (`docs/architecture.md` §3.8).
+4. Under the list, "Searched <date>"; nobody confirmed reads "No profiles
+   found · searched <date>"; a failure, "Search failed (<error>)", above a
+   stored list.
 
 ### Where the code lives
 

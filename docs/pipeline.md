@@ -172,7 +172,7 @@ maintain it and would be wrong between runs.
 
 ## On demand: looking up an employer
 
-Not a phase: nothing in a run calls it. The **Look up company** button on a
+Not a phase: nothing in a run calls it. The **Look up** action on a
 vacancy calls `company_research.lookup_employer`, which fetches the employer's page and
 upserts an `employers` row (`docs/architecture.md` §3.5).
 

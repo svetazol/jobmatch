@@ -1,6 +1,6 @@
 /**
- * What the company card and the identity under it both need: deciding what
- * is worth a link, and whether a name says anything the page already shows.
+ * What the Company and Recruiters sections need: deciding what is worth a
+ * link, and whether a name says anything the page already shows.
  */
 
 /** The host alone, which is what you would type; the link keeps the full URL.
@@ -8,6 +8,12 @@
  *  so the free LinkedIn link searches what the paid search does. */
 export const host = (url: string) => {
   try { return new URL(url).hostname.toLowerCase().replace(/^www\./, '') } catch { return url }
+}
+
+/** Host and path, for a link whose path is the point (a careers page often
+ *  shares its homepage's host). */
+export const hostPath = (url: string) => {
+  try { return host(url) + decodeURIComponent(new URL(url).pathname).replace(/\/$/, '') } catch { return url }
 }
 
 /** Only http(s) becomes a link: Vue renders a `javascript:` href as given.

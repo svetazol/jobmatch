@@ -89,6 +89,12 @@ on 2026-10-12. What it established, still true unless re-measured:
 | `order_by` as a config setting | Under a per-query ceiling the ordering decides *which* 2 000 results you get, so it is coverage, not preference. Now `hh.ORDER_BY`; a configured value still wins. |
 | Named multi-search configs, per-source schedules, event hooks | Out of scope. |
 
+## UI
+
+| Rejected | Why |
+|---|---|
+| A standing "Ask a model who is behind it" button on every looked-up company (2026-10-15) | hh's own category already says organization or agency, for free (measured 2026-10-15: 12 `Организация`, 1 `Кадровое агентство` in `employers`). The identity call is now offered only to fill a gap hh leaves: no website ("Find website"), an agency's client ("Find client"), or both ("Identify"). See `docs/company-research.md` §3. |
+
 ## Documentation
 
 | Rejected | Why |

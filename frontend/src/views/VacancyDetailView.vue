@@ -182,9 +182,8 @@ h1 { margin: 0; font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; li
 .acts { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 .sec { display: flex; flex-direction: column; gap: 0.75rem; padding-top: 1.25rem;
   border-top: 1px solid var(--p-content-border-color); }
-.sechead { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }
-.label { margin: 0; font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
-  color: var(--p-text-muted-color); }
+/* the cover letter's label has a line under it, so its actions align to the top */
+.sechead { align-items: flex-start; }
 .muted { margin: 0.25rem 0 0; font-size: 0.8rem; line-height: 1.45; color: var(--p-text-muted-color); }
 .skills { display: flex; flex-wrap: wrap; gap: 0.45rem; }
 .desc { margin: 0; font-family: inherit; font-size: 0.85rem; line-height: 1.65; white-space: pre-wrap; }

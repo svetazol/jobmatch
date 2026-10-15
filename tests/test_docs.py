@@ -77,6 +77,8 @@ GONE = {
     "pipeline.target_of": "company_research.target_of",
     "pipeline.RECRUITERS_FRESH": "company_research.RECRUITERS_FRESH",
     "pipeline._recruiters_request": "company_research._recruiters_request",
+    # merged 2026-10-15 into the Company section, the architect's call
+    "CompanyIdentity.vue": "CompanyPanel.vue",
 }
 
 # Prose that happens to contain a dead string for a legitimate reason: the

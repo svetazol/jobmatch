@@ -131,9 +131,6 @@ const pitchTop = computed(() => props.answers ? topTwo(props.answers.best_angle.
 </template>
 
 <style scoped>
-/* requirements status only (see theme.ts); 700 and 400 are the shades that clear 4.5:1 on each mode's surface */
-.verdict { --ok: var(--p-green-700); --warn: var(--p-orange-700); --bad: var(--p-red-700); }
-:root.dark .verdict { --ok: var(--p-green-400); --warn: var(--p-orange-400); --bad: var(--p-red-400); }
 p { margin: 0; }
 .none { font-size: 0.95rem; color: var(--p-text-muted-color); }
 .muted { font-size: 0.8rem; line-height: 1.45; color: var(--p-text-muted-color); }
@@ -149,12 +146,12 @@ p { margin: 0; }
 .fitlabel { font-size: 1.05rem; font-weight: 600; }
 
 .cols { margin-top: 1.25rem; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem 1.5rem; }
-.label { display: block; margin-bottom: 0.3rem; font-size: 10.5px; font-weight: 600;
-  letter-spacing: 0.08em; text-transform: uppercase; color: var(--p-text-muted-color); }
+/* the global small-caps label, set on its own line above each column's value */
+.label { display: block; margin-bottom: 0.3rem; }
 .value { font-size: 0.95rem; font-weight: 600; line-height: 1.4; }
-.ok { color: var(--ok); }
-.warn { color: var(--warn); }
-.bad { color: var(--bad); }
+.ok { color: var(--status-ok); }
+.warn { color: var(--status-warn); }
+.bad { color: var(--status-bad); }
 
 /* neutral on purpose: the text above carries the meaning; the band is your level, the dot the posting */
 .scale { position: relative; display: block; width: 120px; height: 4px; margin-top: 0.55rem;
