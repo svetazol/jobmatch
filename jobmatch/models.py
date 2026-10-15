@@ -212,6 +212,19 @@ class RecruiterSearch(Base):
         return f"<RecruiterSearch e{self.employer_id} {len(self.answer.get('people', []))} people>"
 
 
+class RecruiterContact(Base):
+    """That the user wrote to someone; keyed by person, so it outlives every search; §3.8."""
+
+    __tablename__ = "recruiter_contacts"
+
+    # Canonical (`research.linkedin_profile_url`), or a mark would miss the person it marks.
+    linkedin_url: Mapped[str] = mapped_column(Text, primary_key=True)
+    written_at: Mapped[dt.datetime] = mapped_column(server_default=func.now())
+
+    def __repr__(self) -> str:
+        return f"<RecruiterContact {self.linkedin_url} {self.written_at:%Y-%m-%d}>"
+
+
 class MatchResult(Base):
     """One row per paid Jev call with a usable answer; append-only apart from ``superseded_at``."""
 

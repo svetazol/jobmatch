@@ -127,4 +127,22 @@ export const api = {
     }
     return res.json() as Promise<CompanyRecruiters>
   },
+
+  /**
+   * PATCH /api/recruiters/written — marks or unmarks that the user wrote to
+   * someone; any form of their profile URL works. Marking twice keeps the
+   * first date; `written: false` deletes the mark. 422 for a non-profile URL.
+   */
+  async markWritten(linkedinUrl: string, written: boolean): Promise<void> {
+    if (USE_MOCK) { await delay(null, 120); return }
+    const res = await fetch(`${BASE}/recruiters/written`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ linkedin_url: linkedinUrl, written }),
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => null)
+      throw new Error(body?.detail ?? `${res.status} ${res.statusText}`)
+    }
+  },
 }

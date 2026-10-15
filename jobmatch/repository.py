@@ -5,14 +5,14 @@ import datetime as dt
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import and_, func, or_, select, text, update
+from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .db import SessionLocal
 from .models import (
-    MAX_FETCH_ATTEMPTS, Employer, EmployerIdentity, LlmCall, MatchResult, RecruiterSearch,
-    Vacancy,
+    MAX_FETCH_ATTEMPTS, Employer, EmployerIdentity, LlmCall, MatchResult, RecruiterContact,
+    RecruiterSearch, Vacancy,
 )
 from .sources import EmployerData, Listing, VacancyData
 
@@ -221,6 +221,33 @@ async def save_recruiters(
         )
         .returning(RecruiterSearch)
     )).one()
+
+
+async def mark_written(session: AsyncSession, linkedin_url: str) -> None:
+    """Marking twice keeps the first date, as `applied_at` would if set once."""
+    await session.execute(
+        insert(RecruiterContact)
+        .values(linkedin_url=linkedin_url)
+        .on_conflict_do_nothing(index_elements=[RecruiterContact.linkedin_url])
+    )
+
+
+async def unmark_written(session: AsyncSession, linkedin_url: str) -> None:
+    """Undo deletes the mark: a user's note, not a vacancy, so "nothing deletes" does not apply."""
+    await session.execute(
+        delete(RecruiterContact).where(RecruiterContact.linkedin_url == linkedin_url)
+    )
+
+
+async def written_dates(session: AsyncSession, urls: Sequence[str]) -> dict[str, dt.datetime]:
+    """Canonical URL -> when the user wrote; only the marked ones."""
+    if not urls:
+        return {}
+    rows = await session.execute(
+        select(RecruiterContact.linkedin_url, RecruiterContact.written_at)
+        .where(RecruiterContact.linkedin_url.in_(urls))
+    )
+    return dict(rows.tuples().all())
 
 
 async def matchable_vacancy_ids(

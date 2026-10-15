@@ -478,7 +478,7 @@ async def test_the_route_answers_with_the_people_and_the_counts(vacancy_id, sear
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["people"] == [dataclasses.asdict(CONFIRMED.people[0])]
+    assert body["people"] == [{**dataclasses.asdict(CONFIRMED.people[0]), "written_at": None}]
     assert (body["dropped"], body["sources"]) == (1, 4)
     assert dt.datetime.fromisoformat(body["created_at"]) == (await _searches())[0].created_at
     assert set(body) == {"people", "dropped", "sources", "created_at"}

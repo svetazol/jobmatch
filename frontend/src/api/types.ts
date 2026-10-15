@@ -152,6 +152,8 @@ export interface RecruiterPerson {
   evidence: string
   /** The cited page's title, as the search returned it. */
   source_title: string | null
+  /** When the user marked that they wrote to this person; null when unmarked. */
+  written_at: string | null
 }
 
 export interface VacancyPage {

@@ -148,7 +148,7 @@ def keep_cited(answer: Recruiters, body: dict[str, Any]) -> Confirmed:
         kept[slug] = ConfirmedPerson(
             name=person.name,
             role=person.role,
-            linkedin_url=f"https://www.linkedin.com/in/{quote(slug, safe='')}",
+            linkedin_url=_profile_url(slug),
             evidence=person.evidence,
             source_title=citations[slug],
         )
@@ -204,3 +204,14 @@ def linkedin_slug(url: str) -> str | None:
     if not slug or "/" in slug or any(c.isspace() for c in slug) or set(slug) == {"."}:
         return None
     return slug
+
+
+def linkedin_profile_url(url: str) -> str | None:
+    """The one form a profile is stored and marked under, as the model's URLs vary."""
+    slug = linkedin_slug(url)
+    return None if slug is None else _profile_url(slug)
+
+
+def _profile_url(slug: str) -> str:
+    """Quoted, so a slug's own text never reaches an href unescaped."""
+    return f"https://www.linkedin.com/in/{quote(slug, safe='')}"

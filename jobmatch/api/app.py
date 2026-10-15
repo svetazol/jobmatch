@@ -28,6 +28,7 @@ app.include_router(vacancies.router)
 app.include_router(triage.router)
 app.include_router(stats.router)
 app.include_router(company.router)
+app.include_router(company.recruiters_router)
 
 
 @app.get("/api/health", tags=["meta"])

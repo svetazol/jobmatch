@@ -1,31 +1,37 @@
-"""The employer behind a vacancy: what is stored, the lookup, the identity and the recruiter search."""
+"""The employer behind a vacancy: the lookup, the identity, the recruiter search and the written mark."""
 from __future__ import annotations
 
 import logging
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ... import company_research, llm, repository
+from ... import company_research, llm, repository, research
 from ...config import DEFAULT_PATH, load_settings
 from ...db import SessionLocal
 from ...models import Employer, EmployerIdentity, RecruiterSearch
-from ..schemas import Company, CompanyIdentity, CompanyRecruiters
+from ..deps import get_session
+from ..schemas import Company, CompanyIdentity, CompanyRecruiters, RecruiterWritten
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/vacancies", tags=["company"])
+# The mark belongs to a person, not a posting, so it is not under /api/vacancies.
+recruiters_router = APIRouter(prefix="/api/recruiters", tags=["company"])
+
+SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
 @router.get("/{vacancy_id}/company", response_model=Company | None)
 async def get_company(vacancy_id: int) -> Company | None:
     """Free; null until looked up. No `SessionDep`, so two connections are never held at once."""
-    recruiters = await _stored_recruiters(vacancy_id)
+    search = await _stored_recruiters(vacancy_id)
     async with SessionLocal() as session:
         employer = await repository.employer_of(session, vacancy_id)
         if employer is None:
             return None
-        return await _company(session, employer, vacancy_id, recruiters)
+        return await _company(session, employer, vacancy_id, search)
 
 
 @router.post("/{vacancy_id}/company", response_model=Company)
@@ -38,9 +44,9 @@ async def look_up_company(vacancy_id: int) -> Company:
     except Exception as e:  # noqa: BLE001 -- throttled, 5xx, layout change: all the source's
         log.warning("employer lookup failed for vacancy %d: %s", vacancy_id, e)
         raise HTTPException(502, f"{type(e).__name__}: {e}") from None
-    recruiters = await _stored_recruiters(vacancy_id)
+    search = await _stored_recruiters(vacancy_id)
     async with SessionLocal() as session:
-        return await _company(session, employer, vacancy_id, recruiters)
+        return await _company(session, employer, vacancy_id, search)
 
 
 @router.post("/{vacancy_id}/company/identity", response_model=CompanyIdentity)
@@ -84,30 +90,50 @@ async def search_recruiters(vacancy_id: int, refresh: bool = False) -> CompanyRe
     except Exception as e:  # noqa: BLE001 -- timeout, refusal, invalid JSON, OpenRouter's error
         log.warning("searching for recruiters failed for vacancy %d: %s", vacancy_id, e)
         raise HTTPException(502, f"{type(e).__name__}: {e}") from None
-    return _recruiters(row)
+    async with SessionLocal() as session:
+        return await _recruiters(session, row)
 
 
-async def _stored_recruiters(vacancy_id: int) -> CompanyRecruiters | None:
+@recruiters_router.patch("/written", status_code=204)
+async def mark_written(body: RecruiterWritten, session: SessionDep) -> None:
+    """Mark or unmark that the user wrote to someone; 422 for a URL that is not a LinkedIn profile."""
+    url = research.linkedin_profile_url(body.linkedin_url)
+    if url is None:
+        raise HTTPException(422, "not a LinkedIn profile URL (linkedin.com/in/...)")
+    if body.written:
+        await repository.mark_written(session, url)
+    else:
+        await repository.unmark_written(session, url)
+    await session.commit()
+
+
+async def _stored_recruiters(vacancy_id: int) -> RecruiterSearch | None:
     """None for no search or nothing to search for; optional on a free read, so it never fails the card."""
     try:
         model = load_settings(DEFAULT_PATH).model_for("recruiters")
-        row = await company_research.stored_recruiters(vacancy_id, model)
+        return await company_research.stored_recruiters(vacancy_id, model)
     except (company_research.NotLookedUp, company_research.EmployerUnknown):
         return None
     except Exception as e:  # noqa: BLE001 -- a bad config.toml, a database hiccup
         log.warning("reading the recruiter search failed for vacancy %d: %s", vacancy_id, e)
         return None
-    return None if row is None else _recruiters(row)
 
 
 async def _company(
     session: AsyncSession,
     employer: Employer,
     vacancy_id: int,
-    recruiters: CompanyRecruiters | None,
+    search: RecruiterSearch | None,
 ) -> Company:
-    """Field by field, as three of them live in `raw`, where `model_validate` cannot see."""
+    """Field by field, as three live in `raw`; recruiters are optional, so a failed read is null."""
     row = await repository.latest_identity(session, vacancy_id)
+    identity = None if row is None else await _identity(session, row)
+    recruiters = None
+    if search is not None:
+        try:
+            recruiters = await _recruiters(session, search)
+        except Exception as e:  # noqa: BLE001 -- a database hiccup, a malformed stored answer
+            log.warning("reading the written marks failed for vacancy %d: %s", vacancy_id, e)
     raw = employer.raw or {}
     return Company(
         name=employer.name,
@@ -117,7 +143,7 @@ async def _company(
         category=raw.get("category"),
         industries=raw.get("industries"),
         looked_up_at=employer.looked_up_at,
-        identity=None if row is None else await _identity(session, row),
+        identity=identity,
         recruiters=recruiters,
     )
 
@@ -136,6 +162,13 @@ async def _identity(session: AsyncSession, row: EmployerIdentity) -> CompanyIden
     )
 
 
-def _recruiters(row: RecruiterSearch) -> CompanyRecruiters:
-    """The stored answer, as is."""
-    return CompanyRecruiters(**row.answer, created_at=row.created_at)
+async def _recruiters(session: AsyncSession, row: RecruiterSearch) -> CompanyRecruiters:
+    """The stored answer, each person with when the user wrote to them, looked up canonically."""
+    people = row.answer["people"]
+    urls = [research.linkedin_profile_url(person["linkedin_url"]) for person in people]
+    written = await repository.written_dates(session, [url for url in urls if url])
+    people = [
+        {**person, "written_at": written.get(url) if url else None}
+        for person, url in zip(people, urls, strict=True)
+    ]
+    return CompanyRecruiters(**row.answer | {"people": people}, created_at=row.created_at)

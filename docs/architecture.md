@@ -75,7 +75,8 @@ Three tables for the pipeline: what was scraped, what the AI concluded, and
 what each AI call cost. A fourth, `employers`, holds only the companies someone
 looked up from the UI (§3.5), and a fifth, `employer_identities`, what a model
 said about who is behind a posting (§3.6), and a sixth, `recruiter_searches`,
-who a web search found recruiting for a company (§3.7). Single user kills `users`, `user_vacancy_state`,
+who a web search found recruiting for a company (§3.7), and a seventh,
+`recruiter_contacts`, whom the user marked as written to (§3.8). Single user kills `users`, `user_vacancy_state`,
 roles. Also deliberately absent: a `sources` table (sources are config), a
 `crawl_log` of discovery runs (nothing reads it), a `skills` table (nothing
 joins on it).
@@ -90,6 +91,7 @@ erDiagram
     LLM_CALLS ||--o| EMPLOYER_IDENTITIES : "produced"
     EMPLOYERS ||--o{ RECRUITER_SEARCHES : "who recruits for it"
     LLM_CALLS ||--o| RECRUITER_SEARCHES : "produced"
+    RECRUITER_SEARCHES }o..o{ RECRUITER_CONTACTS : "on the canonical linkedin_url in answer, no FK"
 
     VACANCIES {
         bigint id PK
@@ -185,6 +187,11 @@ erDiagram
         jsonb answer "asdict(Confirmed): only cited people"
         bigint llm_call_id FK "the call that produced it"
         timestamptz created_at "newest per request is shown"
+    }
+
+    RECRUITER_CONTACTS {
+        text linkedin_url PK "canonical profile URL"
+        timestamptz written_at "set by hand; the first mark is kept"
     }
 ```
 
@@ -346,6 +353,20 @@ reused while it is younger than `company_research.RECRUITERS_FRESH`, so the
 fingerprint is not unique: a stale search is asked again with the same
 inputs, because people change jobs. Columns: `jobmatch/models.py`; the design:
 `docs/company-research.md` §3.
+
+### 3.8 `recruiter_contacts`
+
+That the user wrote to someone, set by hand from the recruiter card, as
+`applied_at` is on a vacancy. Keyed by the person alone, the canonical
+`https://www.linkedin.com/in/<slug>` from `research.linkedin_profile_url`, with
+no FK: the search answer it is shown against is an LLM row that is never
+edited, a re-search writes a new one, and `employers.raw` is overwritten on a
+refresh, so a mark kept in any of them would be lost or would rewrite what was
+paid for. The same function canonicalises the URL the UI sends and each stored
+person's URL before the lookup, so a profile written in another form still
+finds its mark. Marking twice keeps the first date (`on conflict do nothing`);
+Undo deletes the row, which "nothing deletes vacancies" does not cover, as a
+mark is a note, not a vacancy. Why it is not in the answer: `docs/decisions.md`.
 
 ---
 
@@ -686,7 +707,7 @@ SDK's typed answers give it for free at write time.
 
 ## 11. The HTTP API
 
-FastAPI over the same `Session`, importing `jobmatch.models`. Nine routes,
+FastAPI over the same `Session`, importing `jobmatch.models`. Ten routes,
 all of them thin: every one is a `repository` or `company_research` call plus a
 response model (the cover note adds one `claude -p` call).
 
@@ -701,6 +722,7 @@ response model (the cover note adds one `claude -p` call).
 | `POST /api/vacancies/{id}/company` | look the employer up (again): 404 with the reason when there is none to find, 502 when the source fails (`jobmatch/api/routers/company.py`); `identity` and `recruiters` are whatever is already stored |
 | `POST /api/vacancies/{id}/company/identity` | ask the `employer` model (`[models]`) who is behind the posting (`company_research.identify_employer`), free when the same request was answered before: 409 before the lookup, 503 without `OPENROUTER_API_KEY`, 502 when the call fails |
 | `POST /api/vacancies/{id}/company/recruiters[?refresh=true]` | ask the `recruiters` model (`[models]`) to search the web for who recruits at the company (`company_research.find_recruiters`), free when the same request was answered within `company_research.RECRUITERS_FRESH` unless `refresh=true`, which always pays: 409 before the lookup, 404 for an unknown vacancy, 422 when the company has neither a website nor a name, 503 without `OPENROUTER_API_KEY`, 502 when the call fails |
+| `PATCH /api/recruiters/written` | mark (`written: true`) or unmark that the user wrote to a person, by any form of their LinkedIn profile URL, canonicalised first (§3.8); 204, 422 when it is not a profile URL. Per person, so not under `/api/vacancies`; `GET …/company` and `POST …/company/recruiters` carry each person's `written_at` |
 
 **Response models are Pydantic, and they are not a second schema.** This section's
 rejection of "pydantic domain models mirroring the ORM models" stands: these

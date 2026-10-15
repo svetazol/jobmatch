@@ -39,6 +39,7 @@ one, check the measurement still holds first.
 | A soft-delete flag on vacancies | `hidden_at` and `delisted_at` mean different things and the UI needs both. |
 | A second project, or a read-only DB user, for the web app | Makes the schema an unenforced contract between two codebases. `api/` lives inside the package and imports `models.py`. |
 | A stored `stale` flag | Derived at read time from `last_seen_at`. A stored flag needs a job to maintain it and is wrong between runs. |
+| The "written to" mark stored in the recruiter search's `answer`, or in `employers.raw` (2026-10-15) | The answer is an LLM row that is never edited, and a re-search writes a new one; `raw` is overwritten on every refresh. Either would lose the mark or rewrite what was paid for. It is its own table, `recruiter_contacts`, keyed by the canonical LinkedIn URL, so it outlives every search (`docs/architecture.md` §3.8). |
 
 ## People search
 

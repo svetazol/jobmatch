@@ -161,6 +161,14 @@ class RecruiterPerson(BaseModel):
     linkedin_url: str
     evidence: str
     source_title: str | None
+    written_at: dt.datetime | None   # set by hand, as `applied_at` is
+
+
+class RecruiterWritten(BaseModel):
+    """Any form of a profile URL; `false` deletes the mark (Undo)."""
+
+    linkedin_url: str
+    written: bool
 
 
 class CompanyRecruiters(BaseModel):
