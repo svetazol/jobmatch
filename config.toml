@@ -8,8 +8,8 @@ experience_years = 5      # the user's years, against each posting's hh experien
 
 # What the market view reports on: the CV *already* matched, not cv_path.
 # cv2, the same as cv_path; they diverge only while a new CV is being matched.
-# 2026-10-02: cv2 holds all 2 720 current matches. `jobmatch cv-hash`.
-stats_cv_hash = "9e5bbcb28e19493e48b23ef128359014dc4fbbc38153d6261693d76225e1f4a5"
+# 2026-10-15: cv2 holds all 6 742 current matches. `jobmatch cv-hash`.
+stats_cv_hash = "db2146a581843eae4a31e534e15ca1eb962b624af6c43f1b22580e44c3e57e14"
 
 # One model per kind of call, keyed as `llm_calls.kind` names it. Each is pinned,
 # never an alias: it is part of that call's fingerprint.
