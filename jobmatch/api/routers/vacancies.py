@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -11,8 +12,11 @@ from ... import cover_note, matching, repository
 from ...config import DEFAULT_PATH, load_settings
 from ...llm import claude_cli
 from ...models import MatchResult, Vacancy
+from ...sources import hh
 from ..deps import get_session
 from ..schemas import CoverNote, MatchSummary, VacancyDetail, VacancyPage, VacancyRow
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/vacancies", tags=["vacancies"])
 
@@ -151,7 +155,18 @@ async def get_vacancy(vacancy_id: int, session: SessionDep) -> VacancyDetail:
         last_seen_at=vacancy.last_seen_at,
         # Whole, so the client reads the stored legend rather than hardcoding questions.py.
         answers=match.answers if match else None,
+        seniority=_seniority(vacancy),
     )
+
+
+def _seniority(vacancy: Vacancy) -> hh.Seniority | None:
+    """A hint on the main page, so a broken config.toml leaves it out rather than failing the page."""
+    try:
+        years = load_settings(DEFAULT_PATH).experience_years
+    except Exception as e:  # noqa: BLE001 -- a malformed table raises TypeError/AttributeError too, not only ValueError
+        log.warning("no seniority for vacancy %d: %s", vacancy.id, e)
+        return None
+    return hh.seniority_fit(vacancy.experience_raw, years)
 
 
 @router.post("/{vacancy_id}/cover-note", response_model=CoverNote)

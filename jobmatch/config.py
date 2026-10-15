@@ -39,6 +39,8 @@ class Settings:
     cv_path: Path = Path("data/cv.md")
     # A hash, not a path, as it survives an edit or rename; empty means every CV at once.
     stats_cv_hash: str = ""
+    # Compared with each posting's experience bucket; None means no seniority hint.
+    experience_years: int | None = None
 
     def model_for(self, kind: str) -> str:
         """A config without the kind fails here rather than asking a default."""
@@ -112,7 +114,17 @@ def load_settings(path: Path | str = DEFAULT_PATH) -> Settings:
         models=_models(path, raw.get("models", {})),
         cv_path=Path(raw.get("cv_path", "data/cv.md")),
         stats_cv_hash=str(raw.get("stats_cv_hash", "")).strip(),
+        experience_years=_experience_years(path, raw.get("experience_years")),
     )
+
+
+def _experience_years(path: Path, value: Any) -> int | None:
+    """A whole, non-negative count; a float or string is a typo, not a choice."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{path}: experience_years must be a whole number of years >= 0, got {value!r}")
+    return value
 
 
 def _models(path: Path, table: Any) -> dict[str, str]:

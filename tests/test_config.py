@@ -141,6 +141,17 @@ def test_a_sweep_given_a_bare_string_is_refused(tmp_path):
         load_settings(write(tmp_path, body))
 
 
+@pytest.mark.parametrize("value", ["-1", "4.5", '"5"', "true"])
+def test_experience_years_must_be_a_whole_number_of_years(tmp_path, value):
+    with pytest.raises(ValueError, match="experience_years must be a whole number"):
+        load_settings(write(tmp_path, f"experience_years = {value}\n" + MINIMAL))
+
+
+def test_experience_years_is_optional(tmp_path):
+    assert load_settings(write(tmp_path, MINIMAL)).experience_years is None
+    assert load_settings(write(tmp_path, "experience_years = 0\n" + MINIMAL)).experience_years == 0
+
+
 # --- the checked-in file -----------------------------------------------------
 
 def test_the_checked_in_config_loads_and_holds_only_choices():
@@ -148,6 +159,7 @@ def test_the_checked_in_config_loads_and_holds_only_choices():
     assert {s for _, s, _ in settings.crawls()} == {"bg", "ru"}
     assert (settings.crawl, settings.fetch_workers, settings.fetch_delay) == (None, None, None)
     assert settings.cv_path and settings.stats_cv_hash
+    assert settings.experience_years == 5
 
 
 def test_the_checked_in_models_are_the_ones_every_stored_fingerprint_was_made_with():

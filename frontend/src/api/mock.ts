@@ -157,6 +157,8 @@ export function mockDetail(id: number): VacancyDetail {
     answers: is40 ? ANSWERS_40 : ANSWERS_40,
     // vacancy 40's, read on 2026-10-13
     last_seen_at: '2026-10-09T11:32:42Z',
+    // `более 6 лет` against 5 years; the other label is not hh's, so the API would send null.
+    seniority: is40 ? 'above' : null,
   }
 }
 

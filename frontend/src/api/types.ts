@@ -58,7 +58,11 @@ export interface VacancyDetail extends VacancyRow {
   /** When discovery last saw it in search; `stale` is measured from it. */
   last_seen_at: string
   answers: Answers | null
+  /** hh's experience bucket against the configured years; "below" asks for less than the user has. */
+  seniority: Seniority | null
 }
+
+export type Seniority = 'below' | 'level' | 'above'
 
 /** The `answers` JSONB, verbatim. The legend travels with it, so the UI never
  *  hardcodes what "weak" means — questions.py stays the single source. */

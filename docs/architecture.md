@@ -582,6 +582,7 @@ config can contradict — see `docs/decisions.md`.
 ```toml
 cv_path = "data/cv2.md"  # what the *next* match run uses
 stats_cv_hash = "9e5b…"  # what has *already* been matched — a different thing
+experience_years = 5     # optional; against hh's experience bucket, for the detail's `seniority`
 
 [models]                 # one per llm_calls kind; pinned, never an alias — see §4
 match = "jev-1.13"       # employer, recruiters and cover_note beside it
@@ -620,9 +621,10 @@ Validation in `load_settings()`, all of it fatal at load rather than mid-crawl:
 the file parses; unknown top-level settings are named (`fetch_worker` silently
 ran one worker before); every source name is in `SOURCES`; a stray key under a
 source is refused (notably `params`, what `search` used to be called); every
-sweep is a non-empty list; and every country name is in `areas.COUNTRIES`, so a
+sweep is a non-empty list; every country name is in `areas.COUNTRIES`, so a
 typo fails before the first request instead of after the earlier sweeps have
-spent theirs.
+spent theirs; and `experience_years`, when given, is a whole number of years,
+not negative.
 
 Alembic reads `DATABASE_URL` from the environment in `migrations/env.py`, not
 from `alembic.ini`, so pipeline, API and migrations share one connection string.
@@ -692,7 +694,7 @@ response model (the cover note adds one `claude -p` call).
 |---|---|
 | `GET /api/stats` | headline figures, the fit distribution, the per-pitch breakdown — for one CV (`?cv=` by file name, else `stats_cv_hash`) and narrowed by `?country=` (repeatable), except the country breakdown itself, which ignores the country filter so it keeps its options |
 | `GET /api/vacancies` | the ranked list — the §3.4 query, filters applied |
-| `GET /api/vacancies/{id}` | one vacancy, plus the whole `answers` blob |
+| `GET /api/vacancies/{id}` | one vacancy, plus the whole `answers` blob and `seniority`: `below` / `level` / `above` when hh's experience bucket asks for less than, about, or more than `experience_years` (`sources.hh.seniority_fit`, plain code, no model), `null` when either is unknown or `config.toml` fails to load |
 | `PATCH /api/vacancies/{id}/triage` | set or clear `seen_at` / `starred_at` / `hidden_at` / `applied_at` |
 | `POST /api/vacancies/{id}/cover-note` | a draft cover letter from `claude -p`, in the posting's language; the note is never stored, the call is in `llm_calls` (`jobmatch/cover_note.py`) |
 | `GET /api/vacancies/{id}/company` | the looked-up employer, or `null`, with the newest stored `identity` for this vacancy and the `recruiters` search its request would reuse, however old (each `null` when there is none); no request to the source or a model |

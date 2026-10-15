@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+from ..sources.hh import Seniority
+
 
 class MatchSummary(BaseModel):
     """Each answer with its confidence, so the client can refuse to print a near-tie as a fact."""
@@ -58,6 +60,8 @@ class VacancyDetail(VacancyRow):
     # What `stale` is measured from, so the UI can say since when.
     last_seen_at: dt.datetime
     answers: dict[str, Any] | None
+    # hh's experience bucket against `experience_years`; None when either is unknown.
+    seniority: Seniority | None
 
 
 class VacancyPage(BaseModel):

@@ -7,7 +7,7 @@ import json
 import logging
 import re
 from collections.abc import AsyncIterator, Mapping, Sequence
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx2
@@ -76,6 +76,17 @@ WORK_FORMATS = {
     "гибрид": "hybrid",
     "разъездной": "field_work",
 }
+
+# hh's four buckets as stored in `experience_raw`, in years; measured 2026-10-15: 3037/2537/658/510, 40 empty.
+HH_EXPERIENCE_YEARS: dict[str, tuple[int, int | None]] = {
+    "не требуется": (0, 0),
+    "1–3 года": (1, 3),
+    "3–6 лет": (3, 6),
+    "более 6 лет": (6, None),
+}
+
+type Seniority = Literal["below", "level", "above"]
+
 _SPACES = re.compile(r"[^\S\n]+")
 _WHITESPACE = re.compile(r"\s+")
 _BLANK_LINES = re.compile(r"\n{3,}")
@@ -143,6 +154,19 @@ def _work_formats(value: str | None) -> list[str]:
         for raw_part in _WORK_FORMAT_SPLIT.split(value)
         if (part := raw_part.strip())
     ]
+
+
+def seniority_fit(experience_raw: str | None, years: int | None) -> Seniority | None:
+    """Where the posting sits against the user's years: "below" asks for less than they have."""
+    bucket = HH_EXPERIENCE_YEARS.get(experience_raw or "")
+    if bucket is None or years is None:
+        return None
+    low, high = bucket
+    if years < low:
+        return "above"
+    if high is not None and years > high:
+        return "below"
+    return "level"
 
 
 def _country(ld: dict) -> str | None:

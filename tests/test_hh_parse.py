@@ -374,3 +374,34 @@ async def test_a_missing_employer_raises_gone(serve):
 
     with pytest.raises(EmployerGone):
         await hh.fetch_employer("1")
+
+
+# --- seniority: hh's experience bucket against the user's years --------------
+
+@pytest.mark.parametrize("experience, years, expected", [
+    ("не требуется", 5, "below"),
+    ("1–3 года", 5, "below"),
+    ("3–6 лет", 5, "level"),
+    ("более 6 лет", 5, "above"),
+    ("3–6 лет", 3, "level"),          # both ends are inside the bucket
+    ("3–6 лет", 6, "level"),
+    ("3–6 лет", 2, "above"),
+    ("3–6 лет", 7, "below"),
+    ("более 6 лет", 7, "level"),      # open-ended: no ceiling to be above
+    ("не требуется", 0, "level"),
+])
+def test_seniority_places_the_bucket_against_the_years(experience, years, expected):
+    assert hh.seniority_fit(experience, years) == expected
+
+
+@pytest.mark.parametrize("experience, years", [
+    ("", 5), (None, 5), ("3-6 лет", 5), ("от 2 лет", 5), ("3–6 лет", None),
+])
+def test_seniority_is_unknown_rather_than_guessed(experience, years):
+    """A hyphen for the en-dash is unknown text too: the labels are hh's, verbatim."""
+    assert hh.seniority_fit(experience, years) is None
+
+
+def test_the_parsed_experience_is_a_key_seniority_knows():
+    """The parser's output and the mapping's keys must agree, or every hint is silently null."""
+    assert hh.parse(PAGE, URL).experience in hh.HH_EXPERIENCE_YEARS

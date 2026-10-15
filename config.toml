@@ -4,6 +4,8 @@
 
 cv_path = "data/cv2.md"   # the CV the next match run uses
 
+experience_years = 5      # the user's years, against each posting's hh experience bucket
+
 # What the market view reports on: the CV *already* matched, not cv_path.
 # cv2, the same as cv_path; they diverge only while a new CV is being matched.
 # 2026-10-02: cv2 holds all 2 720 current matches. `jobmatch cv-hash`.

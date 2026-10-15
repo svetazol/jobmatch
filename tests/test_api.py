@@ -190,6 +190,32 @@ async def test_detail_carries_the_whole_answers_blob(client, rows):
     assert body["last_seen_at"] is not None
 
 
+@pytest.fixture
+async def experienced(rows):
+    """The first row asks for 1-3 years, as hh labels it."""
+    async with SessionLocal.begin() as session:
+        vacancy = await session.get(Vacancy, rows[0])
+        vacancy.experience_raw = "1–3 года"
+    return rows[0]
+
+
+async def test_detail_says_where_the_posting_sits_against_the_years(client, experienced, monkeypatch):
+    settings = dataclasses.replace(load_settings(DEFAULT_PATH), experience_years=5)
+    monkeypatch.setattr(vacancies, "load_settings", lambda _: settings)
+    body = (await client.get(f"/api/vacancies/{experienced}")).json()
+    assert body["experience_raw"] == "1–3 года"
+    assert body["seniority"] == "below"
+
+
+async def test_a_broken_config_leaves_seniority_null_not_the_page_failing(client, experienced, monkeypatch):
+    def broken(_):
+        raise ValueError("config.toml: unknown setting(s) experience_yaers")
+    monkeypatch.setattr(vacancies, "load_settings", broken)
+    response = await client.get(f"/api/vacancies/{experienced}")
+    assert response.status_code == 200
+    assert response.json()["seniority"] is None
+
+
 async def test_detail_404(client):
     assert (await client.get("/api/vacancies/99999999")).status_code == 404
 
