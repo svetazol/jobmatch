@@ -87,9 +87,9 @@ const pitchTop = computed(() => props.answers ? topTwo(props.answers.best_angle.
         <!-- borderline names the raw noul: .51 and .64 are both "true",
              and neither is worth trusting without a read -->
         <p v-if="band === 'meets'" class="value ok">Meets</p>
-        <p v-else-if="band === 'borderline'" class="value warn">Borderline · {{ fmtScore(match.is_qualified_noul) }}</p>
+        <p v-else-if="band === 'borderline'" class="value warn">Borderline</p>
         <p v-else class="value bad">Misses</p>
-        <p class="muted">{{ band === 'borderline' ? 'read them before writing' : 'minimum requirements' }}</p>
+        <p class="muted">minimum requirements<template v-if="band === 'borderline'"> · {{ fmtScore(match.is_qualified_noul) }}</template></p>
       </div>
 
       <div>

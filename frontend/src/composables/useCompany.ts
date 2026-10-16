@@ -20,6 +20,11 @@ export const hostPath = (url: string) => {
  *  The API already drops those; this is the second lock on the same door. */
 export const isWeb = (url: string | null): url is string => !!url && /^https?:\/\//i.test(url)
 
-/** "Okko" and "OKKO " are one name: repeating it would read as news. */
-export const sameName = (a: string | null, b: string | null) =>
-  (a ?? '').toLowerCase().replace(/\s+/g, '') === (b ?? '').toLowerCase().replace(/\s+/g, '')
+/** A legal form says nothing new: hh's "LLC ОнТаргет ЛАБС" came back as "ООО ОнТаргет ЛАБС" (2026-10-16). */
+const LEGAL_FORM = /(^|\s)(ооо|оао|зао|пао|ао|ип|llc|ltd|inc|gmbh|jsc|ojsc|cjsc)\.?(?=\s|$)/gi
+
+const bare = (name: string | null) =>
+  (name ?? '').replace(/["«»“”']/g, ' ').replace(LEGAL_FORM, ' ').toLowerCase().replace(/\s+/g, '')
+
+/** "Okko", "OKKO " and "ООО «Okko»" are one name: repeating it would read as news. */
+export const sameName = (a: string | null, b: string | null) => bare(a) === bare(b)
