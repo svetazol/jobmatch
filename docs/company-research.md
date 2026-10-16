@@ -183,16 +183,17 @@ actions on the right, the free one first.
 2. Looked up: the links (hh's website host ↗ when hh has one, "hh profile ↗",
    and "LinkedIn ↗", LinkedIn's company search for the website's host in
    quotes, or the name without one), then a muted line: category ·
-   industries · city. hh's category already says organization
-   (`Организация`, shown "Organization") or agency (`Кадровое агентство`,
-   "Recruiting agency"), for free.
+   industries · city. hh's category already says organization or agency,
+   for free: `Organization` or `Recruitment agency` on a page read in
+   English, `Организация` or `Кадровое агентство` on a row looked up before
+   that, shown in hh's English words either way.
 3. The identity call (§2, ~$0.0002, cached by its inputs) is offered only to
    fill a gap hh leaves: **Find website** when hh lists no site, **Find
    client** for an agency, **Identify** for both. Nothing is offered when hh
    already says it all. Its answer replaces the button: a homepage ↗ (when hh
    had none) and a careers page ↗, each only if it answered a GET and marked
    with a sparkles icon as the model's; for an agency (hh's category or the
-   model's answer), "Recruiting agency · hiring for <client> · <city>" or
+   model's answer), "Recruitment agency · hiring for <client> · <city>" or
    "· client not named"; the real name, when it is not the posting's; the
    model's notes as a tooltip on each of those. An answer that adds none of
    them reads "Nothing found beyond hh". A failure reads "Couldn't check

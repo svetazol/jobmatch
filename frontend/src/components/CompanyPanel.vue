@@ -51,11 +51,13 @@ async function lookUp() {
 
 watch(() => props.vacancyId, load, { immediate: true })
 
-const AGENCY = 'Кадровое агентство'
-const CATEGORY: Record<string, string> = { 'Организация': 'Organization', [AGENCY]: 'Recruiting agency' }
+// Rows looked up before pages were asked for in English keep hh's Russian category.
+const AGENCY = new Set(['Кадровое агентство', 'Recruitment agency'])
+// Russian categories in hh's own English words; English ones are shown as they are.
+const CATEGORY: Record<string, string> = { 'Организация': 'Organization', 'Кадровое агентство': 'Recruitment agency' }
 
 const noSite = computed(() => !!company.value && !isWeb(company.value.site_url))
-const isAgency = computed(() => company.value?.category === AGENCY)
+const isAgency = computed(() => AGENCY.has(company.value?.category ?? ''))
 
 /** The gap the identity call would fill; null when hh already says it all. */
 const askLabel = computed(() =>
@@ -154,7 +156,7 @@ const details = computed(() => {
         <a v-if="searchTerm" :href="linkedinSearch" target="_blank" rel="noopener noreferrer">LinkedIn ↗</a>
       </p>
       <p v-if="agencyLine && identity" class="line muted" :title="identity.notes || undefined">
-        Recruiting agency ·
+        Recruitment agency ·
         <template v-if="identity.client">hiring for <strong>{{ identity.client }}</strong></template>
         <template v-else>client not named</template>
         <template v-if="company.city"> · {{ company.city }}</template>
