@@ -9,6 +9,7 @@ import { api } from '@/api/client'
 import type { CoverNote, VacancyDetail } from '@/api/types'
 import { isWeb } from '@/composables/useCompany'
 import AiButton from '@/components/AiButton.vue'
+import Fold from '@/components/Fold.vue'
 import CompanyPanel from '@/components/CompanyPanel.vue'
 import VerdictCard from '@/components/VerdictCard.vue'
 
@@ -129,12 +130,14 @@ watch(() => route.params.id, (id) => load(Number(id)))
                   :severity="v.applied_at ? 'success' : 'secondary'" outlined size="small"
                   :title="v.applied_at ? 'Click to undo' : undefined" @click="toggleApplied" />
           <Button v-if="isWeb(v.url)" as="a" :href="v.url" target="_blank" rel="noopener noreferrer"
-                  label="hh.ru ↗" severity="secondary" outlined size="small" />
+                  label="hh.ru ↗" outlined size="small" />
         </div>
       </header>
 
       <section class="sec">
-        <VerdictCard :match="v.match" :answers="v.answers" :seniority="v.seniority" />
+        <Fold label="Fit" name="fit">
+          <VerdictCard :match="v.match" :answers="v.answers" :seniority="v.seniority" />
+        </Fold>
       </section>
 
       <section class="sec">
@@ -142,30 +145,28 @@ watch(() => route.params.id, (id) => load(Number(id)))
       </section>
 
       <section class="sec">
-        <div class="sechead">
-          <div>
-            <h2 class="label">Cover letter</h2>
-            <p v-if="note" class="muted">In {{ note.language }}. A draft: check every claim before sending.</p>
-            <p v-else class="muted">From your CV, in the posting's language</p>
-          </div>
-          <div class="acts">
+        <Fold label="Cover letter" name="cover">
+          <template #actions>
             <Button v-if="note" :label="copied ? 'Copied' : 'Copy'" :icon="copied ? 'pi pi-check' : 'pi pi-copy'"
                     text size="small" severity="secondary" @click="copyNote" />
             <AiButton :label="note ? 'Rewrite' : 'Write draft'" :loading="noteBusy" loading-label="Writing… 10–30 s"
                       title="Claude drafts it on this machine; 10–30 s" @click="writeNote" />
-          </div>
-        </div>
-        <Message v-if="noteError" severity="error" :closable="false">{{ noteError }}</Message>
-        <p v-if="note" class="covernote" :class="{ busy: noteBusy }">{{ note.text }}</p>
+          </template>
+          <p v-if="note" class="muted">In {{ note.language }}. A draft: check every claim before sending.</p>
+          <p v-else class="muted">From your CV, in the posting's language</p>
+          <Message v-if="noteError" severity="error" :closable="false">{{ noteError }}</Message>
+          <p v-if="note" class="covernote" :class="{ busy: noteBusy }">{{ note.text }}</p>
+        </Fold>
       </section>
 
       <section class="sec">
-        <h2 class="label">Posting</h2>
-        <div v-if="v.skills.length" class="skills">
-          <Chip v-for="s in v.skills" :key="s" :label="s" />
-        </div>
-        <!-- plain text with list bullets already lost in scraping -->
-        <pre v-if="v.description" class="desc">{{ v.description }}</pre>
+        <Fold label="Posting" name="posting">
+          <div v-if="v.skills.length" class="skills">
+            <Chip v-for="s in v.skills" :key="s" :label="s" />
+          </div>
+          <!-- plain text with list bullets already lost in scraping -->
+          <pre v-if="v.description" class="desc">{{ v.description }}</pre>
+        </Fold>
       </section>
     </template>
   </section>
@@ -173,7 +174,12 @@ watch(() => route.params.id, (id) => load(Number(id)))
 
 <style scoped>
 /* one quiet column: no cards, sections split by a hairline */
-.page { display: flex; flex-direction: column; gap: 0.875rem; max-width: 56rem; margin: 0 auto; }
+.page { display: flex; flex-direction: column; gap: 0.875rem; max-width: 56rem; margin: 0 auto;
+  padding: 1.5rem 2rem 2rem; background: var(--p-surface-0); border: 1px solid var(--p-content-border-color);
+  border-radius: 14px;
+  /* Aura's text is surface-700, a grey; the sheet reads crisper one step from black (900 flips light in dark mode) */
+  --p-text-color: var(--p-surface-900); color: var(--p-text-color); }
+@media (max-width: 640px) { .page { padding: 1rem; border-radius: 0; border-inline: 0; } }
 .crumb { margin-bottom: -0.25rem; }
 .head { display: flex; gap: 1.25rem; align-items: flex-start; flex-wrap: wrap; }
 .titlebox { flex: 1 1 20rem; min-width: 0; }
@@ -182,9 +188,7 @@ h1 { margin: 0; font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; li
 .acts { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 .sec { display: flex; flex-direction: column; gap: 0.75rem; padding-top: 1.25rem;
   border-top: 1px solid var(--p-content-border-color); }
-/* the cover letter's label has a line under it, so its actions align to the top */
-.sechead { align-items: flex-start; }
-.muted { margin: 0.25rem 0 0; font-size: 0.8rem; line-height: 1.45; color: var(--p-text-muted-color); }
+.muted { margin: 0; font-size: 0.8rem; line-height: 1.45; color: var(--p-text-muted-color); }
 .skills { display: flex; flex-wrap: wrap; gap: 0.45rem; }
 .desc { margin: 0; font-family: inherit; font-size: 0.85rem; line-height: 1.65; white-space: pre-wrap; }
 .covernote { margin: 0; font-size: 0.95rem; line-height: 1.65; white-space: pre-wrap; }

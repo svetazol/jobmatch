@@ -5,7 +5,6 @@ import {
   FIT_ORDER, GAP_LABEL, PITCH_HINT, PITCH_LABEL,
   fmtPct, fmtScore, isVague, legendOf, requirementsBand, topTwo,
 } from '@/composables/useFit'
-import { ramp } from '@/theme'
 
 /**
  * The matcher's verdict: the fit as a ring, then four short columns. An unsure
@@ -29,9 +28,12 @@ const share = (t: { label: string; p: number }) => `${t.label} ${fmtPct(t.p)}`
 const RING_R = 34
 const RING_LEN = 2 * Math.PI * RING_R
 const ringDash = computed(() => `${(props.match?.overall_fit_score ?? 0) * RING_LEN} ${RING_LEN}`)
-// the list histogram's hue, so a poor fit never reads as a green pass
-const ringColour = computed(() =>
-  props.match ? ramp()[FIT_ORDER.indexOf(props.match.overall_fit_label)] ?? ramp()[0] : undefined)
+// bright on purpose (the user's call, 2026-10-15): green only for strong and up, so a poor fit never reads as a pass
+const RING_COLOUR: Record<string, string> = {
+  excellent: 'var(--p-green-500)', strong: 'var(--p-green-500)', good: 'var(--p-primary-color)',
+  weak: 'var(--p-orange-500)', poor: 'var(--p-red-500)',
+}
+const ringColour = computed(() => props.match ? RING_COLOUR[props.match.overall_fit_label] ?? 'var(--p-primary-color)' : undefined)
 
 const fitVague = computed(() => isVague(props.match?.overall_fit_confidence))
 const fitTop = computed(() => props.match ? topTwo(props.match.fit_probabilities, fitLabel) : [])
@@ -137,13 +139,13 @@ p { margin: 0; }
 
 .fit { display: flex; align-items: center; gap: 1rem; }
 .ring { flex: none; }
-.ring circle { fill: none; stroke-width: 6; }
+.ring circle { fill: none; stroke-width: 7; }
 .track { stroke: var(--p-surface-200); }
 /* starts at twelve o'clock and fills clockwise */
 .arc { stroke-linecap: round; transform: rotate(-90deg); transform-origin: 40px 40px; }
-.score { fill: var(--p-text-color); font-size: 22px; font-weight: 700; text-anchor: middle;
+.score { fill: var(--p-text-color); font-size: 26px; font-weight: 700; text-anchor: middle;
   dominant-baseline: central; }
-.fitlabel { font-size: 1.05rem; font-weight: 600; }
+.fitlabel { font-size: 1.15rem; font-weight: 600; }
 
 .cols { margin-top: 1.25rem; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem 1.5rem; }
 /* the global small-caps label, set on its own line above each column's value */
@@ -153,15 +155,14 @@ p { margin: 0; }
 .warn { color: var(--status-warn); }
 .bad { color: var(--status-bad); }
 
-/* neutral on purpose: the text above carries the meaning; the band is your level, the dot the posting */
+/* the green band is your level, the dot the posting: green on your level, orange off it */
 .scale { position: relative; display: block; width: 120px; height: 4px; margin-top: 0.55rem;
   border-radius: 2px; background: var(--p-surface-200); }
-.you { position: absolute; left: 40%; width: 20%; height: 100%; border-radius: 2px; background: var(--p-surface-300); }
-:root.dark .you { background: var(--p-surface-400); }
+.you { position: absolute; left: 40%; width: 20%; height: 100%; border-radius: 2px; background: var(--p-green-500); }
 .dot { position: absolute; top: 50%; width: 10px; height: 10px; border-radius: 50%;
-  transform: translate(-50%, -50%); background: var(--p-text-color); }
+  transform: translate(-50%, -50%); background: var(--p-orange-500); }
 .dot.below { left: 0; }
-.dot.level { left: 50%; }
+.dot.level { left: 50%; background: var(--p-green-600); }
 .dot.above { left: 100%; }
 
 @media (max-width: 860px) { .cols { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

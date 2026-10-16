@@ -4,6 +4,7 @@ import { api } from '@/api/client'
 import type { CompanyRecruiters, RecruiterPerson } from '@/api/types'
 import { isWeb } from '@/composables/useCompany'
 import AiButton from './AiButton.vue'
+import Fold from './Fold.vue'
 
 /**
  * Recruiters, HR and talent acquisition at the company, from one paid AI web
@@ -78,13 +79,12 @@ const searchedOn = computed(() => found.value ? fmtDate(found.value.created_at) 
 </script>
 
 <template>
-  <div class="recruiters">
-    <div class="sechead">
-      <h2 class="label">Recruiters</h2>
+  <Fold class="recruiters" label="Recruiters" name="recruiters">
+    <template #actions>
       <!-- ~$0.008 measured on the first two searches (2026-10-14, calls 19578-9) -->
       <AiButton :label="found ? 'Search again' : 'Find recruiters'" price="$0.01"
                 :loading="pendingFor === vacancyId" loading-label="Searching… up to a minute" @click="search" />
-    </div>
+    </template>
 
     <p v-if="error" class="muted warn">Search failed ({{ error }})</p>
 
@@ -106,13 +106,12 @@ const searchedOn = computed(() => found.value ? fmtDate(found.value.created_at) 
       <p v-if="found.people.length" class="muted">Searched {{ searchedOn }}</p>
       <p v-else class="muted">No profiles found · searched {{ searchedOn }}</p>
     </template>
-  </div>
+  </Fold>
 </template>
 
 <style scoped>
 /* a section of its own under Company: the parent's gap plus this margin matches the page's section spacing */
-.recruiters { margin-top: 0.5rem; padding-top: 1.25rem; border-top: 1px solid var(--p-content-border-color);
-  display: flex; flex-direction: column; gap: 0.5rem; }
+.recruiters { margin-top: 0.5rem; padding-top: 1.25rem; border-top: 1px solid var(--p-content-border-color); }
 .people { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
   gap: 0.35rem 1.25rem; align-items: baseline; font-size: 0.95rem; line-height: 1.5; }
 .name { font-weight: 600; overflow-wrap: anywhere; }

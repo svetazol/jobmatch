@@ -5,6 +5,7 @@ import { api } from '@/api/client'
 import type { Company } from '@/api/types'
 import { host, hostPath, isWeb, sameName } from '@/composables/useCompany'
 import AiButton from './AiButton.vue'
+import Fold from './Fold.vue'
 import RecruitersBlock from './RecruitersBlock.vue'
 
 /**
@@ -132,16 +133,13 @@ const details = computed(() => {
 </script>
 
 <template>
-  <div class="company">
-    <div class="sechead">
-      <h2 class="label">Company</h2>
-      <div class="acts">
+  <Fold label="Company" name="company">
+    <template #actions>
         <Button :label="company ? 'Refresh' : 'Look up'" text size="small" severity="secondary"
                 :loading="pendingFor === vacancyId" @click="lookUp" />
         <AiButton v-if="company && askLabel && !identity" :label="askLabel" price="$0.0002"
                   :loading="identifyingFor === vacancyId" loading-label="Checking…" @click="identify" />
-      </div>
-    </div>
+    </template>
 
     <p v-if="error" class="line warn">Couldn't look up ({{ error }})</p>
 
@@ -165,14 +163,13 @@ const details = computed(() => {
       <p v-if="addsNothing" class="line muted">Nothing found beyond hh</p>
       <p v-if="identifyError" class="line muted warn">Couldn't check ({{ identifyError }})</p>
     </div>
-  </div>
+  </Fold>
 
   <RecruitersBlock v-if="company" :vacancy-id="vacancyId" :stored="company.recruiters" />
 </template>
 
 <style scoped>
-.acts { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
-.body { margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.2rem; }
+.body { display: flex; flex-direction: column; gap: 0.2rem; }
 .line { margin: 0; font-size: 0.95rem; line-height: 1.6; }
 .links { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; }
 a { color: var(--p-primary-color); text-decoration: none; }
