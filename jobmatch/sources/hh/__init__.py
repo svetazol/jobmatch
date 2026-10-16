@@ -49,14 +49,16 @@ HEADERS = {
     ),
     "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
 }
+# English pages, measured 2026-10-16; a cookie jar, not a Cookie header, so hh's own cookies still join it.
+COOKIES = {"session_language": "EN"}
 
 _VACANCY_ID = re.compile(r"/vacancy/(\d+)")
 # An anonymous posting has the company name without this link.
 _EMPLOYER_ID = re.compile(r"/employer/(\d+)")
 EMPLOYER_URL = "https://hh.ru/employer/{}"
 # The site's own wording; an unknown phrase is kept verbatim so it shows up rather than vanishing.
-_WORK_FORMAT_PREFIX = "Формат работы:"
-_WORK_FORMAT_SPLIT = re.compile(r",\s*|\s+или\s+")
+_WORK_FORMAT_PREFIX = re.compile(r"^(?:Формат работы|Work format):\s*")
+_WORK_FORMAT_SPLIT = re.compile(r",\s*|\s+(?:или|or)\s+")
 # JSON-LD's ISO code -> English; an unmapped country stays a bare code, visibly rather than wrongly.
 COUNTRY_NAMES = {
     "RU": "Russia",
@@ -75,6 +77,11 @@ WORK_FORMATS = {
     "удаленно": "remote",
     "гибрид": "hybrid",
     "разъездной": "field_work",
+    # English, since the session_language cookie (measured 2026-10-16); rows before it stay Russian.
+    "at the employer's location": "onsite",
+    "remotely": "remote",
+    "hybrid": "hybrid",
+    "travel": "field_work",
 }
 
 # hh's four buckets as stored in `experience_raw`, in years; measured 2026-10-15: 3037/2537/658/510, 40 empty.
@@ -83,6 +90,11 @@ HH_EXPERIENCE_YEARS: dict[str, tuple[int, int | None]] = {
     "1–3 года": (1, 3),
     "3–6 лет": (3, 6),
     "более 6 лет": (6, None),
+    # English, since the session_language cookie (measured 2026-10-16); rows before it stay Russian.
+    "not required": (0, 0),
+    "1-3 years": (1, 3),
+    "3-6 years": (3, 6),
+    "more than 6 years": (6, None),
 }
 
 type Seniority = Literal["below", "level", "above"]
@@ -98,7 +110,9 @@ class ParseError(RuntimeError):
 
 def _client() -> httpx2.AsyncClient:
     """A function, not a module client: a client belongs to its event loop, and tests swap it."""
-    return httpx2.AsyncClient(headers=HEADERS, timeout=TIMEOUT, follow_redirects=True)
+    return httpx2.AsyncClient(
+        headers=HEADERS, cookies=COOKIES, timeout=TIMEOUT, follow_redirects=True
+    )
 
 
 def canonical_url(url: str) -> str:
@@ -148,7 +162,7 @@ def _work_formats(value: str | None) -> list[str]:
     value = _clean(value, inline=True)
     if not value:
         return []
-    value = value.removeprefix(_WORK_FORMAT_PREFIX).strip()
+    value = _WORK_FORMAT_PREFIX.sub("", value)
     return [
         WORK_FORMATS.get(part.lower(), part.lower())
         for raw_part in _WORK_FORMAT_SPLIT.split(value)
@@ -234,7 +248,7 @@ def parse(html: str, url: str) -> VacancyData:
 
 
 def _info(soup: BeautifulSoup, qa: str) -> str | None:
-    """A `company-info-*` block: the value first, then its label ("Город")."""
+    """A `company-info-*` block: the value first, then its label ("Город" or "City")."""
     el = soup.find(attrs={"data-qa": qa})
     first = next(iter(el.stripped_strings), None) if el else None
     return _clean(first, inline=True)

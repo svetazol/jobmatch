@@ -76,6 +76,7 @@ on 2026-10-12. What it established, still true unless re-measured:
 | A `--plan` flag printing the query tree | A second surface to inspect complexity we chose not to add. Reconsider only alongside adaptive coverage. |
 | A configurable search URL | hh has one search endpoint, and the domain is not a filter — `headhunter.ge` without an `area` param returns Moscow. A URL in config would look like a way to scope a crawl by country while doing nothing of the kind. |
 | Regenerating `areas.json` with full depth | Triples the file to enable a recursion the ceiling makes pointless: a single region holding more than 2 000 Python postings does not exist. |
+| Re-fetch or backfill existing rows in English: refused (user, 2026-10-16) | Pages are asked for in English since the `session_language` cookie (`hh.COOKIES` in `jobmatch/sources/hh/__init__.py`), but a re-fetch would rewrite `job_text` and re-pay every match. Older rows stay Russian, so every reader of hh's wording accepts both. An employer refreshed after the cookie comes back in English, so its next identify and recruiter search pay once more. `Accept-Language: ru-RU` stays as it is: the cookie overrides it (measured 2026-10-16). |
 
 ## Config
 

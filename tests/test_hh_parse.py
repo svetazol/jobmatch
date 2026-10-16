@@ -27,6 +27,23 @@ PAGE = """
 </body></html>
 """
 
+# Real English strings from hh vacancy pages (2026-10-16); the ids and company are illustrative.
+PAGE_EN = """
+<html><body>
+<script type="application/ld+json">
+{"@type": "JobPosting", "title": "Python developer",
+ "datePosted": "2026-09-22T06:08:12.648+03:00", "identifier": {"value": "137615828"},
+ "jobLocation": {"address": {"addressCountry": "GE"}}}
+</script>
+<h1 data-qa="vacancy-title">Python developer</h1>
+<span data-qa="vacancy-company-name">\n  Тензор\n </span>
+<div data-qa="vacancy-salary"><span data-qa="vacancy-salary-compensation-type-net">from <data value="80000">80\u00a0000</data> up to <data value="100000">100\u00a0000</data> <data value="RUB">₽</data> per month<span> <!-- -->after taxes</span></span></div>
+<span data-qa="vacancy-experience">3-6 years</span>
+<p data-qa="work-formats-text">Work format: <!-- -->at the employer's location, remotely or hybrid</p>
+<div data-qa="vacancy-description"><p>First line</p><p>Second line</p></div>
+</body></html>
+"""
+
 BRANDED = """
 <html><body>
 <script type="application/ld+json">
@@ -36,6 +53,18 @@ BRANDED = """
 </script>
 </body></html>
 """
+
+
+@pytest.mark.parametrize("page, salary, experience", [
+    (PAGE, "до 5 500 $ за месяц", "3–6 лет"),
+    (PAGE_EN, "from 80 000 up to 100 000 ₽ per month after taxes", "3-6 years"),
+], ids=["ru", "en"])
+def test_both_languages_give_the_same_fields(page, salary, experience):
+    """Rows fetched before the cookie stay Russian, so both must parse alike."""
+    v = hh.parse(page, URL)
+
+    assert (v.salary, v.experience) == (salary, experience)
+    assert v.work_formats == ["onsite", "remote", "hybrid"]
 
 
 def test_parses_the_normal_layout():
@@ -112,6 +141,17 @@ def test_an_unknown_work_format_is_kept_rather_than_dropped():
     )
 
     assert hh.parse(page, URL).work_formats == ["вахта", "remote"]
+
+
+@pytest.mark.parametrize("phrase, expected", [
+    ("travel", ["field_work"]),
+    ("at the employer's location or hybrid", ["onsite", "hybrid"]),
+    ("rotation or remotely", ["rotation", "remote"]),     # unknown English is kept too
+])
+def test_english_work_formats(phrase, expected):
+    page = PAGE_EN.replace("at the employer's location, remotely or hybrid", phrase)
+
+    assert hh.parse(page, URL).work_formats == expected
 
 
 def test_a_posting_that_says_nothing_about_work_format():
@@ -336,6 +376,29 @@ def test_parses_an_employer_page():
     assert e.raw == {"city": "Санкт-Петербург", "industries": "Информационные технологии"}
 
 
+# Real strings, verbatim from employer 9111934 read in English (2026-10-16).
+EMPLOYER_EN = """
+<html><body>
+<h1 data-qa="company-header-title"><span data-qa="company-header-title-name">ТРТ</span></h1>
+<div data-qa="company-info-address"><div data-qa="cell"><span>Samara</span><span>City</span></div></div>
+<div data-qa="company-info-category"><div data-qa="cell"><span>Recruitment agency</span><span>Registration type</span></div></div>
+</body></html>
+"""
+
+
+def test_parses_an_employer_page_read_in_english():
+    e = hh.parse_employer(EMPLOYER_EN, "9111934")
+
+    assert e.raw == {"city": "Samara", "category": "Recruitment agency"}
+
+
+def test_pages_are_asked_for_in_english():
+    """A cookie, not a header: a literal Cookie header would shut out hh's own cookies."""
+    request = hh._client().build_request("GET", URL)
+
+    assert request.headers["cookie"] == "session_language=EN"
+
+
 def test_an_employer_without_a_site_has_none():
     page = EMPLOYER.replace('data-qa="sidebar-company-site" href="http://okko.tv/"', "")
 
@@ -389,6 +452,10 @@ async def test_a_missing_employer_raises_gone(serve):
     ("3–6 лет", 7, "below"),
     ("более 6 лет", 7, "level"),      # open-ended: no ceiling to be above
     ("не требуется", 0, "level"),
+    ("not required", 5, "below"),     # English, since the session_language cookie
+    ("1-3 years", 5, "below"),
+    ("3-6 years", 5, "level"),
+    ("more than 6 years", 5, "above"),
 ])
 def test_seniority_places_the_bucket_against_the_years(experience, years, expected):
     assert hh.seniority_fit(experience, years) == expected
@@ -402,6 +469,7 @@ def test_seniority_is_unknown_rather_than_guessed(experience, years):
     assert hh.seniority_fit(experience, years) is None
 
 
-def test_the_parsed_experience_is_a_key_seniority_knows():
+@pytest.mark.parametrize("page", [PAGE, PAGE_EN], ids=["ru", "en"])
+def test_the_parsed_experience_is_a_key_seniority_knows(page):
     """The parser's output and the mapping's keys must agree, or every hint is silently null."""
-    assert hh.parse(PAGE, URL).experience in hh.HH_EXPERIENCE_YEARS
+    assert hh.parse(page, URL).experience in hh.HH_EXPERIENCE_YEARS
